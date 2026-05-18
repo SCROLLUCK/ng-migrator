@@ -922,7 +922,11 @@ function writeReport() {
   }
   if (report.modernize.standalone) {
     lines.push(`- [ ] Check for **NG0302** errors: the standalone migration occasionally misses adding pipes/directives to a component's \`imports\`. Fix: add the missing pipe/directive to the \`@Component({ imports: [...] })\` of the affected component`);
-    lines.push(`- [ ] Review lazy-loaded routes: \`loadChildren: () => import('./module')\` → consider \`loadComponent\` or route-level imports`);
+    if (report.modernize.lazyRoutesConverted > 0) {
+      lines.push(`- [ ] Lazy NgModule routes were converted to routes files. Consider further optimizing leaf routes to \`loadComponent\` for granular code splitting`);
+    } else {
+      lines.push(`- [ ] Check for remaining \`loadChildren: () => import('./module')\` calls pointing to NgModules — convert to routes files or \`loadComponent\``);
+    }
   }
   if (report.notes.some(n => n.includes('importProvidersFrom'))) {
     lines.push(`- [ ] Review \`importProvidersFrom()\` calls in \`app.config.ts\` and convert remaining modules to functional providers`);
