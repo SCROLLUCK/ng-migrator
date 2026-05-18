@@ -1,0 +1,18 @@
+{
+  "name": "ng-migrator",
+  "version": "1.0.0",
+  "description": "Migração Angular 11 → 21. Roda localmente, sem enviar dados para serviços externos.",
+  "type": "module",
+  "bin": {
+    "ng-migrator": "./migrate.mjs"
+  },
+  "scripts": {
+    "migrate": "node migrate.mjs"
+  },
+  "dependencies": {
+    "ts-morph": "^28.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
