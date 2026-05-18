@@ -200,8 +200,8 @@ function preflight() {
   const DEV_BUMPS = {
     '@types/node':    '^20.0.0',  // Angular 21 requer Node 18+; ^12 é de 2019
     'ts-node':        '~10.0.0',  // ~7 é de 2018
-    '@types/jasmine': '~5.0.0',   // ~3.8 é de 2021; atual é 5.x
-    'jasmine-core':   '~5.0.0',   // ~3.8 é de 2021; atual é 5.x
+    '@types/jasmine': '~5.1.0',   // ~3.8 é de 2021; 5.0.0 não existe, atual é 5.1.x
+    'jasmine-core':   '~5.1.0',   // ~3.8 é de 2021; atual é 5.x
   };
   for (const [name, version] of Object.entries(DEV_BUMPS)) {
     for (const section of ['dependencies', 'devDependencies']) {
