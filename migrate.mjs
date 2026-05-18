@@ -57,6 +57,11 @@ const report = {
     throwErrorFixed: 0,
     polyfillsInlined: false,
     styleUrlFixed: 0,
+    controlFlow: false,
+    ngClassToClass: false,
+    ngStyleToStyle: false,
+    selfClosingTags: false,
+    cleanupImports: false,
     standalone: false,
     standaloneFixed: 0,
     appConfig: false,
@@ -1034,6 +1039,23 @@ function runModernizationMigrations() {
   console.log(`\n  🔄 standalone  (fix missing standalone: true in pipes/directives)...`);
   report.modernize.standaloneFixed = fixMissingStandalone();
 
+  // 3c. control-flow: *ngIf/*ngFor/*ngSwitch → @if/@for/@switch
+  runUntilStable(
+    'npx ng generate @angular/core:control-flow',
+    'control-flow  (*ngIf/*ngFor → @if/@for)',
+  );
+  report.modernize.controlFlow = true;
+
+  // 3d. [ngClass] → [class] bindings
+  console.log(`\n  🔄 ngClass → class bindings...`);
+  run('npx ng generate @angular/core:ngclass-to-class', { ignoreError: true });
+  report.modernize.ngClassToClass = true;
+
+  // 3e. [ngStyle] → [style] bindings
+  console.log(`\n  🔄 ngStyle → style bindings...`);
+  run('npx ng generate @angular/core:ngstyle-to-style --best-effort-mode', { ignoreError: true });
+  report.modernize.ngStyleToStyle = true;
+
   // 4. app.config.ts + app.routes.ts
   console.log(`\n  🔄 app.config.ts + app.routes.ts...`);
   createAppConfigAndRoutes();
@@ -1066,6 +1088,16 @@ function runModernizationMigrations() {
   // 9. styleUrls → styleUrl (Angular 19+)
   console.log(`\n  🔄 styleUrls → styleUrl...`);
   report.modernize.styleUrlFixed = fixStyleUrls();
+
+  // 10. self-closing tags
+  console.log(`\n  🔄 self-closing tags...`);
+  run('npx ng generate @angular/core:self-closing-tag', { ignoreError: true });
+  report.modernize.selfClosingTags = true;
+
+  // 11. cleanup unused imports (deve rodar por último, após todas as migrações de template)
+  console.log(`\n  🔄 cleanup unused imports...`);
+  run('npx ng generate @angular/core:cleanup-unused-imports', { ignoreError: true });
+  report.modernize.cleanupImports = true;
 }
 
 // ─── Relatório de migração ────────────────────────────────────────────────────
@@ -1115,6 +1147,11 @@ function writeReport() {
     lines.push(`| \`throwError(value)\` → \`throwError(() => value)\` (RxJS 7) | ${report.modernize.throwErrorFixed > 0 ? `✅ ${report.modernize.throwErrorFixed} file(s)` : '—'} |`);
     lines.push(`| Standalone components (convert → prune → bootstrap) | ${check(report.modernize.standalone)} |`);
     lines.push(`| \`standalone: true\` patched in missed pipes/directives/components | ${report.modernize.standaloneFixed > 0 ? `✅ ${report.modernize.standaloneFixed} file(s)` : '—'} |`);
+    lines.push(`| Control flow — \`*ngIf\`/\`*ngFor\`/\`*ngSwitch\` → \`@if\`/\`@for\`/\`@switch\` | ${check(report.modernize.controlFlow)} |`);
+    lines.push(`| \`[ngClass]\` → \`[class]\` bindings | ${check(report.modernize.ngClassToClass)} |`);
+    lines.push(`| \`[ngStyle]\` → \`[style]\` bindings | ${check(report.modernize.ngStyleToStyle)} |`);
+    lines.push(`| Self-closing tags (\`<my-comp />\`) | ${check(report.modernize.selfClosingTags)} |`);
+    lines.push(`| Cleanup unused component imports | ${check(report.modernize.cleanupImports)} |`);
     lines.push(`| \`app.config.ts\` with functional providers | ${check(report.modernize.appConfig)} |`);
     lines.push(`| \`app.routes.ts\` extracted from routing module | ${check(report.modernize.appRoutes)} |`);
     lines.push(`| Lazy NgModules → routes files (fixes NG0200 circular dep) | ${report.modernize.lazyRoutesConverted > 0 ? `✅ ${report.modernize.lazyRoutesConverted} module(s)` : '—'} |`);
