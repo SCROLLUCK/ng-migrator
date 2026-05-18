@@ -54,6 +54,9 @@ const report = {
     inject: false,
     signals: false,
     untypedFormsFixed: 0,
+    throwErrorFixed: 0,
+    polyfillsInlined: false,
+    styleUrlFixed: 0,
     standalone: false,
     standaloneFixed: 0,
     appConfig: false,
@@ -193,6 +196,46 @@ function preflight() {
     changed = true;
   }
 
+  // Atualiza devDependencies com versões muito defasadas
+  const DEV_BUMPS = {
+    '@types/node':    '^20.0.0',  // Angular 21 requer Node 18+; ^12 é de 2019
+    'ts-node':        '~10.0.0',  // ~7 é de 2018
+    '@types/jasmine': '~5.0.0',   // ~3.8 é de 2021; atual é 5.x
+    'jasmine-core':   '~5.0.0',   // ~3.8 é de 2021; atual é 5.x
+  };
+  for (const [name, version] of Object.entries(DEV_BUMPS)) {
+    for (const section of ['dependencies', 'devDependencies']) {
+      if (pkg[section]?.[name] && getMajor(pkg[section][name]) < getMajor(version)) {
+        pkg[section][name] = version;
+        console.log(`  ↳ ${name} → ${version}`);
+        changed = true;
+      }
+    }
+  }
+
+  // karma-coverage-istanbul-reporter (deprecated desde Angular 12) → karma-coverage
+  for (const section of ['dependencies', 'devDependencies']) {
+    if (pkg[section]?.['karma-coverage-istanbul-reporter']) {
+      delete pkg[section]['karma-coverage-istanbul-reporter'];
+      pkg[section]['karma-coverage'] = '^2.2.1';
+      console.log('  ↳ karma-coverage-istanbul-reporter → karma-coverage');
+      changed = true;
+    }
+  }
+
+  // Remove dependências instaladas mas não utilizadas no código
+  for (const name of ['toastr']) {
+    for (const section of ['dependencies', 'devDependencies']) {
+      if (!pkg[section]?.[name]) continue;
+      const used = scanForContent(`'${name}'`) || scanForContent(`"${name}"`);
+      if (!used) {
+        delete pkg[section][name];
+        console.log(`  ↳ ${name} removido (não utilizado no projeto)`);
+        changed = true;
+      }
+    }
+  }
+
   if (changed) writeJson(pkgPath, pkg);
 }
 
@@ -222,6 +265,41 @@ function cleanupLegacyFiles() {
   }
 
   if (changed) writeJson(ngPath, ng);
+
+  fixKarmaConf();
+}
+
+function fixKarmaConf() {
+  const karmaPath = join(destPath, 'src', 'karma.conf.js');
+  if (!existsSync(karmaPath)) return;
+  let src = readFileSync(karmaPath, 'utf8');
+  if (!src.includes('karma-coverage-istanbul-reporter')) return;
+
+  let out = src
+    .replace(/require\("karma-coverage-istanbul-reporter"\)/g, 'require("karma-coverage")')
+    .replace(/"karma-coverage-istanbul-reporter"/g, '"coverage"');
+
+  // Substitui coverageIstanbulReporter: { ... } → coverageReporter (bracket-counting)
+  const keyIdx = out.indexOf('coverageIstanbulReporter');
+  if (keyIdx !== -1) {
+    const braceStart = out.indexOf('{', keyIdx);
+    if (braceStart !== -1) {
+      let depth = 0, end = -1;
+      for (let i = braceStart; i < out.length; i++) {
+        if (out[i] === '{') depth++;
+        else if (out[i] === '}') { if (--depth === 0) { end = i; break; } }
+      }
+      if (end !== -1) {
+        const replacement = `coverageReporter: {\n      dir: require("path").join(__dirname, "../coverage"),\n      reporters: [{ type: "html" }, { type: "lcovonly" }, { type: "text-summary" }],\n    }`;
+        out = out.slice(0, keyIdx) + replacement + out.slice(end + 1);
+      }
+    }
+  }
+
+  if (out !== src) {
+    writeFileSync(karmaPath, out);
+    console.log('  ↳ karma.conf.js: coverageIstanbulReporter → coverageReporter (karma-coverage)');
+  }
 }
 
 // ─── Sincroniza versões que o ng update não bumpa automaticamente ────────────
@@ -784,6 +862,145 @@ function createAppConfigAndRoutes() {
   report.modernize.mainSimplified = true;
 }
 
+// ─── throwError() → factory function (RxJS 7) ────────────────────────────────
+// RxJS 7 deprecou throwError(value) — exige throwError(() => value).
+// Objeto literal precisa de () => ({...}) para não ser interpretado como function body.
+
+function fixThrowError() {
+  let count = 0;
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts')) continue;
+      let src = readFileSync(full, 'utf8');
+      if (!src.includes('throwError(')) continue;
+
+      let out = '';
+      let pos = 0;
+      let modified = false;
+      const marker = 'throwError(';
+
+      while (pos < src.length) {
+        const idx = src.indexOf(marker, pos);
+        if (idx === -1) { out += src.slice(pos); break; }
+        out += src.slice(pos, idx + marker.length);
+        const argStart = idx + marker.length;
+
+        // Bracket-counting para encontrar o ) de fechamento do throwError(
+        let depth = 1, inStr = false, strChar = '';
+        let j = argStart;
+        while (j < src.length && depth > 0) {
+          const ch = src[j];
+          if (inStr) {
+            if (ch === '\\') j++; // skip escaped char
+            else if (ch === strChar) inStr = false;
+          } else {
+            if (ch === '"' || ch === "'" || ch === '`') { inStr = true; strChar = ch; }
+            else if (ch === '(') depth++;
+            else if (ch === ')') { if (--depth === 0) break; }
+          }
+          j++;
+        }
+
+        const arg = src.slice(argStart, j).trim();
+        // Já é factory function?
+        const isFactory = /^(\(\s*[^)]*\)|\w+)\s*=>/.test(arg) || /^function[\s({]/.test(arg);
+
+        if (isFactory) {
+          out += src.slice(argStart, j) + ')';
+        } else if (arg.startsWith('{')) {
+          out += `() => (${arg}))`;
+          modified = true;
+        } else {
+          out += `() => ${arg})`;
+          modified = true;
+        }
+        pos = j + 1;
+      }
+
+      if (modified) { writeFileSync(full, out); count++; }
+    }
+  }
+  const srcDir = join(destPath, 'src');
+  if (existsSync(srcDir)) walk(srcDir);
+  if (count > 0) console.log(`  ↳ throwError() → factory function (RxJS 7): ${count} arquivo(s)`);
+  return count;
+}
+
+// ─── styleUrls (array) → styleUrl (singular) ─────────────────────────────────
+// Angular 19 introduziu styleUrl (singular). Array com um elemento → string.
+
+function fixStyleUrls() {
+  let count = 0;
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts')) continue;
+      let src = readFileSync(full, 'utf8');
+      if (!src.includes('styleUrls')) continue;
+      const out = src.replace(
+        /styleUrls\s*:\s*\[\s*(['"][^'"]+['"])\s*\]/g,
+        'styleUrl: $1',
+      );
+      if (out !== src) { writeFileSync(full, out); count++; }
+    }
+  }
+  const srcDir = join(destPath, 'src');
+  if (existsSync(srcDir)) walk(srcDir);
+  if (count > 0) console.log(`  ↳ styleUrls → styleUrl: ${count} arquivo(s)`);
+  return count;
+}
+
+// ─── polyfills.ts → zone.js inline em angular.json ───────────────────────────
+// Angular 15+ recomenda listar polyfills diretamente no angular.json.
+// Se o arquivo só tem `import 'zone.js'` (+ comentários), é seguro inlinear.
+
+function inlinePolyfills() {
+  const polyfillsPath = join(destPath, 'src', 'polyfills.ts');
+  if (!existsSync(polyfillsPath)) return false;
+
+  const content = readFileSync(polyfillsPath, 'utf8');
+  const stripped = content
+    .replace(/\/\/.*$/gm, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .trim();
+
+  if (stripped !== "import 'zone.js';" && stripped !== 'import "zone.js";') return false;
+
+  const ngPath = join(destPath, 'angular.json');
+  if (!existsSync(ngPath)) return false;
+  let ng;
+  try { ng = readJson(ngPath); } catch { return false; }
+  let changed = false;
+
+  for (const proj of Object.values(ng.projects ?? {})) {
+    for (const target of Object.values(proj.architect ?? {})) {
+      const sections = [target.options, ...Object.values(target.configurations ?? {})].filter(Boolean);
+      for (const section of sections) {
+        if (section.polyfills === 'src/polyfills.ts') {
+          section.polyfills = ['zone.js'];
+          changed = true;
+        } else if (Array.isArray(section.polyfills)) {
+          const idx = section.polyfills.indexOf('src/polyfills.ts');
+          if (idx !== -1) { section.polyfills[idx] = 'zone.js'; changed = true; }
+        }
+      }
+    }
+  }
+
+  if (changed) {
+    writeJson(ngPath, ng);
+    unlinkSync(polyfillsPath);
+    console.log('  ↳ polyfills.ts inlined → angular.json ["zone.js"]');
+    return true;
+  }
+  return false;
+}
+
 function runModernizationMigrations() {
   // 1. inject(): constructor DI → inject()
   console.log(`\n  🔄 inject()  (constructor DI → inject())...`);
@@ -797,6 +1014,10 @@ function runModernizationMigrations() {
 
   // 2b. UntypedForm* → typed forms (ponte de migração v14, obsoleta no v21)
   report.modernize.untypedFormsFixed = fixUntypedForms();
+
+  // 2c. throwError() → factory function (RxJS 7)
+  console.log(`\n  🔄 throwError  (RxJS 7 factory function)...`);
+  report.modernize.throwErrorFixed = fixThrowError();
 
   // 3. standalone migration (3 passos obrigatórios em sequência)
   runUntilStable(
@@ -825,6 +1046,10 @@ function runModernizationMigrations() {
   migrateToApplicationBuilder();
   report.modernize.builder = true;
 
+  // 5b. polyfills.ts → inline zone.js em angular.json
+  console.log(`\n  🔄 polyfills  (inline zone.js em angular.json)...`);
+  report.modernize.polyfillsInlined = inlinePolyfills();
+
   // 6. Path aliases
   console.log(`\n  🔄 path aliases no tsconfig...`);
   addTsconfigPathAliases();
@@ -837,6 +1062,10 @@ function runModernizationMigrations() {
   // 8. Remove .module.ts que não são mais referenciados
   console.log(`\n  🔄 módulos  (removendo .module.ts obsoletos)...`);
   report.modernize.modulesRemoved = removeUnusedModules();
+
+  // 9. styleUrls → styleUrl (Angular 19+)
+  console.log(`\n  🔄 styleUrls → styleUrl...`);
+  report.modernize.styleUrlFixed = fixStyleUrls();
 }
 
 // ─── Relatório de migração ────────────────────────────────────────────────────
@@ -878,18 +1107,23 @@ function writeReport() {
     lines.push(``);
     lines.push(`| Step | Status |`);
     lines.push(`|------|--------|`);
-    lines.push(`| \`inject()\` — constructor DI → inject() | ${check(report.modernize.inject)} |`);
+    lines.push(`| Step | Result |`);
+    lines.push(`|------|--------|`);
+    lines.push(`| \`inject()\` — constructor DI → \`inject()\` | ${check(report.modernize.inject)} |`);
     lines.push(`| Signals — \`@Input\`/\`@Output\`/\`@ViewChild\` → signal APIs | ${check(report.modernize.signals)} |`);
     lines.push(`| \`UntypedForm*\` → typed \`FormBuilder\`/\`FormGroup\`/\`FormControl\` | ${report.modernize.untypedFormsFixed > 0 ? `✅ ${report.modernize.untypedFormsFixed} file(s)` : '—'} |`);
-    lines.push(`| Standalone components (convert + prune + bootstrap) | ${check(report.modernize.standalone)} |`);
-    lines.push(`| \`standalone: true\` patched in pipes/directives | ${report.modernize.standaloneFixed > 0 ? `✅ ${report.modernize.standaloneFixed} file(s)` : '—'} |`);
+    lines.push(`| \`throwError(value)\` → \`throwError(() => value)\` (RxJS 7) | ${report.modernize.throwErrorFixed > 0 ? `✅ ${report.modernize.throwErrorFixed} file(s)` : '—'} |`);
+    lines.push(`| Standalone components (convert → prune → bootstrap) | ${check(report.modernize.standalone)} |`);
+    lines.push(`| \`standalone: true\` patched in missed pipes/directives/components | ${report.modernize.standaloneFixed > 0 ? `✅ ${report.modernize.standaloneFixed} file(s)` : '—'} |`);
     lines.push(`| \`app.config.ts\` with functional providers | ${check(report.modernize.appConfig)} |`);
     lines.push(`| \`app.routes.ts\` extracted from routing module | ${check(report.modernize.appRoutes)} |`);
-    lines.push(`| Lazy NgModules → routes files (prevents NG0200) | ${report.modernize.lazyRoutesConverted > 0 ? `✅ ${report.modernize.lazyRoutesConverted} module(s)` : '—'} |`);
-    lines.push(`| \`main.ts\` simplified | ${check(report.modernize.mainSimplified)} |`);
-    lines.push(`| Builder → esbuild/application (Vite) | ${check(report.modernize.builder)} |`);
-    lines.push(`| Path aliases in \`tsconfig.json\` | ${check(report.modernize.pathAliases)} |`);
-    lines.push(`| SCSS \`@import\` → \`@use as *\` | ${report.modernize.sassImports > 0 ? `✅ ${report.modernize.sassImports} file(s)` : '—'} |`);
+    lines.push(`| Lazy NgModules → routes files (fixes NG0200 circular dep) | ${report.modernize.lazyRoutesConverted > 0 ? `✅ ${report.modernize.lazyRoutesConverted} module(s)` : '—'} |`);
+    lines.push(`| \`main.ts\` simplified to \`bootstrapApplication()\` | ${check(report.modernize.mainSimplified)} |`);
+    lines.push(`| Builder → esbuild/Vite (\`application\` builder) | ${check(report.modernize.builder)} |`);
+    lines.push(`| \`polyfills.ts\` → \`"zone.js"\` inline em \`angular.json\` | ${check(report.modernize.polyfillsInlined)} |`);
+    lines.push(`| \`styleUrls: []\` → \`styleUrl\` singular (Angular 19) | ${report.modernize.styleUrlFixed > 0 ? `✅ ${report.modernize.styleUrlFixed} file(s)` : '—'} |`);
+    lines.push(`| Path aliases (\`@app\`, \`@core\`, \`@shared\`…) no \`tsconfig.json\` | ${check(report.modernize.pathAliases)} |`);
+    lines.push(`| SCSS \`@import\` → \`@use … as *\` | ${report.modernize.sassImports > 0 ? `✅ ${report.modernize.sassImports} file(s)` : '—'} |`);
     lines.push(`| Unused \`.module.ts\` files removed | ${report.modernize.modulesRemoved > 0 ? `✅ ${report.modernize.modulesRemoved} file(s)` : '—'} |`);
     lines.push(``);
   }
@@ -910,28 +1144,45 @@ function writeReport() {
     lines.push(``);
   }
 
-  // Manual action items
-  lines.push(`## Recommended manual actions`);
+  // Manual action items — grouped by priority
+  lines.push(`## What to do next`);
   lines.push(``);
-  lines.push(`- [ ] Run \`ng build\` and fix any remaining compilation errors`);
-  lines.push(`- [ ] Run \`ng serve\` and test the application`);
-  lines.push(`- [ ] Convert internal component state to signals manually (\`isLoading\`, \`data\`, etc.) — no official schematic exists`);
-  lines.push(`- [ ] Review \`viewChild()\` calls: use \`viewChild.required()\` when the element is always present in the DOM (not inside \`@if\`/\`*ngIf\`), giving you a non-nullable signal type`);
-  if (report.modernize.untypedFormsFixed > 0) {
-    lines.push(`- [ ] Review typed forms migration: \`UntypedForm*\` replaced with typed equivalents. Run \`ng build\` to catch type errors in \`form.get('field')\` calls and add explicit types where needed`);
-  }
+
+  lines.push(`### 🔴 Verify first (may block the build)`);
+  lines.push(``);
+  lines.push(`- [ ] Run \`ng build\` — fix any TypeScript errors before continuing`);
+  lines.push(`- [ ] Run \`ng serve\` — smoke-test the app at runtime`);
   if (report.modernize.standalone) {
-    lines.push(`- [ ] Check for **NG0302** errors: the standalone migration occasionally misses adding pipes/directives to a component's \`imports\`. Fix: add the missing pipe/directive to the \`@Component({ imports: [...] })\` of the affected component`);
+    lines.push(`- [ ] **NG0302** — If you see "Component X is not a known element", add the missing component/pipe/directive to the \`imports: []\` array of the component that uses it`);
+  }
+  if (report.modernize.untypedFormsFixed > 0) {
+    lines.push(`- [ ] **Typed forms** — \`UntypedForm*\` was replaced with typed equivalents. \`ng build\` will surface any \`form.get('field')\` calls that now need an explicit generic type`);
+  }
+  lines.push(``);
+
+  lines.push(`### 🟠 High priority`);
+  lines.push(``);
+  lines.push(`- [ ] **Signals** — Convert internal component state to \`signal()\` manually (\`isLoading\`, \`items\`, etc.) — no official schematic exists for this`);
+  lines.push(`- [ ] **viewChild.required()** — Use \`viewChild.required(Foo)\` when the queried element is always present in the DOM (not inside \`@if\`/\`*ngIf\`). It gives you a non-nullable \`Signal<T>\` instead of \`Signal<T | undefined>\``);
+  lines.push(`- [ ] **Memory leaks** — Review \`valueChanges.subscribe()\` and other long-lived observables. Add \`.pipe(takeUntilDestroyed(this.destroyRef))\` to avoid leaks when the component is destroyed`);
+  if (report.notes.some(n => n.includes('importProvidersFrom'))) {
+    lines.push(`- [ ] **importProvidersFrom()** in \`app.config.ts\` — convert remaining NgModule wrappers to functional providers (\`provideHttpClient()\`, \`provideRouter()\`, etc.)`);
+  }
+  lines.push(``);
+
+  lines.push(`### 🟡 Medium priority`);
+  lines.push(``);
+  if (report.modernize.standalone) {
     if (report.modernize.lazyRoutesConverted > 0) {
-      lines.push(`- [ ] Lazy NgModule routes were converted to routes files. Consider further optimizing leaf routes to \`loadComponent\` for granular code splitting`);
+      lines.push(`- [ ] **Lazy routes** — NgModule-based routes were converted to routes files. Consider \`loadComponent\` for leaf routes to reduce bundle granularity further`);
     } else {
-      lines.push(`- [ ] Check for remaining \`loadChildren: () => import('./module')\` calls pointing to NgModules — convert to routes files or \`loadComponent\``);
+      lines.push(`- [ ] **Lazy routes** — Check for \`loadChildren: () => import('./foo.module')\` still pointing to NgModules. Convert to \`.routes.ts\` files or \`loadComponent\``);
     }
   }
-  if (report.notes.some(n => n.includes('importProvidersFrom'))) {
-    lines.push(`- [ ] Review \`importProvidersFrom()\` calls in \`app.config.ts\` and convert remaining modules to functional providers`);
+  lines.push(`- [ ] **ChangeDetectionStrategy.OnPush** — Add \`changeDetection: ChangeDetectionStrategy.OnPush\` to components that only update via signal/async inputs, especially those rendering large lists`);
+  if (existsSync(join(destPath, 'src', 'app', 'app-routing.module.ts'))) {
+    lines.push(`- [ ] Delete \`app-routing.module.ts\` — routes are now in \`app.routes.ts\``);
   }
-  lines.push(`- [ ] Delete \`app-routing.module.ts\` once routes are verified via \`app.routes.ts\``);
   lines.push(``);
 
   // Files changed (git diff --stat between initial snapshot and HEAD)
