@@ -1271,7 +1271,6 @@ function writeStatusHtml() {
 <html lang="pt">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="4">
   <title>ng-migrator — Migration Status</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -1448,6 +1447,44 @@ function writeStatusHtml() {
   </div>
 
 </main>
+
+<script>
+(function(){
+  // Polling via fetch — não faz reload da página, preserva estado dos <details>
+  setInterval(async () => {
+    try {
+      // Salva quais details estão abertos pelo texto do label da linha
+      const openKeys = new Set(
+        [...document.querySelectorAll('details[open]')].map(el => {
+          const label = el.closest('tr')?.querySelector('td:nth-child(2)')?.textContent?.trim();
+          return label ?? el.previousElementSibling?.textContent?.trim();
+        }).filter(Boolean)
+      );
+
+      const res = await fetch(location.href + '?_t=' + Date.now());
+      if (!res.ok) return;
+      const html = await res.text();
+      const doc  = new DOMParser().parseFromString(html, 'text/html');
+
+      // Atualiza main sem tocar no estado dos details
+      const newMain = doc.querySelector('main');
+      const curMain = document.querySelector('main');
+      if (newMain && curMain) curMain.innerHTML = newMain.innerHTML;
+
+      // Atualiza timestamp no header
+      const newTs = doc.querySelector('.ts');
+      const curTs = document.querySelector('.ts');
+      if (newTs && curTs) curTs.textContent = newTs.textContent;
+
+      // Restaura details que estavam abertos
+      document.querySelectorAll('details').forEach(el => {
+        const label = el.closest('tr')?.querySelector('td:nth-child(2)')?.textContent?.trim();
+        if (label && openKeys.has(label)) el.open = true;
+      });
+    } catch(_) {}
+  }, 4000);
+})();
+</script>
 </body>
 </html>`;
 
