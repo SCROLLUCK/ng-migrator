@@ -456,6 +456,26 @@ function syncVersions(targetVersion) {
     }
   }
 
+  // eslint: @angular-eslint@18+ exige eslint@8+. Remove duplicata em dependencies se houver.
+  const eslintDep = pkg.dependencies?.eslint;
+  const eslintDev = pkg.devDependencies?.eslint;
+  if (eslintDep && eslintDev) {
+    // eslint nunca deve estar em dependencies — é ferramenta de dev
+    delete pkg.dependencies.eslint;
+    console.log('  ↳ eslint removido de dependencies (duplicata — mantido em devDependencies)');
+    changed = true;
+  }
+  if (targetVersion >= 18) {
+    const eslintTarget = pkg.devDependencies?.eslint ?? pkg.dependencies?.eslint;
+    if (eslintTarget && getMajor(eslintTarget) < 9) {
+      if (!pkg.devDependencies) pkg.devDependencies = {};
+      pkg.devDependencies.eslint = '^9.0.0';
+      if (pkg.dependencies?.eslint) delete pkg.dependencies.eslint;
+      console.log(`  ↳ eslint: ${getMajor(eslintTarget)} → 9 (@angular-eslint@18+ exige ^8.57+)`);
+      changed = true;
+    }
+  }
+
   // rxjs: garante v7 a partir do Angular 14+
   if (targetVersion >= 14 && pkg.dependencies?.rxjs) {
     if (getMajor(pkg.dependencies.rxjs) < 7) {
@@ -477,6 +497,52 @@ function syncVersions(targetVersion) {
 
   if (changed) writeJson(pkgPath, pkg);
   // Não chama npmInstall() aqui — o loop principal faz isso após syncVersions()
+}
+
+// Verifica se todos os tsConfig referenciados no angular.json existem.
+// O ng update de versões intermediárias pode deslocar ou remover referências.
+function verifyTsconfigPaths() {
+  const ngPath = join(destPath, 'angular.json');
+  if (!existsSync(ngPath)) return;
+  let ng; try { ng = readJson(ngPath); } catch { return; }
+
+  // Garante tsconfig.json na raiz
+  const rootTs = join(destPath, 'tsconfig.json');
+  if (!existsSync(rootTs)) {
+    writeJson(rootTs, {
+      compileOnSave: false,
+      compilerOptions: {
+        outDir: './dist/out-tsc', strict: true, sourceMap: true,
+        experimentalDecorators: true, moduleResolution: 'node',
+        importHelpers: true, target: 'ES2022', module: 'ES2022',
+        useDefineForClassFields: false, lib: ['ES2022', 'dom'],
+      },
+      angularCompilerOptions: {
+        enableI18nLegacyMessageIdFormat: false,
+        strictInjectionParameters: true, strictInputAccessModifiers: true, strictTemplates: true,
+      },
+    });
+    console.log('  ↳ tsconfig.json criado (estava ausente)');
+  }
+
+  let changed = false;
+  function checkOpts(opts) {
+    if (!opts || typeof opts !== 'object') return;
+    for (const key of ['tsConfig']) {
+      if (!opts[key]) continue;
+      if (!existsSync(join(destPath, opts[key]))) {
+        const base = String(opts[key]).split('/').pop();
+        if (existsSync(join(destPath, base))) {
+          console.log(`  ↳ angular.json tsConfig: ${opts[key]} → ${base}`);
+          opts[key] = base; changed = true;
+        }
+      }
+    }
+    for (const cfg of Object.values(opts.configurations ?? {})) checkOpts(cfg);
+  }
+  for (const proj of Object.values(ng.projects ?? {}))
+    for (const tgt of Object.values(proj.architect ?? {})) checkOpts(tgt.options);
+  if (changed) writeJson(ngPath, ng);
 }
 
 // ─── Material legacy → MDC ───────────────────────────────────────────────────
@@ -2044,6 +2110,7 @@ for (let v = startVersion; v <= opts.to; v++) {
     fixLegacyMaterial();
   }
 
+  verifyTsconfigPaths();
   const result = run(`npx ng update ${packages} --allow-dirty --force`, { ignoreError: true });
   const ok = result.status === 0;
 
