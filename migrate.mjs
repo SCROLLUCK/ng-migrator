@@ -70,6 +70,8 @@ const report = {
     mainSimplified: false,
     builder: false,
     pathAliases: false,
+    tsconfigModernized: false,
+    eslintAdded: false,
     sassImports: 0,
     modulesRemoved: 0,
   },
@@ -707,6 +709,49 @@ function migrateToApplicationBuilder() {
   run('npx ng update @angular/cli --name use-application-builder --force --allow-dirty', { ignoreError: true });
 }
 
+// ─── Moderniza tsconfig.json (ES2022 / bundler) ───────────────────────────────
+
+function modernizeTsconfig() {
+  const tsconfigPath = join(destPath, 'tsconfig.json');
+  if (!existsSync(tsconfigPath)) return false;
+  const tsconfig = readJson(tsconfigPath);
+  if (!tsconfig.compilerOptions) tsconfig.compilerOptions = {};
+  const co = tsconfig.compilerOptions;
+  const changes = [];
+
+  const modernTargets = ['ES2022', 'ES2023', 'ES2024', 'ESNext'];
+  if (!modernTargets.includes(co.target)) { co.target = 'ES2022'; changes.push('target→ES2022'); }
+  if (!modernTargets.includes(co.module)) { co.module = 'ES2022'; changes.push('module→ES2022'); }
+  if (co.moduleResolution !== 'bundler') { co.moduleResolution = 'bundler'; changes.push('moduleResolution→bundler'); }
+  if (co.useDefineForClassFields !== false) { co.useDefineForClassFields = false; changes.push('useDefineForClassFields→false'); }
+
+  if (changes.length) {
+    writeJson(tsconfigPath, tsconfig);
+    console.log(`  ↳ tsconfig.json: ${changes.join(', ')}`);
+  } else {
+    console.log('  ↳ tsconfig.json já está moderno');
+  }
+  return changes.length > 0;
+}
+
+// ─── ESLint via @angular/eslint ───────────────────────────────────────────────
+
+function addEslint() {
+  const hasEslint = existsSync(join(destPath, '.eslintrc.json'))
+    || existsSync(join(destPath, 'eslint.config.js'))
+    || existsSync(join(destPath, 'eslint.config.mjs'));
+  if (hasEslint) { console.log('  ↳ ESLint já configurado'); return false; }
+
+  run('npx ng add @angular/eslint --skip-confirmation', { ignoreError: true });
+
+  const added = existsSync(join(destPath, '.eslintrc.json'))
+    || existsSync(join(destPath, 'eslint.config.js'))
+    || existsSync(join(destPath, 'eslint.config.mjs'));
+  if (added) console.log('  ↳ @angular/eslint configurado');
+  else console.log('  ↳ ESLint: ng add falhou — adicione manualmente com: ng add @angular/eslint');
+  return added;
+}
+
 // ─── Path aliases no tsconfig ─────────────────────────────────────────────────
 
 function addTsconfigPathAliases() {
@@ -1072,10 +1117,18 @@ function runModernizationMigrations() {
   console.log(`\n  🔄 polyfills  (inline zone.js em angular.json)...`);
   report.modernize.polyfillsInlined = inlinePolyfills();
 
-  // 6. Path aliases
+  // 6. Moderniza tsconfig (ES2022 / bundler / useDefineForClassFields)
+  console.log(`\n  🔄 tsconfig  (ES2022, moduleResolution→bundler)...`);
+  report.modernize.tsconfigModernized = modernizeTsconfig();
+
+  // 6b. Path aliases
   console.log(`\n  🔄 path aliases no tsconfig...`);
   addTsconfigPathAliases();
   report.modernize.pathAliases = true;
+
+  // 6c. ESLint
+  console.log(`\n  🔄 ESLint  (@angular/eslint)...`);
+  report.modernize.eslintAdded = addEslint();
 
   // 7. SCSS @import → @use as *
   console.log(`\n  🔄 SCSS  (@import → @use as *)...`);
@@ -1159,7 +1212,9 @@ function writeReport() {
     lines.push(`| Builder → esbuild/Vite (\`application\` builder) | ${check(report.modernize.builder)} |`);
     lines.push(`| \`polyfills.ts\` → \`"zone.js"\` inline em \`angular.json\` | ${check(report.modernize.polyfillsInlined)} |`);
     lines.push(`| \`styleUrls: []\` → \`styleUrl\` singular (Angular 19) | ${report.modernize.styleUrlFixed > 0 ? `✅ ${report.modernize.styleUrlFixed} file(s)` : '—'} |`);
+    lines.push(`| \`tsconfig.json\` — ES2022 target/module, \`moduleResolution: "bundler"\` | ${check(report.modernize.tsconfigModernized)} |`);
     lines.push(`| Path aliases (\`@app\`, \`@core\`, \`@shared\`…) no \`tsconfig.json\` | ${check(report.modernize.pathAliases)} |`);
+    lines.push(`| ESLint (\`@angular/eslint\`) | ${check(report.modernize.eslintAdded)} |`);
     lines.push(`| SCSS \`@import\` → \`@use … as *\` | ${report.modernize.sassImports > 0 ? `✅ ${report.modernize.sassImports} file(s)` : '—'} |`);
     lines.push(`| Unused \`.module.ts\` files removed | ${report.modernize.modulesRemoved > 0 ? `✅ ${report.modernize.modulesRemoved} file(s)` : '—'} |`);
     lines.push(``);
@@ -1209,6 +1264,9 @@ function writeReport() {
 
   lines.push(`### 🟡 Medium priority`);
   lines.push(``);
+  if (!report.modernize.eslintAdded) {
+    lines.push(`- [ ] **ESLint** — Run \`ng add @angular/eslint\` to enable linting (TSLint was removed during migration)`);
+  }
   if (report.modernize.standalone) {
     if (report.modernize.lazyRoutesConverted > 0) {
       lines.push(`- [ ] **Lazy routes** — NgModule-based routes were converted to routes files. Consider \`loadComponent\` for leaf routes to reduce bundle granularity further`);
