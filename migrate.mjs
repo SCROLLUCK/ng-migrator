@@ -368,6 +368,11 @@ function syncVersions(targetVersion) {
   const pkg = readJson(pkgPath);
   let changed = false;
 
+  // Estes pacotes usam esquema 0.NNxx.y (ex: architect v12 = 0.1200.7), não ^12.0.0
+  const DEVKIT_ZERO_VERSIONED = new Set([
+    '@angular-devkit/architect', '@angular-devkit/build-optimizer',
+  ]);
+
   const ANGULAR_PKGS = [
     '@angular/animations', '@angular/cdk', '@angular/cli',
     '@angular/common', '@angular/compiler', '@angular/compiler-cli',
@@ -377,6 +382,10 @@ function syncVersions(targetVersion) {
     '@angular/router',
     '@angular-devkit/build-angular', '@angular-devkit/architect',
     '@angular-devkit/core', '@angular-devkit/build-optimizer',
+    // angular-eslint acompanha a versão do Angular (versionamento major normal)
+    '@angular-eslint/builder', '@angular-eslint/eslint-plugin',
+    '@angular-eslint/eslint-plugin-template', '@angular-eslint/schematics',
+    '@angular-eslint/template-parser', '@angular-eslint/utils',
   ];
 
   for (const section of ['dependencies', 'devDependencies']) {
@@ -385,7 +394,11 @@ function syncVersions(targetVersion) {
       if (!pkg[section][name]) continue;
       const current = getEffectiveMajor(pkg[section][name]);
       if (current > 0 && current < targetVersion) {
-        pkg[section][name] = `^${targetVersion}.0.0`;
+        // Pacotes com esquema 0.NNxx.y precisam de formato especial
+        const targetStr = DEVKIT_ZERO_VERSIONED.has(name)
+          ? `~0.${targetVersion}00.0`
+          : `^${targetVersion}.0.0`;
+        pkg[section][name] = targetStr;
         console.log(`  ↳ ${name}: ${current} → ${targetVersion} (forçado)`);
         changed = true;
       }
@@ -403,7 +416,7 @@ function syncVersions(targetVersion) {
     const tooOld = curMaj < floorMaj || (curMaj === floorMaj && curMin < floorMin);
     if (tooOld) {
       // Usa a versão "boa conhecida" para cada major Angular
-      const TS_TARGET = { 12:'~4.3.0',13:'~4.6.0',14:'~4.7.0',15:'~4.9.0',16:'~5.0.0',17:'~5.2.0',18:'~5.4.0',19:'~5.6.0',20:'~5.7.0',21:'~5.8.0' };
+      const TS_TARGET = { 12:'~4.3.5',13:'~4.6.0',14:'~4.7.0',15:'~4.9.0',16:'~5.0.0',17:'~5.2.0',18:'~5.4.0',19:'~5.6.0',20:'~5.7.0',21:'~5.8.0' };
       pkg.devDependencies.typescript = TS_TARGET[targetVersion];
       console.log(`  ↳ typescript: ${curTs} → ${TS_TARGET[targetVersion]} (forçado)`);
       changed = true;
