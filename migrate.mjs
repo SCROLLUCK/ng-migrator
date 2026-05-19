@@ -324,32 +324,47 @@ function cleanupLegacyFiles() {
   fixKarmaConf();
 }
 
+// Garante que os tsConfig referenciados no angular.json realmente existem no disco.
+// Estratégia: não move nem renomeia — cria uma cópia onde o angular.json espera,
+// procurando o arquivo na raiz ou em src/ como fallback.
 function fixTsconfigLocations(ngJson) {
-  const ngPath = join(destPath, 'angular.json');
-  const FILES = ['tsconfig.app.json', 'tsconfig.spec.json'];
-  for (const file of FILES) {
-    const srcLoc  = join(destPath, 'src', file);
-    const rootLoc = join(destPath, file);
-    if (!existsSync(srcLoc) || existsSync(rootLoc)) continue;
-    let content = readFileSync(srcLoc, 'utf8');
-    try {
-      const obj = JSON.parse(content);
-      if (obj.extends === '../tsconfig.json' || obj.extends === '../tsconfig') {
-        obj.extends = './tsconfig.json';
-        content = JSON.stringify(obj, null, 2);
-      }
-    } catch { }
-    writeFileSync(rootLoc, content);
-    unlinkSync(srcLoc);
-    console.log(`  ↳ src/${file} movido para a raiz (Angular 9+ espera na raiz)`);
-    if (ngJson) {
-      const oldRef = `src/${file}`;
-      const jsonStr = JSON.stringify(ngJson);
-      if (jsonStr.includes(oldRef)) {
-        const updated = JSON.parse(jsonStr.replaceAll(`"${oldRef}"`, `"${file}"`));
-        Object.assign(ngJson, updated);
-        writeJson(ngPath, ngJson);
-      }
+  if (!ngJson) return;
+
+  // Coleta todos os caminhos de tsConfig referenciados no angular.json
+  const refs = new Set();
+  function collectRefs(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    if (typeof obj.tsConfig === 'string') refs.add(obj.tsConfig);
+    for (const v of Object.values(obj)) if (typeof v === 'object') collectRefs(v);
+  }
+  collectRefs(ngJson);
+
+  for (const ref of refs) {
+    const expectedPath = join(destPath, ref);
+    if (existsSync(expectedPath)) continue;   // já existe onde angular.json espera
+
+    // Tenta encontrar o arquivo no local alternativo (raiz ↔ src/)
+    const basename = ref.split('/').pop();
+    const candidates = [
+      join(destPath, basename),
+      join(destPath, 'src', basename),
+    ].filter(p => p !== expectedPath);
+
+    for (const src of candidates) {
+      if (!existsSync(src)) continue;
+      // Copia para onde angular.json espera (mantém o original intacto)
+      let content = readFileSync(src, 'utf8');
+      // Corrige extends relativo se necessário
+      const rel = ref.startsWith('src/') ? '../tsconfig.json' : './tsconfig.json';
+      try {
+        const obj = JSON.parse(content);
+        const bad = ref.startsWith('src/') ? './tsconfig.json' : '../tsconfig.json';
+        if (obj.extends === bad) { obj.extends = rel; content = JSON.stringify(obj, null, 2); }
+      } catch { }
+      mkdirSync(join(destPath, ref.split('/').slice(0, -1).join('/') || '.'), { recursive: true });
+      writeFileSync(expectedPath, content);
+      console.log(`  ↳ ${ref} criado a partir de ${relative(destPath, src)}`);
+      break;
     }
   }
 }
@@ -499,14 +514,10 @@ function syncVersions(targetVersion) {
   // Não chama npmInstall() aqui — o loop principal faz isso após syncVersions()
 }
 
-// Verifica se todos os tsConfig referenciados no angular.json existem.
-// O ng update de versões intermediárias pode deslocar ou remover referências.
+// Antes de cada ng update: garante que tsconfig.json existe na raiz e que
+// todos os caminhos tsConfig do angular.json apontam para arquivos reais.
 function verifyTsconfigPaths() {
-  const ngPath = join(destPath, 'angular.json');
-  if (!existsSync(ngPath)) return;
-  let ng; try { ng = readJson(ngPath); } catch { return; }
-
-  // Garante tsconfig.json na raiz
+  // Garante tsconfig.json na raiz (algumas migrações o procuram diretamente lá)
   const rootTs = join(destPath, 'tsconfig.json');
   if (!existsSync(rootTs)) {
     writeJson(rootTs, {
@@ -522,27 +533,14 @@ function verifyTsconfigPaths() {
         strictInjectionParameters: true, strictInputAccessModifiers: true, strictTemplates: true,
       },
     });
-    console.log('  ↳ tsconfig.json criado (estava ausente)');
+    console.log('  ↳ tsconfig.json criado na raiz (estava ausente)');
   }
 
-  let changed = false;
-  function checkOpts(opts) {
-    if (!opts || typeof opts !== 'object') return;
-    for (const key of ['tsConfig']) {
-      if (!opts[key]) continue;
-      if (!existsSync(join(destPath, opts[key]))) {
-        const base = String(opts[key]).split('/').pop();
-        if (existsSync(join(destPath, base))) {
-          console.log(`  ↳ angular.json tsConfig: ${opts[key]} → ${base}`);
-          opts[key] = base; changed = true;
-        }
-      }
-    }
-    for (const cfg of Object.values(opts.configurations ?? {})) checkOpts(cfg);
-  }
-  for (const proj of Object.values(ng.projects ?? {}))
-    for (const tgt of Object.values(proj.architect ?? {})) checkOpts(tgt.options);
-  if (changed) writeJson(ngPath, ng);
+  // Cria arquivos onde o angular.json espera encontrá-los (sem alterar o angular.json)
+  const ngPath = join(destPath, 'angular.json');
+  if (!existsSync(ngPath)) return;
+  let ng; try { ng = readJson(ngPath); } catch { return; }
+  fixTsconfigLocations(ng);
 }
 
 // ─── Material legacy → MDC ───────────────────────────────────────────────────
@@ -1573,8 +1571,11 @@ function writeStatusHtml() {
     const items = files.map(({ path, action, lines: ls }) => {
       const badge = action === 'created' ? '<span class="tag new">new</span> '
                   : action === 'deleted' ? '<span class="tag del">del</span> ' : '';
-      const lineStr = ls?.length ? ` <span class="ln">:${formatRanges(ls)}</span>` : '';
-      return `<li>${badge}<code>${path}</code>${lineStr}</li>`;
+      const firstLine = ls?.[0] ?? 1;
+      const absPath   = join(destPath, path).replace(/\\/g, '/');
+      const vscodeUrl = `vscode://file/${absPath}:${firstLine}`;
+      const lineStr   = ls?.length ? ` <span class="ln">:${formatRanges(ls)}</span>` : '';
+      return `<li>${badge}<a href="${vscodeUrl}" title="Abrir no VS Code"><code>${path}</code></a>${lineStr}</li>`;
     }).join('');
     const n = files.length;
     return `<details><summary>${n} file${n !== 1 ? 's' : ''} ▾</summary><ul>${items}</ul></details>`;
@@ -1674,6 +1675,7 @@ function writeStatusHtml() {
     details[open] summary{margin-bottom:.3rem}
     details ul{list-style:none;margin-left:.2rem;padding:0}
     details li{font-size:.73rem;color:var(--muted);padding:.15rem 0;font-family:'Roboto Mono',monospace;display:flex;align-items:baseline;gap:.3rem}
+    details li a{color:inherit;text-decoration:none}details li a:hover code{color:var(--blue)}
     details code{color:#B0B0D0;background:#0A0A18;padding:1px 5px;border-radius:3px;font-size:.72rem;font-family:inherit}
     .ln{color:#4A4A70;font-size:.68rem}
     .tag{font-size:.65rem;font-weight:700;padding:0 4px;border-radius:3px;line-height:1.5}
