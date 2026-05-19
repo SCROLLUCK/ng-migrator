@@ -1056,18 +1056,22 @@ function runModernizationMigrations() {
   console.log(`\n  🔄 inject()  (constructor DI → inject())...`);
   run('npx ng generate @angular/core:inject-migration --defaults', { ignoreError: true });
   report.modernize.inject = true;
+  writeReport(true);
 
   // 2. signals: @Input/@Output/@ViewChild → signal APIs
   console.log(`\n  🔄 signals  (@Input/@Output/@ViewChild → signal APIs)...`);
   run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
   report.modernize.signals = true;
+  writeReport(true);
 
   // 2b. UntypedForm* → typed forms (ponte de migração v14, obsoleta no v21)
   report.modernize.untypedFormsFixed = fixUntypedForms();
+  writeReport(true);
 
   // 2c. throwError() → factory function (RxJS 7)
   console.log(`\n  🔄 throwError  (RxJS 7 factory function)...`);
   report.modernize.throwErrorFixed = fixThrowError();
+  writeReport(true);
 
   // 3. standalone migration (3 passos obrigatórios em sequência)
   runUntilStable(
@@ -1079,10 +1083,12 @@ function runModernizationMigrations() {
   console.log(`\n  🔄 standalone  (standalone-bootstrap)...`);
   run('npx ng generate @angular/core:standalone-migration --mode standalone-bootstrap --defaults', { ignoreError: true });
   report.modernize.standalone = true;
+  writeReport(true);
 
   // 3b. Garante standalone: true em pipes/directives que o schematic ignorou
   console.log(`\n  🔄 standalone  (fix missing standalone: true in pipes/directives)...`);
   report.modernize.standaloneFixed = fixMissingStandalone();
+  writeReport(true);
 
   // 3c. control-flow: *ngIf/*ngFor/*ngSwitch → @if/@for/@switch
   runUntilStable(
@@ -1090,72 +1096,87 @@ function runModernizationMigrations() {
     'control-flow  (*ngIf/*ngFor → @if/@for)',
   );
   report.modernize.controlFlow = true;
+  writeReport(true);
 
   // 3d. [ngClass] → [class] bindings
   console.log(`\n  🔄 ngClass → class bindings...`);
   run('npx ng generate @angular/core:ngclass-to-class', { ignoreError: true });
   report.modernize.ngClassToClass = true;
+  writeReport(true);
 
   // 3e. [ngStyle] → [style] bindings
   console.log(`\n  🔄 ngStyle → style bindings...`);
   run('npx ng generate @angular/core:ngstyle-to-style --best-effort-mode', { ignoreError: true });
   report.modernize.ngStyleToStyle = true;
+  writeReport(true);
 
   // 4. app.config.ts + app.routes.ts
   console.log(`\n  🔄 app.config.ts + app.routes.ts...`);
   createAppConfigAndRoutes();
+  writeReport(true);
 
   // 4b. Lazy NgModule → routes file (resolve NG0200)
   console.log(`\n  🔄 lazy routes  (NgModule → routes file)...`);
   report.modernize.lazyRoutesConverted = convertLazyModulesToRoutes();
+  writeReport(true);
 
   // 5. Vite/esbuild builder
   migrateToApplicationBuilder();
   report.modernize.builder = true;
+  writeReport(true);
 
   // 5b. polyfills.ts → inline zone.js em angular.json
   console.log(`\n  🔄 polyfills  (inline zone.js em angular.json)...`);
   report.modernize.polyfillsInlined = inlinePolyfills();
+  writeReport(true);
 
   // 6. Moderniza tsconfig (ES2022 / bundler / useDefineForClassFields)
   console.log(`\n  🔄 tsconfig  (ES2022, moduleResolution→bundler)...`);
   report.modernize.tsconfigModernized = modernizeTsconfig();
+  writeReport(true);
 
   // 6b. Path aliases
   console.log(`\n  🔄 path aliases no tsconfig...`);
   addTsconfigPathAliases();
   report.modernize.pathAliases = true;
+  writeReport(true);
 
   // 6c. ESLint
   console.log(`\n  🔄 ESLint  (@angular/eslint)...`);
   report.modernize.eslintAdded = addEslint();
+  writeReport(true);
 
   // 7. SCSS @import → @use as *
   console.log(`\n  🔄 SCSS  (@import → @use as *)...`);
   report.modernize.sassImports = fixSassImports();
+  writeReport(true);
 
   // 8. Remove .module.ts que não são mais referenciados
   console.log(`\n  🔄 módulos  (removendo .module.ts obsoletos)...`);
   report.modernize.modulesRemoved = removeUnusedModules();
+  writeReport(true);
 
   // 9. styleUrls → styleUrl (Angular 19+)
   console.log(`\n  🔄 styleUrls → styleUrl...`);
   report.modernize.styleUrlFixed = fixStyleUrls();
+  writeReport(true);
 
   // 10. self-closing tags
   console.log(`\n  🔄 self-closing tags...`);
   run('npx ng generate @angular/core:self-closing-tag', { ignoreError: true });
   report.modernize.selfClosingTags = true;
+  writeReport(true);
 
   // 11. cleanup unused imports (deve rodar por último, após todas as migrações de template)
   console.log(`\n  🔄 cleanup unused imports...`);
   run('npx ng generate @angular/core:cleanup-unused-imports', { ignoreError: true });
   report.modernize.cleanupImports = true;
+  writeReport(true);
 }
 
 // ─── Relatório de migração ────────────────────────────────────────────────────
 
-function writeReport() {
+function writeReport(skipDiff = false) {
   const check = (v) => v ? '✅' : '—';
   const lines = [];
 
@@ -1280,8 +1301,8 @@ function writeReport() {
   }
   lines.push(``);
 
-  // Files changed (git diff --stat between initial snapshot and HEAD)
-  if (report.initialCommit) {
+  // Files changed (git diff --stat between initial snapshot and HEAD) — only on final write
+  if (!skipDiff && report.initialCommit) {
     const stat = capture(`git diff --stat ${report.initialCommit} HEAD -- ':(exclude)package-lock.json'`);
     if (stat) {
       lines.push(`## Files changed`);
@@ -1305,7 +1326,7 @@ function writeReport() {
 
   const reportPath = join(destPath, 'MIGRATION-REPORT.md');
   writeFileSync(reportPath, lines.join('\n'));
-  console.log(`\n  📄 Relatório gravado em: ${reportPath}`);
+  if (!skipDiff) console.log(`\n  📄 Relatório final gravado em: ${reportPath}`);
 }
 
 // ─── Pacotes extras por versão ───────────────────────────────────────────────
@@ -1369,6 +1390,7 @@ report.initialCommit = capture('git rev-parse HEAD');
 // 4. Instala dependências da versão atual
 const detectedVersion = opts.from ?? getInstalledMajor('@angular/core');
 report.sourceVersion = detectedVersion || null;
+writeReport(true);  // primeiro snapshot — abre o arquivo no destino
 console.log(`\n📦 Versão detectada: Angular ${detectedVersion || '?'}`);
 console.log('📦 Instalando dependências...');
 if (npmInstall().status !== 0) {
@@ -1409,6 +1431,7 @@ for (let v = startVersion; v <= opts.to; v++) {
 
   steps.push({ version: v, ok });
   report.ngUpdateSteps.push({ version: v, ok });
+  writeReport(true);
 }
 
 // 6. Modernização: inject() + signals + output()
