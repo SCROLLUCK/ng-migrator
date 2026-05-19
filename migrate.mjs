@@ -271,7 +271,52 @@ function cleanupLegacyFiles() {
 
   if (changed) writeJson(ngPath, ng);
 
+  fixTsconfigLocations(ng);
   fixKarmaConf();
+}
+
+// Angular 6-8 colocava tsconfig.app.json e tsconfig.spec.json dentro de src/.
+// A partir do Angular 9 eles foram para a raiz. Schematics de versões posteriores
+// não os encontram em src/ e falham silenciosamente.
+function fixTsconfigLocations(ngJson) {
+  const ngPath = join(destPath, 'angular.json');
+  const FILES = ['tsconfig.app.json', 'tsconfig.spec.json'];
+  let ngChanged = false;
+
+  for (const file of FILES) {
+    const srcLoc  = join(destPath, 'src', file);
+    const rootLoc = join(destPath, file);
+    if (!existsSync(srcLoc) || existsSync(rootLoc)) continue;
+
+    // Lê e corrige o extends: "../tsconfig.json" → "./tsconfig.json"
+    let content = readFileSync(srcLoc, 'utf8');
+    try {
+      const obj = JSON.parse(content);
+      if (obj.extends === '../tsconfig.json' || obj.extends === '../tsconfig') {
+        obj.extends = './tsconfig.json';
+        content = JSON.stringify(obj, null, 2);
+      }
+    } catch { /* mantém original */ }
+
+    writeFileSync(rootLoc, content);
+    unlinkSync(srcLoc);
+    console.log(`  ↳ ${file}: src/ → raiz (Angular 9+ layout)`);
+
+    // Atualiza referências no angular.json: "src/tsconfig.app.json" → "tsconfig.app.json"
+    if (ngJson) {
+      const oldRef = `src/${file}`;
+      const jsonStr = JSON.stringify(ngJson);
+      if (jsonStr.includes(oldRef)) {
+        const updated = JSON.parse(jsonStr.replaceAll(`"${oldRef}"`, `"${file}"`));
+        Object.assign(ngJson, updated);
+        writeJson(ngPath, ngJson);
+        ngChanged = true;
+        console.log(`  ↳ angular.json: "${oldRef}" → "${file}"`);
+      }
+    }
+  }
+
+  if (ngChanged) console.log('  ↳ angular.json atualizado com novos paths de tsconfig');
 }
 
 function fixKarmaConf() {
