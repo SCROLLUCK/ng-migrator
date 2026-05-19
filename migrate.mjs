@@ -70,63 +70,16 @@ const report = {
     mainSimplified: false,
     builder: false,
     pathAliases: false,
-    tsconfigModernized: false,
-    eslintAdded: false,
     sassImports: 0,
     modulesRemoved: 0,
   },
   filesCreated: [],
   notes: [],
-  details: {},   // key → [{path, action, lines}]
 };
 
 // ─── Utilitários de arquivo ───────────────────────────────────────────────────
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.angular', 'coverage', '.cache', 'e2e']);
-
-// ─── Helpers de diff / tracking ──────────────────────────────────────────────
-
-function parseAddedLines(diffText) {
-  const lines = [];
-  let cur = 0;
-  for (const line of (diffText ?? '').split('\n')) {
-    const m = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (m) { cur = parseInt(m[1]) - 1; continue; }
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
-    if (line.startsWith('+')) lines.push(cur + 1);
-    if (!line.startsWith('-')) cur++;
-  }
-  return [...new Set(lines)];
-}
-
-function formatRanges(lines) {
-  if (!lines?.length) return '';
-  const sorted = [...new Set(lines)].sort((a, b) => a - b);
-  const ranges = [];
-  let s = sorted[0], e = sorted[0];
-  for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i] === e + 1) { e = sorted[i]; }
-    else { ranges.push(s === e ? `${s}` : `${s}–${e}`); s = e = sorted[i]; }
-  }
-  ranges.push(s === e ? `${s}` : `${s}–${e}`);
-  return ranges.join(', ');
-}
-
-function captureGitDiff(h0, h1) {
-  if (!h0 || !h1 || h0 === h1) return [];
-  const raw = capture(`git diff ${h0} ${h1} --name-status -- ':!package-lock.json'`);
-  if (!raw) return [];
-  const result = [];
-  for (const line of raw.split('\n').filter(Boolean)) {
-    const parts = line.split('\t');
-    const status = parts[0][0];          // A/M/D/R
-    const path = parts[parts.length - 1];
-    if (status === 'D') { result.push({ path, action: 'deleted', lines: [] }); continue; }
-    const diff = capture(`git diff ${h0} ${h1} -- "${path}"`);
-    result.push({ path, action: status === 'A' ? 'created' : 'modified', lines: parseAddedLines(diff) });
-  }
-  return result;
-}
 
 function copyDir(src, dst) {
   mkdirSync(dst, { recursive: true });
@@ -357,6 +310,14 @@ function fixKarmaConf() {
 // ─── Sincroniza versões que o ng update não bumpa automaticamente ────────────
 // Garante que nenhum pacote @angular/* ficou para trás após o ng update.
 
+// @angular-devkit usava formato 0.NNxx.y antes do Angular 12 (ex: 0.1101.4 = v11).
+// getMajor() retornaria 0, impedindo o sync. Esta função extrai o major real.
+function getEffectiveMajor(versionStr) {
+  const legacy = String(versionStr).match(/^[~^]?0\.(1[0-9]{3})\./);
+  if (legacy) return Math.floor(parseInt(legacy[1]) / 100);
+  return getMajor(versionStr);
+}
+
 function syncVersions(targetVersion) {
   const pkgPath = join(destPath, 'package.json');
   const pkg = readJson(pkgPath);
@@ -366,21 +327,41 @@ function syncVersions(targetVersion) {
     '@angular/animations', '@angular/cdk', '@angular/cli',
     '@angular/common', '@angular/compiler', '@angular/compiler-cli',
     '@angular/core', '@angular/forms', '@angular/language-service',
-    '@angular/material', '@angular/platform-browser',
-    '@angular/platform-browser-dynamic', '@angular/router',
-    '@angular-devkit/build-angular',
+    '@angular/material', '@angular/material-moment-adapter',
+    '@angular/platform-browser', '@angular/platform-browser-dynamic',
+    '@angular/router',
+    '@angular-devkit/build-angular', '@angular-devkit/architect',
+    '@angular-devkit/core', '@angular-devkit/build-optimizer',
   ];
 
   for (const section of ['dependencies', 'devDependencies']) {
     if (!pkg[section]) continue;
     for (const name of ANGULAR_PKGS) {
       if (!pkg[section][name]) continue;
-      const current = getMajor(pkg[section][name]);
+      const current = getEffectiveMajor(pkg[section][name]);
       if (current > 0 && current < targetVersion) {
         pkg[section][name] = `^${targetVersion}.0.0`;
         console.log(`  ↳ ${name}: ${current} → ${targetVersion} (forçado)`);
         changed = true;
       }
+    }
+  }
+
+  // TypeScript: ng update às vezes falha antes de atualizar o TS (ex: v12 com npm >6).
+  // Garante versão mínima compatível para evitar conflito de peer deps no npm install.
+  const TS_FLOOR = { 12:'4.2',13:'4.4',14:'4.6',15:'4.8',16:'4.9',17:'5.2',18:'5.3',19:'5.5',20:'5.5',21:'5.8' };
+  const tsFloor = TS_FLOOR[targetVersion];
+  if (tsFloor && pkg.devDependencies?.typescript) {
+    const curTs = pkg.devDependencies.typescript.replace(/[^0-9.]/g, '');
+    const [curMaj, curMin] = curTs.split('.').map(Number);
+    const [floorMaj, floorMin] = tsFloor.split('.').map(Number);
+    const tooOld = curMaj < floorMaj || (curMaj === floorMaj && curMin < floorMin);
+    if (tooOld) {
+      // Usa a versão "boa conhecida" para cada major Angular
+      const TS_TARGET = { 12:'~4.3.0',13:'~4.6.0',14:'~4.7.0',15:'~4.9.0',16:'~5.0.0',17:'~5.2.0',18:'~5.4.0',19:'~5.6.0',20:'~5.7.0',21:'~5.8.0' };
+      pkg.devDependencies.typescript = TS_TARGET[targetVersion];
+      console.log(`  ↳ typescript: ${curTs} → ${TS_TARGET[targetVersion]} (forçado)`);
+      changed = true;
     }
   }
 
@@ -754,49 +735,6 @@ function migrateToApplicationBuilder() {
   run('npx ng update @angular/cli --name use-application-builder --force --allow-dirty', { ignoreError: true });
 }
 
-// ─── Moderniza tsconfig.json (ES2022 / bundler) ───────────────────────────────
-
-function modernizeTsconfig() {
-  const tsconfigPath = join(destPath, 'tsconfig.json');
-  if (!existsSync(tsconfigPath)) return false;
-  const tsconfig = readJson(tsconfigPath);
-  if (!tsconfig.compilerOptions) tsconfig.compilerOptions = {};
-  const co = tsconfig.compilerOptions;
-  const changes = [];
-
-  const modernTargets = ['ES2022', 'ES2023', 'ES2024', 'ESNext'];
-  if (!modernTargets.includes(co.target)) { co.target = 'ES2022'; changes.push('target→ES2022'); }
-  if (!modernTargets.includes(co.module)) { co.module = 'ES2022'; changes.push('module→ES2022'); }
-  if (co.moduleResolution !== 'bundler') { co.moduleResolution = 'bundler'; changes.push('moduleResolution→bundler'); }
-  if (co.useDefineForClassFields !== false) { co.useDefineForClassFields = false; changes.push('useDefineForClassFields→false'); }
-
-  if (changes.length) {
-    writeJson(tsconfigPath, tsconfig);
-    console.log(`  ↳ tsconfig.json: ${changes.join(', ')}`);
-  } else {
-    console.log('  ↳ tsconfig.json já está moderno');
-  }
-  return changes.length > 0;
-}
-
-// ─── ESLint via @angular/eslint ───────────────────────────────────────────────
-
-function addEslint() {
-  const hasEslint = existsSync(join(destPath, '.eslintrc.json'))
-    || existsSync(join(destPath, 'eslint.config.js'))
-    || existsSync(join(destPath, 'eslint.config.mjs'));
-  if (hasEslint) { console.log('  ↳ ESLint já configurado'); return false; }
-
-  run('npx ng add @angular/eslint --skip-confirmation', { ignoreError: true });
-
-  const added = existsSync(join(destPath, '.eslintrc.json'))
-    || existsSync(join(destPath, 'eslint.config.js'))
-    || existsSync(join(destPath, 'eslint.config.mjs'));
-  if (added) console.log('  ↳ @angular/eslint configurado');
-  else console.log('  ↳ ESLint: ng add falhou — adicione manualmente com: ng add @angular/eslint');
-  return added;
-}
-
 // ─── Path aliases no tsconfig ─────────────────────────────────────────────────
 
 function addTsconfigPathAliases() {
@@ -1097,38 +1035,22 @@ function inlinePolyfills() {
 }
 
 function runModernizationMigrations() {
-  let prevHash = capture('git rev-parse HEAD');
-
-  // Grava o passo atual no git, captura o diff vs passo anterior e atualiza o relatório
-  function commitStep(key, label) {
-    run('git add -A');
-    run(`git commit --allow-empty -m "refactor: ${label ?? key}"`, { ignoreError: true });
-    const h = capture('git rev-parse HEAD');
-    report.details[key] = captureGitDiff(prevHash, h);
-    prevHash = h;
-    writeReport(true);
-  }
-
   // 1. inject(): constructor DI → inject()
   console.log(`\n  🔄 inject()  (constructor DI → inject())...`);
   run('npx ng generate @angular/core:inject-migration --defaults', { ignoreError: true });
   report.modernize.inject = true;
-  commitStep('inject', 'inject()');
 
   // 2. signals: @Input/@Output/@ViewChild → signal APIs
   console.log(`\n  🔄 signals  (@Input/@Output/@ViewChild → signal APIs)...`);
   run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
   report.modernize.signals = true;
-  commitStep('signals', 'signals');
 
   // 2b. UntypedForm* → typed forms (ponte de migração v14, obsoleta no v21)
   report.modernize.untypedFormsFixed = fixUntypedForms();
-  commitStep('untypedForms', 'untyped forms');
 
   // 2c. throwError() → factory function (RxJS 7)
   console.log(`\n  🔄 throwError  (RxJS 7 factory function)...`);
   report.modernize.throwErrorFixed = fixThrowError();
-  commitStep('throwError', 'throwError factory');
 
   // 3. standalone migration (3 passos obrigatórios em sequência)
   runUntilStable(
@@ -1140,12 +1062,10 @@ function runModernizationMigrations() {
   console.log(`\n  🔄 standalone  (standalone-bootstrap)...`);
   run('npx ng generate @angular/core:standalone-migration --mode standalone-bootstrap --defaults', { ignoreError: true });
   report.modernize.standalone = true;
-  commitStep('standalone', 'standalone migration');
 
   // 3b. Garante standalone: true em pipes/directives que o schematic ignorou
   console.log(`\n  🔄 standalone  (fix missing standalone: true in pipes/directives)...`);
   report.modernize.standaloneFixed = fixMissingStandalone();
-  commitStep('standaloneFixed', 'standalone: true patch');
 
   // 3c. control-flow: *ngIf/*ngFor/*ngSwitch → @if/@for/@switch
   runUntilStable(
@@ -1153,348 +1073,64 @@ function runModernizationMigrations() {
     'control-flow  (*ngIf/*ngFor → @if/@for)',
   );
   report.modernize.controlFlow = true;
-  commitStep('controlFlow', 'control-flow');
 
   // 3d. [ngClass] → [class] bindings
   console.log(`\n  🔄 ngClass → class bindings...`);
   run('npx ng generate @angular/core:ngclass-to-class', { ignoreError: true });
   report.modernize.ngClassToClass = true;
-  commitStep('ngClassToClass', 'ngClass → class');
 
   // 3e. [ngStyle] → [style] bindings
   console.log(`\n  🔄 ngStyle → style bindings...`);
   run('npx ng generate @angular/core:ngstyle-to-style --best-effort-mode', { ignoreError: true });
   report.modernize.ngStyleToStyle = true;
-  commitStep('ngStyleToStyle', 'ngStyle → style');
 
   // 4. app.config.ts + app.routes.ts
   console.log(`\n  🔄 app.config.ts + app.routes.ts...`);
   createAppConfigAndRoutes();
-  commitStep('appConfig', 'app.config.ts + app.routes.ts');
 
   // 4b. Lazy NgModule → routes file (resolve NG0200)
   console.log(`\n  🔄 lazy routes  (NgModule → routes file)...`);
   report.modernize.lazyRoutesConverted = convertLazyModulesToRoutes();
-  commitStep('lazyRoutes', 'lazy routes');
 
   // 5. Vite/esbuild builder
   migrateToApplicationBuilder();
   report.modernize.builder = true;
-  commitStep('builder', 'application builder');
 
   // 5b. polyfills.ts → inline zone.js em angular.json
   console.log(`\n  🔄 polyfills  (inline zone.js em angular.json)...`);
   report.modernize.polyfillsInlined = inlinePolyfills();
-  commitStep('polyfills', 'polyfills inline');
 
-  // 6. Moderniza tsconfig (ES2022 / bundler / useDefineForClassFields)
-  console.log(`\n  🔄 tsconfig  (ES2022, moduleResolution→bundler)...`);
-  report.modernize.tsconfigModernized = modernizeTsconfig();
-  commitStep('tsconfig', 'tsconfig ES2022/bundler');
-
-  // 6b. Path aliases
+  // 6. Path aliases
   console.log(`\n  🔄 path aliases no tsconfig...`);
   addTsconfigPathAliases();
   report.modernize.pathAliases = true;
-  commitStep('pathAliases', 'tsconfig path aliases');
-
-  // 6c. ESLint
-  console.log(`\n  🔄 ESLint  (@angular/eslint)...`);
-  report.modernize.eslintAdded = addEslint();
-  commitStep('eslint', 'ESLint');
 
   // 7. SCSS @import → @use as *
   console.log(`\n  🔄 SCSS  (@import → @use as *)...`);
   report.modernize.sassImports = fixSassImports();
-  commitStep('sass', 'SCSS @use');
 
   // 8. Remove .module.ts que não são mais referenciados
   console.log(`\n  🔄 módulos  (removendo .module.ts obsoletos)...`);
   report.modernize.modulesRemoved = removeUnusedModules();
-  commitStep('modules', 'remove unused modules');
 
   // 9. styleUrls → styleUrl (Angular 19+)
   console.log(`\n  🔄 styleUrls → styleUrl...`);
   report.modernize.styleUrlFixed = fixStyleUrls();
-  commitStep('styleUrl', 'styleUrls → styleUrl');
 
   // 10. self-closing tags
   console.log(`\n  🔄 self-closing tags...`);
   run('npx ng generate @angular/core:self-closing-tag', { ignoreError: true });
   report.modernize.selfClosingTags = true;
-  commitStep('selfClosing', 'self-closing tags');
 
   // 11. cleanup unused imports (deve rodar por último, após todas as migrações de template)
   console.log(`\n  🔄 cleanup unused imports...`);
   run('npx ng generate @angular/core:cleanup-unused-imports', { ignoreError: true });
   report.modernize.cleanupImports = true;
-  commitStep('cleanupImports', 'cleanup unused imports');
-}
-
-// ─── Status HTML (auto-refresh a cada 4s) — Angular design ──────────────────
-
-function writeStatusHtml() {
-  if (!existsSync(destPath)) return;
-
-  const now = new Date().toLocaleTimeString('pt-BR');
-  const totalVersions = opts.to - (report.sourceVersion || 11);
-  const doneVersions  = report.ngUpdateSteps.length;
-  const pct = totalVersions > 0 ? Math.round((doneVersions / totalVersions) * 100) : 0;
-  const m   = report.modernize;
-
-  const fileList = (key) => {
-    const files = report.details[key];
-    if (!files?.length) return '';
-    const items = files.map(({ path, action, lines: ls }) => {
-      const badge = action === 'created' ? '<span class="tag new">new</span> '
-                  : action === 'deleted' ? '<span class="tag del">del</span> ' : '';
-      const lineStr = ls?.length ? ` <span class="ln">:${formatRanges(ls)}</span>` : '';
-      return `<li>${badge}<code>${path}</code>${lineStr}</li>`;
-    }).join('');
-    const n = files.length;
-    return `<details><summary>${n} file${n !== 1 ? 's' : ''} ▾</summary><ul>${items}</ul></details>`;
-  };
-
-  const row = (label, done, key) => {
-    if (done === false) return '';   // skip not-yet-started rows while ng update still runs
-    const icon = done === null ? '<span class="spin">◌</span>' : done ? '✓' : '–';
-    const cls  = done === null ? 'row-pending' : done ? 'row-done' : 'row-skip';
-    const det  = key ? fileList(key) : '';
-    return `<tr class="${cls}">
-      <td class="ic">${icon}</td>
-      <td>${label}</td>
-      <td class="det">${det}</td>
-    </tr>`;
-  };
-
-  const html = `<!DOCTYPE html>
-<html lang="pt">
-<head>
-  <meta charset="utf-8">
-  <title>ng-migrator — Migration Status</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    :root{
-      --red:#DD0031;--red-dk:#C3002F;
-      --bg:#0F0F1A;--surf:#16162A;--surf2:#1E1E35;
-      --bdr:#2A2A45;--text:#E8E8F0;--muted:#7070A0;
-      --green:#4CAF50;--amber:#FF9800;--blue:#5CB8F5;
-    }
-    body{font-family:'Roboto',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-    a{color:var(--blue)}
-
-    /* ── Header ── */
-    header{
-      background:linear-gradient(135deg,var(--red-dk) 0%,var(--red) 60%,#E91E63 100%);
-      padding:.9rem 2rem;display:flex;align-items:center;gap:1rem;
-      box-shadow:0 2px 12px rgba(0,0,0,.5);
-    }
-    .logo-shield{width:28px;height:31px;flex-shrink:0}
-    .logo-text{font-size:1.15rem;font-weight:700;color:#fff;letter-spacing:-.3px}
-    .logo-sub{font-size:.78rem;color:rgba(255,255,255,.65);margin-top:1px}
-    .ts{margin-left:auto;font-size:.72rem;color:rgba(255,255,255,.55);white-space:nowrap}
-
-    /* ── Main layout — two-column dashboard ── */
-    main{
-      max-width:1600px;margin:0 auto;padding:1.5rem 2rem;
-      display:grid;
-      grid-template-columns:360px 1fr;
-      grid-template-rows:auto 1fr;
-      gap:1.25rem;
-      align-items:start;
-    }
-    .col-left{grid-column:1;display:flex;flex-direction:column;gap:1.25rem;position:sticky;top:1.5rem;max-height:calc(100vh - 3rem);overflow-y:auto}
-    .col-right{grid-column:2}
-
-    /* ── Cards ── */
-    .card{background:var(--surf);border:1px solid var(--bdr);border-radius:10px;overflow:hidden}
-    .card-head{
-      background:var(--surf2);border-bottom:1px solid var(--bdr);
-      padding:.55rem 1rem;display:flex;align-items:center;gap:.6rem;
-    }
-    .card-title{font-size:.72rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
-    .card-badge{
-      margin-left:auto;background:rgba(221,0,49,.18);color:var(--red);
-      border:1px solid rgba(221,0,49,.3);border-radius:4px;
-      font-size:.68rem;font-weight:600;padding:1px 7px;
-    }
-
-    /* ── Progress bar ── */
-    .prog-wrap{padding:.75rem 1rem;border-bottom:1px solid var(--bdr)}
-    .prog-track{background:var(--bdr);border-radius:99px;height:8px;overflow:hidden}
-    .prog-fill{background:linear-gradient(90deg,var(--red),#E91E63);height:100%;border-radius:99px;transition:width .5s ease}
-    .prog-label{font-size:.72rem;color:var(--muted);margin-top:.4rem}
-
-    /* ── Table ── */
-    table{width:100%;border-collapse:collapse}
-    tr{border-bottom:1px solid var(--bdr)}
-    tr:last-child{border-bottom:none}
-    td{padding:.5rem 1rem;font-size:.855rem;vertical-align:middle}
-    td.ic{width:2.2rem;text-align:center;font-size:1rem;padding-right:0}
-    td.det{color:var(--muted);font-size:.8rem;min-width:160px}
-
-    .row-done td:nth-child(2){color:var(--green)}
-    .row-done .ic{color:var(--green)}
-    .row-pending td:nth-child(2){color:var(--amber)}
-    .row-pending .ic{color:var(--amber)}
-    .row-skip td{opacity:.38}
-
-    @keyframes pulse{0%,100%{opacity:.3}50%{opacity:.8}}
-    .spin{animation:pulse 1.4s ease-in-out infinite;display:inline-block}
-
-    /* ── File details ── */
-    details{display:inline-block}
-    details summary{cursor:pointer;color:var(--blue);font-size:.78rem;list-style:none;user-select:none}
-    details summary::-webkit-details-marker{display:none}
-    details[open] summary{margin-bottom:.3rem}
-    details ul{list-style:none;margin-left:.2rem;padding:0}
-    details li{font-size:.73rem;color:var(--muted);padding:.15rem 0;font-family:'Roboto Mono',monospace;display:flex;align-items:baseline;gap:.3rem}
-    details code{color:#B0B0D0;background:#0A0A18;padding:1px 5px;border-radius:3px;font-size:.72rem;font-family:inherit}
-    .ln{color:#4A4A70;font-size:.68rem}
-    .tag{font-size:.65rem;font-weight:700;padding:0 4px;border-radius:3px;line-height:1.5}
-    .tag.new{background:rgba(76,175,80,.15);color:var(--green);border:1px solid rgba(76,175,80,.3)}
-    .tag.del{background:rgba(239,83,80,.15);color:#EF5350;border:1px solid rgba(239,83,80,.3)}
-  </style>
-</head>
-<body>
-
-<header>
-  <svg class="logo-shield" viewBox="0 0 250 300" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <polygon points="125,5 245,50 224,238 125,295 26,238 5,50"
-      fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.6)" stroke-width="10"/>
-    <path d="M125 52 L182 200 H163 L150 163 H100 L87 200 H68 Z M125 88 L145 150 H105 Z"
-      fill="white"/>
-  </svg>
-  <div>
-    <div class="logo-text">ng-migrator</div>
-    <div class="logo-sub">Angular ${report.sourceVersion ?? '?'} → ${report.targetVersion}</div>
-  </div>
-  <div class="ts">⟳ ${now}</div>
-</header>
-
-<main>
-
-  <div class="col-left">
-    <!-- ng update card -->
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">ng update</span>
-        <span class="card-badge">${doneVersions} / ${totalVersions} versions</span>
-      </div>
-      <div class="prog-wrap">
-        <div class="prog-track"><div class="prog-fill" style="width:${pct}%"></div></div>
-        <div class="prog-label">${pct}% complete</div>
-      </div>
-      <table>
-        ${report.ngUpdateSteps.map(s => `
-        <tr class="${s.ok ? 'row-done' : 'row-pending'}">
-          <td class="ic">${s.ok ? '✓' : '⚠'}</td>
-          <td>Angular ${s.version}</td>
-          <td class="det">${fileList(`ngUpdate_${s.version}`) || (s.ok ? '' : '<span style="color:var(--amber)">warnings</span>')}</td>
-        </tr>`).join('')}
-        ${Array.from({ length: Math.max(0, totalVersions - doneVersions) }, (_, i) => {
-          const v = (report.sourceVersion ?? 11) + doneVersions + i + 1;
-          return `<tr class="row-skip"><td class="ic">·</td><td>Angular ${v}</td><td class="det"></td></tr>`;
-        }).join('')}
-      </table>
-    </div>
-
-    <!-- Source info card -->
-    <div class="card">
-      <div class="card-head"><span class="card-title">Project</span></div>
-      <div style="padding:.65rem 1rem;font-size:.78rem;color:var(--muted);line-height:1.7;word-break:break-all">
-        <div><span style="color:var(--text)">Source</span> &nbsp;Angular ${report.sourceVersion ?? '?'}</div>
-        <div><span style="color:var(--text)">Target</span> &nbsp;Angular ${report.targetVersion}</div>
-        <div style="margin-top:.4rem;font-size:.71rem">${report.destPath}</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="col-right">
-    ${opts.modernize ? `
-    <!-- Modernization card -->
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">Modernization</span>
-        <span style="margin-left:auto;font-size:.72rem;color:var(--muted)">${
-          Object.keys(report.details).filter(k => !k.startsWith('ngUpdate_')).length
-        } steps completed</span>
-      </div>
-      <table>
-        ${row('inject() — constructor DI → inject()',             m.inject          ? true : (doneVersions >= totalVersions ? null : false), 'inject')}
-        ${row('Signals — @Input / @Output / @ViewChild → signal APIs', m.signals   ? true : (m.inject ? null : false),                       'signals')}
-        ${row('UntypedForm* → typed forms',                        m.untypedFormsFixed > 0 ? true : (m.signals ? null : false),              'untypedForms')}
-        ${row('throwError() → factory function (RxJS 7)',          m.throwErrorFixed > 0 ? true : (m.signals ? null : false),                'throwError')}
-        ${row('Standalone — convert → prune → bootstrap',          m.standalone      ? true : (m.signals ? null : false),                    'standalone')}
-        ${row('standalone: true patches in pipes / directives',    m.standaloneFixed > 0 ? true : (m.standalone ? null : false),            'standaloneFixed')}
-        ${row('Control flow — @if / @for / @switch',               m.controlFlow     ? true : (m.standalone ? null : false),                 'controlFlow')}
-        ${row('[ngClass] → [class]',                               m.ngClassToClass  ? true : (m.controlFlow ? null : false),                'ngClassToClass')}
-        ${row('[ngStyle] → [style]',                               m.ngStyleToStyle  ? true : (m.ngClassToClass ? null : false),             'ngStyleToStyle')}
-        ${row('app.config.ts + app.routes.ts',                     m.appConfig       ? true : (m.ngStyleToStyle ? null : false),             'appConfig')}
-        ${row('Lazy NgModules → routes files',                     m.lazyRoutesConverted > 0 ? true : (m.appConfig !== undefined ? null : false), 'lazyRoutes')}
-        ${row('Builder → esbuild / Vite',                          m.builder         ? true : (m.appConfig !== undefined ? null : false),    'builder')}
-        ${row('polyfills.ts → zone.js inline in angular.json',     m.polyfillsInlined ? true : (m.builder ? null : false),                  'polyfills')}
-        ${row('tsconfig — ES2022 / moduleResolution: bundler',     m.tsconfigModernized ? true : (m.builder ? null : false),                'tsconfig')}
-        ${row('Path aliases — @app / @core / @shared / @features', m.pathAliases     ? true : (m.tsconfigModernized !== undefined ? null : false), 'pathAliases')}
-        ${row('ESLint via @angular/eslint',                        m.eslintAdded     ? true : (m.pathAliases ? null : false),                'eslint')}
-        ${row('SCSS @import → @use as *',                         m.sassImports > 0 ? true : (m.eslintAdded !== undefined ? null : false),  'sass')}
-        ${row('Unused .module.ts files removed',                  m.modulesRemoved > 0 ? true : (m.sassImports !== undefined ? null : false), 'modules')}
-        ${row('styleUrls: [] → styleUrl (Angular 19)',            m.styleUrlFixed > 0 ? true : (m.modulesRemoved !== undefined ? null : false), 'styleUrl')}
-        ${row('Self-closing tags',                                m.selfClosingTags ? true : (m.styleUrlFixed !== undefined ? null : false), 'selfClosing')}
-        ${row('Cleanup unused component imports',                 m.cleanupImports  ? true : (m.selfClosingTags ? null : false),             'cleanupImports')}
-      </table>
-    </div>` : ''}
-  </div>
-
-</main>
-
-<script>
-(function(){
-  // Polling via fetch — não faz reload da página, preserva estado dos <details>
-  setInterval(async () => {
-    try {
-      // Salva quais details estão abertos pelo texto do label da linha
-      const openKeys = new Set(
-        [...document.querySelectorAll('details[open]')].map(el => {
-          const label = el.closest('tr')?.querySelector('td:nth-child(2)')?.textContent?.trim();
-          return label ?? el.previousElementSibling?.textContent?.trim();
-        }).filter(Boolean)
-      );
-
-      const res = await fetch(location.href + '?_t=' + Date.now());
-      if (!res.ok) return;
-      const html = await res.text();
-      const doc  = new DOMParser().parseFromString(html, 'text/html');
-
-      // Atualiza main sem tocar no estado dos details
-      const newMain = doc.querySelector('main');
-      const curMain = document.querySelector('main');
-      if (newMain && curMain) curMain.innerHTML = newMain.innerHTML;
-
-      // Atualiza timestamp no header
-      const newTs = doc.querySelector('.ts');
-      const curTs = document.querySelector('.ts');
-      if (newTs && curTs) curTs.textContent = newTs.textContent;
-
-      // Restaura details que estavam abertos
-      document.querySelectorAll('details').forEach(el => {
-        const label = el.closest('tr')?.querySelector('td:nth-child(2)')?.textContent?.trim();
-        if (label && openKeys.has(label)) el.open = true;
-      });
-    } catch(_) {}
-  }, 4000);
-})();
-</script>
-</body>
-</html>`;
-
-  writeFileSync(join(destPath, 'MIGRATION-STATUS.html'), html);
 }
 
 // ─── Relatório de migração ────────────────────────────────────────────────────
 
-function writeReport(skipDiff = false) {
-  if (skipDiff) writeStatusHtml();   // atualiza o HTML em tempo real
+function writeReport() {
   const check = (v) => v ? '✅' : '—';
   const lines = [];
 
@@ -1551,54 +1187,10 @@ function writeReport(skipDiff = false) {
     lines.push(`| Builder → esbuild/Vite (\`application\` builder) | ${check(report.modernize.builder)} |`);
     lines.push(`| \`polyfills.ts\` → \`"zone.js"\` inline em \`angular.json\` | ${check(report.modernize.polyfillsInlined)} |`);
     lines.push(`| \`styleUrls: []\` → \`styleUrl\` singular (Angular 19) | ${report.modernize.styleUrlFixed > 0 ? `✅ ${report.modernize.styleUrlFixed} file(s)` : '—'} |`);
-    lines.push(`| \`tsconfig.json\` — ES2022 target/module, \`moduleResolution: "bundler"\` | ${check(report.modernize.tsconfigModernized)} |`);
     lines.push(`| Path aliases (\`@app\`, \`@core\`, \`@shared\`…) no \`tsconfig.json\` | ${check(report.modernize.pathAliases)} |`);
-    lines.push(`| ESLint (\`@angular/eslint\`) | ${check(report.modernize.eslintAdded)} |`);
     lines.push(`| SCSS \`@import\` → \`@use … as *\` | ${report.modernize.sassImports > 0 ? `✅ ${report.modernize.sassImports} file(s)` : '—'} |`);
     lines.push(`| Unused \`.module.ts\` files removed | ${report.modernize.modulesRemoved > 0 ? `✅ ${report.modernize.modulesRemoved} file(s)` : '—'} |`);
     lines.push(``);
-
-    // Detalhes por step (arquivos e linhas modificadas)
-    const STEP_LABELS = {
-      inject:        '`inject()` — constructor DI → inject()',
-      signals:       'Signals — @Input/@Output/@ViewChild',
-      untypedForms:  '`UntypedForm*` → typed forms',
-      throwError:    '`throwError()` → factory function',
-      standalone:    'Standalone migration',
-      standaloneFixed: '`standalone: true` patch',
-      controlFlow:   'Control flow — @if/@for/@switch',
-      ngClassToClass:'`[ngClass]` → `[class]`',
-      ngStyleToStyle:'`[ngStyle]` → `[style]`',
-      appConfig:     '`app.config.ts` + `app.routes.ts`',
-      lazyRoutes:    'Lazy NgModules → routes files',
-      builder:       'Builder → esbuild/Vite',
-      polyfills:     '`polyfills.ts` → zone.js inline',
-      tsconfig:      '`tsconfig.json` modernization',
-      pathAliases:   'Path aliases',
-      eslint:        'ESLint',
-      sass:          'SCSS `@import` → `@use`',
-      modules:       'Unused `.module.ts` removed',
-      styleUrl:      '`styleUrls` → `styleUrl`',
-      selfClosing:   'Self-closing tags',
-      cleanupImports:'Cleanup unused imports',
-    };
-
-    const detailEntries = Object.entries(report.details).filter(([, files]) => files?.length > 0);
-    if (detailEntries.length > 0) {
-      lines.push(`## File changes per step`);
-      lines.push(``);
-      for (const [key, files] of detailEntries) {
-        const label = STEP_LABELS[key] ?? key;
-        lines.push(`### ${label}`);
-        lines.push(``);
-        for (const { path, action, lines: changedLines } of files) {
-          const lineStr = changedLines?.length ? ` — lines ${formatRanges(changedLines)}` : '';
-          const actionStr = action === 'created' ? ' *(new)*' : action === 'deleted' ? ' *(deleted)*' : '';
-          lines.push(`- \`${path}\`${actionStr}${lineStr}`);
-        }
-        lines.push(``);
-      }
-    }
   }
 
   // Files created
@@ -1645,9 +1237,6 @@ function writeReport(skipDiff = false) {
 
   lines.push(`### 🟡 Medium priority`);
   lines.push(``);
-  if (!report.modernize.eslintAdded) {
-    lines.push(`- [ ] **ESLint** — Run \`ng add @angular/eslint\` to enable linting (TSLint was removed during migration)`);
-  }
   if (report.modernize.standalone) {
     if (report.modernize.lazyRoutesConverted > 0) {
       lines.push(`- [ ] **Lazy routes** — NgModule-based routes were converted to routes files. Consider \`loadComponent\` for leaf routes to reduce bundle granularity further`);
@@ -1661,8 +1250,8 @@ function writeReport(skipDiff = false) {
   }
   lines.push(``);
 
-  // Files changed (git diff --stat between initial snapshot and HEAD) — only on final write
-  if (!skipDiff && report.initialCommit) {
+  // Files changed (git diff --stat between initial snapshot and HEAD)
+  if (report.initialCommit) {
     const stat = capture(`git diff --stat ${report.initialCommit} HEAD -- ':(exclude)package-lock.json'`);
     if (stat) {
       lines.push(`## Files changed`);
@@ -1686,11 +1275,7 @@ function writeReport(skipDiff = false) {
 
   const reportPath = join(destPath, 'MIGRATION-REPORT.md');
   writeFileSync(reportPath, lines.join('\n'));
-  if (!skipDiff) {
-    writeStatusHtml();
-    console.log(`\n  📄 Relatório final gravado em: ${reportPath}`);
-    console.log(`  🌐 Status HTML: ${join(destPath, 'MIGRATION-STATUS.html')}`);
-  }
+  console.log(`\n  📄 Relatório gravado em: ${reportPath}`);
 }
 
 // ─── Pacotes extras por versão ───────────────────────────────────────────────
@@ -1754,7 +1339,6 @@ report.initialCommit = capture('git rev-parse HEAD');
 // 4. Instala dependências da versão atual
 const detectedVersion = opts.from ?? getInstalledMajor('@angular/core');
 report.sourceVersion = detectedVersion || null;
-writeReport(true);  // primeiro snapshot — abre o arquivo no destino
 console.log(`\n📦 Versão detectada: Angular ${detectedVersion || '?'}`);
 console.log('📦 Instalando dependências...');
 if (npmInstall().status !== 0) {
@@ -1765,7 +1349,6 @@ if (npmInstall().status !== 0) {
 // 5. ng update incremental
 const startVersion = (detectedVersion || 11) + 1;
 const steps = [];
-let ngUpdatePrevHash = capture('git rev-parse HEAD');
 
 for (let v = startVersion; v <= opts.to; v++) {
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
@@ -1794,13 +1377,8 @@ for (let v = startVersion; v <= opts.to; v++) {
   run('git add -A');
   run(`git commit -m "chore: Angular ${v}" --allow-empty`);
 
-  const h = capture('git rev-parse HEAD');
-  report.details[`ngUpdate_${v}`] = captureGitDiff(ngUpdatePrevHash, h);
-  ngUpdatePrevHash = h;
-
   steps.push({ version: v, ok });
   report.ngUpdateSteps.push({ version: v, ok });
-  writeReport(true);
 }
 
 // 6. Modernização: inject() + signals + output()
@@ -1808,7 +1386,9 @@ if (opts.modernize) {
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(' Modernização (inject / signals / output)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  runModernizationMigrations(); // cada step já grava commit individualmente
+  runModernizationMigrations();
+  run('git add -A');
+  run('git commit -m "refactor: modernize to inject/signals/output" --allow-empty');
 }
 
 // ─── Relatório final ─────────────────────────────────────────────────────────
