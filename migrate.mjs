@@ -311,11 +311,19 @@ function cleanupLegacyFiles() {
 
   for (const [name, proj] of Object.entries(ng.projects ?? {})) {
     const e2eBuilder = proj.architect?.e2e?.builder ?? '';
-    if (e2eBuilder.includes('protractor')) {
+    if (!e2eBuilder.includes('protractor')) continue;
+
+    const otherTargets = Object.keys(proj.architect ?? {}).filter(t => t !== 'e2e');
+    if (otherTargets.length === 0 || name.endsWith('-e2e')) {
+      // Projeto exclusivamente e2e — remove o projeto inteiro
       delete ng.projects[name];
       console.log(`  ↳ angular.json: projeto "${name}" removido (Protractor obsoleto)`);
-      changed = true;
+    } else {
+      // Projeto principal com target e2e embutido — remove só o target
+      delete proj.architect.e2e;
+      console.log(`  ↳ angular.json: target "e2e" removido do projeto "${name}" (Protractor obsoleto)`);
     }
+    changed = true;
   }
 
   if (changed) writeJson(ngPath, ng);
