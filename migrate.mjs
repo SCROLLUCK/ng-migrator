@@ -1295,8 +1295,17 @@ function writeStatusHtml() {
     .logo-sub{font-size:.78rem;color:rgba(255,255,255,.65);margin-top:1px}
     .ts{margin-left:auto;font-size:.72rem;color:rgba(255,255,255,.55);white-space:nowrap}
 
-    /* ── Main layout ── */
-    main{max-width:900px;margin:2rem auto;padding:0 1.25rem;display:flex;flex-direction:column;gap:1.25rem}
+    /* ── Main layout — two-column dashboard ── */
+    main{
+      max-width:1600px;margin:0 auto;padding:1.5rem 2rem;
+      display:grid;
+      grid-template-columns:360px 1fr;
+      grid-template-rows:auto 1fr;
+      gap:1.25rem;
+      align-items:start;
+    }
+    .col-left{grid-column:1;display:flex;flex-direction:column;gap:1.25rem;position:sticky;top:1.5rem;max-height:calc(100vh - 3rem);overflow-y:auto}
+    .col-right{grid-column:2}
 
     /* ── Cards ── */
     .card{background:var(--surf);border:1px solid var(--bdr);border-radius:10px;overflow:hidden}
@@ -1366,60 +1375,77 @@ function writeStatusHtml() {
 
 <main>
 
-  <!-- ng update card -->
-  <div class="card">
-    <div class="card-head">
-      <span class="card-title">ng update</span>
-      <span class="card-badge">${doneVersions} / ${totalVersions} versions</span>
+  <div class="col-left">
+    <!-- ng update card -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">ng update</span>
+        <span class="card-badge">${doneVersions} / ${totalVersions} versions</span>
+      </div>
+      <div class="prog-wrap">
+        <div class="prog-track"><div class="prog-fill" style="width:${pct}%"></div></div>
+        <div class="prog-label">${pct}% complete</div>
+      </div>
+      <table>
+        ${report.ngUpdateSteps.map(s => `
+        <tr class="${s.ok ? 'row-done' : 'row-pending'}">
+          <td class="ic">${s.ok ? '✓' : '⚠'}</td>
+          <td>Angular ${s.version}</td>
+          <td class="det">${fileList(`ngUpdate_${s.version}`) || (s.ok ? '' : '<span style="color:var(--amber)">warnings</span>')}</td>
+        </tr>`).join('')}
+        ${Array.from({ length: Math.max(0, totalVersions - doneVersions) }, (_, i) => {
+          const v = (report.sourceVersion ?? 11) + doneVersions + i + 1;
+          return `<tr class="row-skip"><td class="ic">·</td><td>Angular ${v}</td><td class="det"></td></tr>`;
+        }).join('')}
+      </table>
     </div>
-    <div class="prog-wrap">
-      <div class="prog-track"><div class="prog-fill" style="width:${pct}%"></div></div>
-      <div class="prog-label">${pct}% complete</div>
+
+    <!-- Source info card -->
+    <div class="card">
+      <div class="card-head"><span class="card-title">Project</span></div>
+      <div style="padding:.65rem 1rem;font-size:.78rem;color:var(--muted);line-height:1.7;word-break:break-all">
+        <div><span style="color:var(--text)">Source</span> &nbsp;Angular ${report.sourceVersion ?? '?'}</div>
+        <div><span style="color:var(--text)">Target</span> &nbsp;Angular ${report.targetVersion}</div>
+        <div style="margin-top:.4rem;font-size:.71rem">${report.destPath}</div>
+      </div>
     </div>
-    <table>
-      ${report.ngUpdateSteps.map(s => `
-      <tr class="${s.ok ? 'row-done' : 'row-pending'}">
-        <td class="ic">${s.ok ? '✓' : '⚠'}</td>
-        <td>Angular ${s.version}</td>
-        <td class="det">${fileList(`ngUpdate_${s.version}`) || (s.ok ? '' : '<span style="color:var(--amber)">warnings</span>')}</td>
-      </tr>`).join('')}
-      ${Array.from({ length: Math.max(0, totalVersions - doneVersions) }, (_, i) => {
-        const v = (report.sourceVersion ?? 11) + doneVersions + i + 1;
-        return `<tr class="row-skip"><td class="ic">·</td><td>Angular ${v}</td><td class="det"></td></tr>`;
-      }).join('')}
-    </table>
   </div>
 
-  ${opts.modernize ? `
-  <!-- Modernization card -->
-  <div class="card">
-    <div class="card-head">
-      <span class="card-title">Modernization</span>
-    </div>
-    <table>
-      ${row('inject() — constructor DI → inject()',             m.inject          ? true : (doneVersions >= totalVersions ? null : false), 'inject')}
-      ${row('Signals — @Input/@Output/@ViewChild → signal APIs', m.signals        ? true : (m.inject ? null : false),                       'signals')}
-      ${row('UntypedForm* → typed forms',                        m.untypedFormsFixed > 0 ? true : (m.signals ? null : false),              'untypedForms')}
-      ${row('throwError() → factory function (RxJS 7)',          m.throwErrorFixed > 0 ? true : (m.signals ? null : false),                'throwError')}
-      ${row('Standalone (convert → prune → bootstrap)',          m.standalone      ? true : (m.signals ? null : false),                    'standalone')}
-      ${row('standalone: true — patches em pipes/directives',    m.standaloneFixed > 0 ? true : (m.standalone ? null : false),            'standaloneFixed')}
-      ${row('Control flow — @if / @for / @switch',               m.controlFlow     ? true : (m.standalone ? null : false),                 'controlFlow')}
-      ${row('[ngClass] → [class]',                               m.ngClassToClass  ? true : (m.controlFlow ? null : false),                'ngClassToClass')}
-      ${row('[ngStyle] → [style]',                               m.ngStyleToStyle  ? true : (m.ngClassToClass ? null : false),             'ngStyleToStyle')}
-      ${row('app.config.ts + app.routes.ts',                     m.appConfig       ? true : (m.ngStyleToStyle ? null : false),             'appConfig')}
-      ${row('Lazy NgModules → routes files',                     m.lazyRoutesConverted > 0 ? true : (m.appConfig !== undefined ? null : false), 'lazyRoutes')}
-      ${row('Builder → esbuild / Vite',                          m.builder         ? true : (m.appConfig !== undefined ? null : false),    'builder')}
-      ${row('polyfills.ts → zone.js inline',                     m.polyfillsInlined ? true : (m.builder ? null : false),                  'polyfills')}
-      ${row('tsconfig — ES2022 / bundler',                       m.tsconfigModernized ? true : (m.builder ? null : false),                'tsconfig')}
-      ${row('Path aliases (@app, @core, @shared…)',              m.pathAliases     ? true : (m.tsconfigModernized !== undefined ? null : false), 'pathAliases')}
-      ${row('ESLint (@angular/eslint)',                          m.eslintAdded     ? true : (m.pathAliases ? null : false),                'eslint')}
-      ${row('SCSS @import → @use as *',                         m.sassImports > 0 ? true : (m.eslintAdded !== undefined ? null : false),  'sass')}
-      ${row('Unused .module.ts removed',                        m.modulesRemoved > 0 ? true : (m.sassImports !== undefined ? null : false), 'modules')}
-      ${row('styleUrls → styleUrl',                             m.styleUrlFixed > 0 ? true : (m.modulesRemoved !== undefined ? null : false), 'styleUrl')}
-      ${row('Self-closing tags',                                m.selfClosingTags ? true : (m.styleUrlFixed !== undefined ? null : false), 'selfClosing')}
-      ${row('Cleanup unused imports',                           m.cleanupImports  ? true : (m.selfClosingTags ? null : false),             'cleanupImports')}
-    </table>
-  </div>` : ''}
+  <div class="col-right">
+    ${opts.modernize ? `
+    <!-- Modernization card -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Modernization</span>
+        <span style="margin-left:auto;font-size:.72rem;color:var(--muted)">${
+          Object.keys(report.details).filter(k => !k.startsWith('ngUpdate_')).length
+        } steps completed</span>
+      </div>
+      <table>
+        ${row('inject() — constructor DI → inject()',             m.inject          ? true : (doneVersions >= totalVersions ? null : false), 'inject')}
+        ${row('Signals — @Input / @Output / @ViewChild → signal APIs', m.signals   ? true : (m.inject ? null : false),                       'signals')}
+        ${row('UntypedForm* → typed forms',                        m.untypedFormsFixed > 0 ? true : (m.signals ? null : false),              'untypedForms')}
+        ${row('throwError() → factory function (RxJS 7)',          m.throwErrorFixed > 0 ? true : (m.signals ? null : false),                'throwError')}
+        ${row('Standalone — convert → prune → bootstrap',          m.standalone      ? true : (m.signals ? null : false),                    'standalone')}
+        ${row('standalone: true patches in pipes / directives',    m.standaloneFixed > 0 ? true : (m.standalone ? null : false),            'standaloneFixed')}
+        ${row('Control flow — @if / @for / @switch',               m.controlFlow     ? true : (m.standalone ? null : false),                 'controlFlow')}
+        ${row('[ngClass] → [class]',                               m.ngClassToClass  ? true : (m.controlFlow ? null : false),                'ngClassToClass')}
+        ${row('[ngStyle] → [style]',                               m.ngStyleToStyle  ? true : (m.ngClassToClass ? null : false),             'ngStyleToStyle')}
+        ${row('app.config.ts + app.routes.ts',                     m.appConfig       ? true : (m.ngStyleToStyle ? null : false),             'appConfig')}
+        ${row('Lazy NgModules → routes files',                     m.lazyRoutesConverted > 0 ? true : (m.appConfig !== undefined ? null : false), 'lazyRoutes')}
+        ${row('Builder → esbuild / Vite',                          m.builder         ? true : (m.appConfig !== undefined ? null : false),    'builder')}
+        ${row('polyfills.ts → zone.js inline in angular.json',     m.polyfillsInlined ? true : (m.builder ? null : false),                  'polyfills')}
+        ${row('tsconfig — ES2022 / moduleResolution: bundler',     m.tsconfigModernized ? true : (m.builder ? null : false),                'tsconfig')}
+        ${row('Path aliases — @app / @core / @shared / @features', m.pathAliases     ? true : (m.tsconfigModernized !== undefined ? null : false), 'pathAliases')}
+        ${row('ESLint via @angular/eslint',                        m.eslintAdded     ? true : (m.pathAliases ? null : false),                'eslint')}
+        ${row('SCSS @import → @use as *',                         m.sassImports > 0 ? true : (m.eslintAdded !== undefined ? null : false),  'sass')}
+        ${row('Unused .module.ts files removed',                  m.modulesRemoved > 0 ? true : (m.sassImports !== undefined ? null : false), 'modules')}
+        ${row('styleUrls: [] → styleUrl (Angular 19)',            m.styleUrlFixed > 0 ? true : (m.modulesRemoved !== undefined ? null : false), 'styleUrl')}
+        ${row('Self-closing tags',                                m.selfClosingTags ? true : (m.styleUrlFixed !== undefined ? null : false), 'selfClosing')}
+        ${row('Cleanup unused component imports',                 m.cleanupImports  ? true : (m.selfClosingTags ? null : false),             'cleanupImports')}
+      </table>
+    </div>` : ''}
+  </div>
 
 </main>
 </body>
