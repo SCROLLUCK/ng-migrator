@@ -77,11 +77,56 @@ const report = {
   },
   filesCreated: [],
   notes: [],
+  details: {},   // key → [{path, action, lines}]
 };
 
 // ─── Utilitários de arquivo ───────────────────────────────────────────────────
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.angular', 'coverage', '.cache', 'e2e']);
+
+// ─── Helpers de diff / tracking ──────────────────────────────────────────────
+
+function parseAddedLines(diffText) {
+  const lines = [];
+  let cur = 0;
+  for (const line of (diffText ?? '').split('\n')) {
+    const m = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (m) { cur = parseInt(m[1]) - 1; continue; }
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) lines.push(cur + 1);
+    if (!line.startsWith('-')) cur++;
+  }
+  return [...new Set(lines)];
+}
+
+function formatRanges(lines) {
+  if (!lines?.length) return '';
+  const sorted = [...new Set(lines)].sort((a, b) => a - b);
+  const ranges = [];
+  let s = sorted[0], e = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === e + 1) { e = sorted[i]; }
+    else { ranges.push(s === e ? `${s}` : `${s}–${e}`); s = e = sorted[i]; }
+  }
+  ranges.push(s === e ? `${s}` : `${s}–${e}`);
+  return ranges.join(', ');
+}
+
+function captureGitDiff(h0, h1) {
+  if (!h0 || !h1 || h0 === h1) return [];
+  const raw = capture(`git diff ${h0} ${h1} --name-status -- ':!package-lock.json'`);
+  if (!raw) return [];
+  const result = [];
+  for (const line of raw.split('\n').filter(Boolean)) {
+    const parts = line.split('\t');
+    const status = parts[0][0];          // A/M/D/R
+    const path = parts[parts.length - 1];
+    if (status === 'D') { result.push({ path, action: 'deleted', lines: [] }); continue; }
+    const diff = capture(`git diff ${h0} ${h1} -- "${path}"`);
+    result.push({ path, action: status === 'A' ? 'created' : 'modified', lines: parseAddedLines(diff) });
+  }
+  return result;
+}
 
 function copyDir(src, dst) {
   mkdirSync(dst, { recursive: true });
@@ -1052,26 +1097,38 @@ function inlinePolyfills() {
 }
 
 function runModernizationMigrations() {
+  let prevHash = capture('git rev-parse HEAD');
+
+  // Grava o passo atual no git, captura o diff vs passo anterior e atualiza o relatório
+  function commitStep(key, label) {
+    run('git add -A');
+    run(`git commit --allow-empty -m "refactor: ${label ?? key}"`, { ignoreError: true });
+    const h = capture('git rev-parse HEAD');
+    report.details[key] = captureGitDiff(prevHash, h);
+    prevHash = h;
+    writeReport(true);
+  }
+
   // 1. inject(): constructor DI → inject()
   console.log(`\n  🔄 inject()  (constructor DI → inject())...`);
   run('npx ng generate @angular/core:inject-migration --defaults', { ignoreError: true });
   report.modernize.inject = true;
-  writeReport(true);
+  commitStep('inject', 'inject()');
 
   // 2. signals: @Input/@Output/@ViewChild → signal APIs
   console.log(`\n  🔄 signals  (@Input/@Output/@ViewChild → signal APIs)...`);
   run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
   report.modernize.signals = true;
-  writeReport(true);
+  commitStep('signals', 'signals');
 
   // 2b. UntypedForm* → typed forms (ponte de migração v14, obsoleta no v21)
   report.modernize.untypedFormsFixed = fixUntypedForms();
-  writeReport(true);
+  commitStep('untypedForms', 'untyped forms');
 
   // 2c. throwError() → factory function (RxJS 7)
   console.log(`\n  🔄 throwError  (RxJS 7 factory function)...`);
   report.modernize.throwErrorFixed = fixThrowError();
-  writeReport(true);
+  commitStep('throwError', 'throwError factory');
 
   // 3. standalone migration (3 passos obrigatórios em sequência)
   runUntilStable(
@@ -1083,12 +1140,12 @@ function runModernizationMigrations() {
   console.log(`\n  🔄 standalone  (standalone-bootstrap)...`);
   run('npx ng generate @angular/core:standalone-migration --mode standalone-bootstrap --defaults', { ignoreError: true });
   report.modernize.standalone = true;
-  writeReport(true);
+  commitStep('standalone', 'standalone migration');
 
   // 3b. Garante standalone: true em pipes/directives que o schematic ignorou
   console.log(`\n  🔄 standalone  (fix missing standalone: true in pipes/directives)...`);
   report.modernize.standaloneFixed = fixMissingStandalone();
-  writeReport(true);
+  commitStep('standaloneFixed', 'standalone: true patch');
 
   // 3c. control-flow: *ngIf/*ngFor/*ngSwitch → @if/@for/@switch
   runUntilStable(
@@ -1096,82 +1153,82 @@ function runModernizationMigrations() {
     'control-flow  (*ngIf/*ngFor → @if/@for)',
   );
   report.modernize.controlFlow = true;
-  writeReport(true);
+  commitStep('controlFlow', 'control-flow');
 
   // 3d. [ngClass] → [class] bindings
   console.log(`\n  🔄 ngClass → class bindings...`);
   run('npx ng generate @angular/core:ngclass-to-class', { ignoreError: true });
   report.modernize.ngClassToClass = true;
-  writeReport(true);
+  commitStep('ngClassToClass', 'ngClass → class');
 
   // 3e. [ngStyle] → [style] bindings
   console.log(`\n  🔄 ngStyle → style bindings...`);
   run('npx ng generate @angular/core:ngstyle-to-style --best-effort-mode', { ignoreError: true });
   report.modernize.ngStyleToStyle = true;
-  writeReport(true);
+  commitStep('ngStyleToStyle', 'ngStyle → style');
 
   // 4. app.config.ts + app.routes.ts
   console.log(`\n  🔄 app.config.ts + app.routes.ts...`);
   createAppConfigAndRoutes();
-  writeReport(true);
+  commitStep('appConfig', 'app.config.ts + app.routes.ts');
 
   // 4b. Lazy NgModule → routes file (resolve NG0200)
   console.log(`\n  🔄 lazy routes  (NgModule → routes file)...`);
   report.modernize.lazyRoutesConverted = convertLazyModulesToRoutes();
-  writeReport(true);
+  commitStep('lazyRoutes', 'lazy routes');
 
   // 5. Vite/esbuild builder
   migrateToApplicationBuilder();
   report.modernize.builder = true;
-  writeReport(true);
+  commitStep('builder', 'application builder');
 
   // 5b. polyfills.ts → inline zone.js em angular.json
   console.log(`\n  🔄 polyfills  (inline zone.js em angular.json)...`);
   report.modernize.polyfillsInlined = inlinePolyfills();
-  writeReport(true);
+  commitStep('polyfills', 'polyfills inline');
 
   // 6. Moderniza tsconfig (ES2022 / bundler / useDefineForClassFields)
   console.log(`\n  🔄 tsconfig  (ES2022, moduleResolution→bundler)...`);
   report.modernize.tsconfigModernized = modernizeTsconfig();
-  writeReport(true);
+  commitStep('tsconfig', 'tsconfig ES2022/bundler');
 
   // 6b. Path aliases
   console.log(`\n  🔄 path aliases no tsconfig...`);
   addTsconfigPathAliases();
   report.modernize.pathAliases = true;
-  writeReport(true);
+  commitStep('pathAliases', 'tsconfig path aliases');
 
   // 6c. ESLint
   console.log(`\n  🔄 ESLint  (@angular/eslint)...`);
   report.modernize.eslintAdded = addEslint();
-  writeReport(true);
+  commitStep('eslint', 'ESLint');
 
   // 7. SCSS @import → @use as *
   console.log(`\n  🔄 SCSS  (@import → @use as *)...`);
   report.modernize.sassImports = fixSassImports();
-  writeReport(true);
+  commitStep('sass', 'SCSS @use');
 
   // 8. Remove .module.ts que não são mais referenciados
   console.log(`\n  🔄 módulos  (removendo .module.ts obsoletos)...`);
   report.modernize.modulesRemoved = removeUnusedModules();
-  writeReport(true);
+  commitStep('modules', 'remove unused modules');
 
   // 9. styleUrls → styleUrl (Angular 19+)
   console.log(`\n  🔄 styleUrls → styleUrl...`);
   report.modernize.styleUrlFixed = fixStyleUrls();
-  writeReport(true);
+  commitStep('styleUrl', 'styleUrls → styleUrl');
 
   // 10. self-closing tags
   console.log(`\n  🔄 self-closing tags...`);
   run('npx ng generate @angular/core:self-closing-tag', { ignoreError: true });
   report.modernize.selfClosingTags = true;
-  writeReport(true);
+  commitStep('selfClosing', 'self-closing tags');
 
   // 11. cleanup unused imports (deve rodar por último, após todas as migrações de template)
   console.log(`\n  🔄 cleanup unused imports...`);
   run('npx ng generate @angular/core:cleanup-unused-imports', { ignoreError: true });
   report.modernize.cleanupImports = true;
-  writeReport(true);
+  commitStep('cleanupImports', 'cleanup unused imports');
 }
 
 // ─── Status HTML (auto-refresh a cada 4s) ────────────────────────────────────
@@ -1184,10 +1241,23 @@ function writeStatusHtml() {
   const doneVersions  = report.ngUpdateSteps.length;
   const pct = totalVersions > 0 ? Math.round((doneVersions / totalVersions) * 100) : 0;
 
-  const row = (label, done, detail = '') => {
+  const fileList = (key) => {
+    const files = report.details[key];
+    if (!files?.length) return '';
+    const items = files.map(({ path, action, lines: ls }) => {
+      const badge = action === 'created' ? ' <span class="new">new</span>'
+                  : action === 'deleted' ? ' <span class="del">del</span>' : '';
+      const lineStr = ls?.length ? `<span class="lines"> :${formatRanges(ls)}</span>` : '';
+      return `<li>${badge}<code>${path}</code>${lineStr}</li>`;
+    }).join('');
+    return `<details><summary>${files.length} file${files.length > 1 ? 's' : ''}</summary><ul>${items}</ul></details>`;
+  };
+
+  const row = (label, done, detailKey = '', countStr = '') => {
     const icon = done === null ? '⏳' : done ? '✅' : '—';
     const cls  = done === null ? 'pending' : done ? 'done' : 'skip';
-    return `<tr class="${cls}"><td>${icon}</td><td>${label}</td><td>${detail}</td></tr>`;
+    const det  = detailKey ? fileList(detailKey) : countStr;
+    return `<tr class="${cls}"><td>${icon}</td><td>${label}</td><td>${det}</td></tr>`;
   };
 
   const m = report.modernize;
@@ -1214,6 +1284,14 @@ function writeStatusHtml() {
     tr.skip td { opacity: .45; }
     .badge { display:inline-block; background:#21262d; border-radius:4px; padding:1px 6px; font-size:.75rem; margin-left:.4rem; }
     .ts { float:right; color:#8b949e; font-size:.75rem; }
+    details { display:inline; }
+    details summary { display:inline; cursor:pointer; color:#58a6ff; font-size:.8rem; }
+    details ul { margin:.3rem 0 .3rem 1rem; padding:0; list-style:none; }
+    details li { font-size:.78rem; color:#8b949e; padding:.1rem 0; }
+    details code { color:#e6edf3; background:#161b22; padding:1px 4px; border-radius:3px; font-size:.77rem; }
+    .lines { color:#6e7681; }
+    .new { color:#3fb950; font-size:.7rem; font-weight:600; margin-right:.3rem; }
+    .del { color:#f85149; font-size:.7rem; font-weight:600; margin-right:.3rem; }
   </style>
 </head>
 <body>
@@ -1240,27 +1318,27 @@ function writeStatusHtml() {
   ${opts.modernize ? `
   <h2>Modernização</h2>
   <table>
-    ${row('inject() — constructor DI → inject()', m.inject ? true : (doneVersions >= totalVersions ? null : false))}
-    ${row('Signals — @Input/@Output/@ViewChild → signal APIs', m.signals ? true : null)}
-    ${row('UntypedForm* → typed forms', m.untypedFormsFixed > 0 ? true : (m.inject ? null : false), m.untypedFormsFixed > 0 ? `${m.untypedFormsFixed} arquivo(s)` : '')}
-    ${row('throwError() → factory function (RxJS 7)', m.throwErrorFixed > 0 ? true : (m.inject ? null : false), m.throwErrorFixed > 0 ? `${m.throwErrorFixed} arquivo(s)` : '')}
-    ${row('Standalone (convert → prune → bootstrap)', m.standalone ? true : (m.signals ? null : false))}
-    ${row('standalone: true — patches em pipes/directives', m.standaloneFixed > 0 ? true : (m.standalone ? null : false), m.standaloneFixed > 0 ? `${m.standaloneFixed} arquivo(s)` : '')}
-    ${row('Control flow — @if/@for/@switch', m.controlFlow ? true : (m.standalone ? null : false))}
-    ${row('[ngClass] → [class]', m.ngClassToClass ? true : (m.controlFlow ? null : false))}
-    ${row('[ngStyle] → [style]', m.ngStyleToStyle ? true : (m.ngClassToClass ? null : false))}
-    ${row('app.config.ts + app.routes.ts', m.appConfig ? true : (m.ngStyleToStyle ? null : false))}
-    ${row('Lazy NgModules → routes files', m.lazyRoutesConverted > 0 ? true : (m.appConfig !== undefined ? null : false), m.lazyRoutesConverted > 0 ? `${m.lazyRoutesConverted} módulo(s)` : '')}
-    ${row('Builder → esbuild/Vite', m.builder ? true : (m.appConfig !== undefined ? null : false))}
-    ${row('polyfills.ts → zone.js inline', m.polyfillsInlined ? true : (m.builder ? null : false))}
-    ${row('tsconfig — ES2022 / bundler', m.tsconfigModernized ? true : (m.builder ? null : false))}
-    ${row('Path aliases (@app, @core, @shared…)', m.pathAliases ? true : (m.tsconfigModernized !== undefined ? null : false))}
-    ${row('ESLint (@angular/eslint)', m.eslintAdded ? true : (m.pathAliases ? null : false))}
-    ${row('SCSS @import → @use as *', m.sassImports > 0 ? true : (m.eslintAdded !== undefined ? null : false), m.sassImports > 0 ? `${m.sassImports} arquivo(s)` : '')}
-    ${row('Módulos .module.ts obsoletos removidos', m.modulesRemoved > 0 ? true : (m.sassImports !== undefined ? null : false), m.modulesRemoved > 0 ? `${m.modulesRemoved} arquivo(s)` : '')}
-    ${row('styleUrls → styleUrl', m.styleUrlFixed > 0 ? true : (m.modulesRemoved !== undefined ? null : false), m.styleUrlFixed > 0 ? `${m.styleUrlFixed} arquivo(s)` : '')}
-    ${row('Self-closing tags', m.selfClosingTags ? true : (m.styleUrlFixed !== undefined ? null : false))}
-    ${row('Cleanup unused imports', m.cleanupImports ? true : (m.selfClosingTags ? null : false))}
+    ${row('inject() — constructor DI → inject()',            m.inject          ? true : (doneVersions >= totalVersions ? null : false), 'inject')}
+    ${row('Signals — @Input/@Output/@ViewChild → signal APIs', m.signals        ? true : (m.inject ? null : false),                       'signals')}
+    ${row('UntypedForm* → typed forms',                        m.untypedFormsFixed > 0 ? true : (m.signals ? null : false),              'untypedForms')}
+    ${row('throwError() → factory function (RxJS 7)',          m.throwErrorFixed > 0 ? true : (m.signals ? null : false),                'throwError')}
+    ${row('Standalone (convert → prune → bootstrap)',          m.standalone      ? true : (m.signals ? null : false),                    'standalone')}
+    ${row('standalone: true — patches em pipes/directives',    m.standaloneFixed > 0 ? true : (m.standalone ? null : false),            'standaloneFixed')}
+    ${row('Control flow — @if/@for/@switch',                   m.controlFlow     ? true : (m.standalone ? null : false),                 'controlFlow')}
+    ${row('[ngClass] → [class]',                               m.ngClassToClass  ? true : (m.controlFlow ? null : false),                'ngClassToClass')}
+    ${row('[ngStyle] → [style]',                               m.ngStyleToStyle  ? true : (m.ngClassToClass ? null : false),             'ngStyleToStyle')}
+    ${row('app.config.ts + app.routes.ts',                     m.appConfig       ? true : (m.ngStyleToStyle ? null : false),             'appConfig')}
+    ${row('Lazy NgModules → routes files',                     m.lazyRoutesConverted > 0 ? true : (m.appConfig !== undefined ? null : false), 'lazyRoutes')}
+    ${row('Builder → esbuild/Vite',                            m.builder         ? true : (m.appConfig !== undefined ? null : false),    'builder')}
+    ${row('polyfills.ts → zone.js inline',                     m.polyfillsInlined ? true : (m.builder ? null : false),                  'polyfills')}
+    ${row('tsconfig — ES2022 / bundler',                       m.tsconfigModernized ? true : (m.builder ? null : false),                'tsconfig')}
+    ${row('Path aliases (@app, @core, @shared…)',              m.pathAliases     ? true : (m.tsconfigModernized !== undefined ? null : false), 'pathAliases')}
+    ${row('ESLint (@angular/eslint)',                          m.eslintAdded     ? true : (m.pathAliases ? null : false),                'eslint')}
+    ${row('SCSS @import → @use as *',                         m.sassImports > 0 ? true : (m.eslintAdded !== undefined ? null : false),  'sass')}
+    ${row('Módulos .module.ts obsoletos removidos',           m.modulesRemoved > 0 ? true : (m.sassImports !== undefined ? null : false), 'modules')}
+    ${row('styleUrls → styleUrl',                             m.styleUrlFixed > 0 ? true : (m.modulesRemoved !== undefined ? null : false), 'styleUrl')}
+    ${row('Self-closing tags',                                m.selfClosingTags ? true : (m.styleUrlFixed !== undefined ? null : false), 'selfClosing')}
+    ${row('Cleanup unused imports',                           m.cleanupImports  ? true : (m.selfClosingTags ? null : false),             'cleanupImports')}
   </table>` : ''}
 </body>
 </html>`;
@@ -1334,6 +1412,48 @@ function writeReport(skipDiff = false) {
     lines.push(`| SCSS \`@import\` → \`@use … as *\` | ${report.modernize.sassImports > 0 ? `✅ ${report.modernize.sassImports} file(s)` : '—'} |`);
     lines.push(`| Unused \`.module.ts\` files removed | ${report.modernize.modulesRemoved > 0 ? `✅ ${report.modernize.modulesRemoved} file(s)` : '—'} |`);
     lines.push(``);
+
+    // Detalhes por step (arquivos e linhas modificadas)
+    const STEP_LABELS = {
+      inject:        '`inject()` — constructor DI → inject()',
+      signals:       'Signals — @Input/@Output/@ViewChild',
+      untypedForms:  '`UntypedForm*` → typed forms',
+      throwError:    '`throwError()` → factory function',
+      standalone:    'Standalone migration',
+      standaloneFixed: '`standalone: true` patch',
+      controlFlow:   'Control flow — @if/@for/@switch',
+      ngClassToClass:'`[ngClass]` → `[class]`',
+      ngStyleToStyle:'`[ngStyle]` → `[style]`',
+      appConfig:     '`app.config.ts` + `app.routes.ts`',
+      lazyRoutes:    'Lazy NgModules → routes files',
+      builder:       'Builder → esbuild/Vite',
+      polyfills:     '`polyfills.ts` → zone.js inline',
+      tsconfig:      '`tsconfig.json` modernization',
+      pathAliases:   'Path aliases',
+      eslint:        'ESLint',
+      sass:          'SCSS `@import` → `@use`',
+      modules:       'Unused `.module.ts` removed',
+      styleUrl:      '`styleUrls` → `styleUrl`',
+      selfClosing:   'Self-closing tags',
+      cleanupImports:'Cleanup unused imports',
+    };
+
+    const detailEntries = Object.entries(report.details).filter(([, files]) => files?.length > 0);
+    if (detailEntries.length > 0) {
+      lines.push(`## File changes per step`);
+      lines.push(``);
+      for (const [key, files] of detailEntries) {
+        const label = STEP_LABELS[key] ?? key;
+        lines.push(`### ${label}`);
+        lines.push(``);
+        for (const { path, action, lines: changedLines } of files) {
+          const lineStr = changedLines?.length ? ` — lines ${formatRanges(changedLines)}` : '';
+          const actionStr = action === 'created' ? ' *(new)*' : action === 'deleted' ? ' *(deleted)*' : '';
+          lines.push(`- \`${path}\`${actionStr}${lineStr}`);
+        }
+        lines.push(``);
+      }
+    }
   }
 
   // Files created
@@ -1538,9 +1658,7 @@ if (opts.modernize) {
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(' Modernização (inject / signals / output)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  runModernizationMigrations();
-  run('git add -A');
-  run('git commit -m "refactor: modernize to inject/signals/output" --allow-empty');
+  runModernizationMigrations(); // cada step já grava commit individualmente
 }
 
 // ─── Relatório final ─────────────────────────────────────────────────────────
