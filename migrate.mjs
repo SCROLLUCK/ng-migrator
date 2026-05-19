@@ -1174,9 +1174,104 @@ function runModernizationMigrations() {
   writeReport(true);
 }
 
+// ─── Status HTML (auto-refresh a cada 4s) ────────────────────────────────────
+
+function writeStatusHtml() {
+  if (!existsSync(destPath)) return;
+
+  const now = new Date().toLocaleTimeString('pt-BR');
+  const totalVersions = opts.to - ((report.sourceVersion || 11));
+  const doneVersions  = report.ngUpdateSteps.length;
+  const pct = totalVersions > 0 ? Math.round((doneVersions / totalVersions) * 100) : 0;
+
+  const row = (label, done, detail = '') => {
+    const icon = done === null ? '⏳' : done ? '✅' : '—';
+    const cls  = done === null ? 'pending' : done ? 'done' : 'skip';
+    return `<tr class="${cls}"><td>${icon}</td><td>${label}</td><td>${detail}</td></tr>`;
+  };
+
+  const m = report.modernize;
+
+  const html = `<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="4">
+  <title>Migration Status</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; background: #0d1117; color: #e6edf3; }
+    h1 { font-size: 1.4rem; margin-bottom: .25rem; }
+    .meta { color: #8b949e; font-size: .85rem; margin-bottom: 1.5rem; }
+    .bar-wrap { background: #21262d; border-radius: 6px; height: 14px; margin-bottom: 1.5rem; overflow: hidden; }
+    .bar { background: #238636; height: 100%; border-radius: 6px; transition: width .4s; }
+    h2 { font-size: 1rem; margin: 1.5rem 0 .4rem; color: #8b949e; text-transform: uppercase; letter-spacing: .05em; }
+    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    td { padding: .3rem .5rem; border-bottom: 1px solid #21262d; }
+    td:first-child { width: 2rem; text-align: center; }
+    td:last-child { color: #8b949e; font-size: .8rem; }
+    tr.done td:nth-child(2) { color: #3fb950; }
+    tr.pending td:nth-child(2) { color: #e3b341; }
+    tr.skip td { opacity: .45; }
+    .badge { display:inline-block; background:#21262d; border-radius:4px; padding:1px 6px; font-size:.75rem; margin-left:.4rem; }
+    .ts { float:right; color:#8b949e; font-size:.75rem; }
+  </style>
+</head>
+<body>
+  <h1>ng-migrator <span class="badge">Angular ${report.sourceVersion ?? '?'} → ${report.targetVersion}</span></h1>
+  <div class="meta">${report.destPath} <span class="ts">⟳ ${now}</span></div>
+
+  <div class="bar-wrap"><div class="bar" style="width:${pct}%"></div></div>
+
+  <h2>ng update — ${doneVersions}/${totalVersions} versões</h2>
+  <table>
+    ${report.ngUpdateSteps.map(s =>
+      `<tr class="${s.ok ? 'done' : 'pending'}">
+        <td>${s.ok ? '✅' : '⚠️'}</td>
+        <td>Angular ${s.version}</td>
+        <td>${s.ok ? '' : 'warnings'}</td>
+      </tr>`
+    ).join('\n    ')}
+    ${Array.from({ length: Math.max(0, totalVersions - doneVersions) }, (_, i) => {
+      const v = (report.sourceVersion ?? 11) + doneVersions + i + 1;
+      return `<tr class="skip"><td>⏳</td><td>Angular ${v}</td><td></td></tr>`;
+    }).join('\n    ')}
+  </table>
+
+  ${opts.modernize ? `
+  <h2>Modernização</h2>
+  <table>
+    ${row('inject() — constructor DI → inject()', m.inject ? true : (doneVersions >= totalVersions ? null : false))}
+    ${row('Signals — @Input/@Output/@ViewChild → signal APIs', m.signals ? true : null)}
+    ${row('UntypedForm* → typed forms', m.untypedFormsFixed > 0 ? true : (m.inject ? null : false), m.untypedFormsFixed > 0 ? `${m.untypedFormsFixed} arquivo(s)` : '')}
+    ${row('throwError() → factory function (RxJS 7)', m.throwErrorFixed > 0 ? true : (m.inject ? null : false), m.throwErrorFixed > 0 ? `${m.throwErrorFixed} arquivo(s)` : '')}
+    ${row('Standalone (convert → prune → bootstrap)', m.standalone ? true : (m.signals ? null : false))}
+    ${row('standalone: true — patches em pipes/directives', m.standaloneFixed > 0 ? true : (m.standalone ? null : false), m.standaloneFixed > 0 ? `${m.standaloneFixed} arquivo(s)` : '')}
+    ${row('Control flow — @if/@for/@switch', m.controlFlow ? true : (m.standalone ? null : false))}
+    ${row('[ngClass] → [class]', m.ngClassToClass ? true : (m.controlFlow ? null : false))}
+    ${row('[ngStyle] → [style]', m.ngStyleToStyle ? true : (m.ngClassToClass ? null : false))}
+    ${row('app.config.ts + app.routes.ts', m.appConfig ? true : (m.ngStyleToStyle ? null : false))}
+    ${row('Lazy NgModules → routes files', m.lazyRoutesConverted > 0 ? true : (m.appConfig !== undefined ? null : false), m.lazyRoutesConverted > 0 ? `${m.lazyRoutesConverted} módulo(s)` : '')}
+    ${row('Builder → esbuild/Vite', m.builder ? true : (m.appConfig !== undefined ? null : false))}
+    ${row('polyfills.ts → zone.js inline', m.polyfillsInlined ? true : (m.builder ? null : false))}
+    ${row('tsconfig — ES2022 / bundler', m.tsconfigModernized ? true : (m.builder ? null : false))}
+    ${row('Path aliases (@app, @core, @shared…)', m.pathAliases ? true : (m.tsconfigModernized !== undefined ? null : false))}
+    ${row('ESLint (@angular/eslint)', m.eslintAdded ? true : (m.pathAliases ? null : false))}
+    ${row('SCSS @import → @use as *', m.sassImports > 0 ? true : (m.eslintAdded !== undefined ? null : false), m.sassImports > 0 ? `${m.sassImports} arquivo(s)` : '')}
+    ${row('Módulos .module.ts obsoletos removidos', m.modulesRemoved > 0 ? true : (m.sassImports !== undefined ? null : false), m.modulesRemoved > 0 ? `${m.modulesRemoved} arquivo(s)` : '')}
+    ${row('styleUrls → styleUrl', m.styleUrlFixed > 0 ? true : (m.modulesRemoved !== undefined ? null : false), m.styleUrlFixed > 0 ? `${m.styleUrlFixed} arquivo(s)` : '')}
+    ${row('Self-closing tags', m.selfClosingTags ? true : (m.styleUrlFixed !== undefined ? null : false))}
+    ${row('Cleanup unused imports', m.cleanupImports ? true : (m.selfClosingTags ? null : false))}
+  </table>` : ''}
+</body>
+</html>`;
+
+  writeFileSync(join(destPath, 'MIGRATION-STATUS.html'), html);
+}
+
 // ─── Relatório de migração ────────────────────────────────────────────────────
 
 function writeReport(skipDiff = false) {
+  if (skipDiff) writeStatusHtml();   // atualiza o HTML em tempo real
   const check = (v) => v ? '✅' : '—';
   const lines = [];
 
@@ -1326,7 +1421,11 @@ function writeReport(skipDiff = false) {
 
   const reportPath = join(destPath, 'MIGRATION-REPORT.md');
   writeFileSync(reportPath, lines.join('\n'));
-  if (!skipDiff) console.log(`\n  📄 Relatório final gravado em: ${reportPath}`);
+  if (!skipDiff) {
+    writeStatusHtml();
+    console.log(`\n  📄 Relatório final gravado em: ${reportPath}`);
+    console.log(`  🌐 Status HTML: ${join(destPath, 'MIGRATION-STATUS.html')}`);
+  }
 }
 
 // ─── Pacotes extras por versão ───────────────────────────────────────────────
