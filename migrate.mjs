@@ -1231,115 +1231,197 @@ function runModernizationMigrations() {
   commitStep('cleanupImports', 'cleanup unused imports');
 }
 
-// ─── Status HTML (auto-refresh a cada 4s) ────────────────────────────────────
+// ─── Status HTML (auto-refresh a cada 4s) — Angular design ──────────────────
 
 function writeStatusHtml() {
   if (!existsSync(destPath)) return;
 
   const now = new Date().toLocaleTimeString('pt-BR');
-  const totalVersions = opts.to - ((report.sourceVersion || 11));
+  const totalVersions = opts.to - (report.sourceVersion || 11);
   const doneVersions  = report.ngUpdateSteps.length;
   const pct = totalVersions > 0 ? Math.round((doneVersions / totalVersions) * 100) : 0;
+  const m   = report.modernize;
 
   const fileList = (key) => {
     const files = report.details[key];
     if (!files?.length) return '';
     const items = files.map(({ path, action, lines: ls }) => {
-      const badge = action === 'created' ? ' <span class="new">new</span>'
-                  : action === 'deleted' ? ' <span class="del">del</span>' : '';
-      const lineStr = ls?.length ? `<span class="lines"> :${formatRanges(ls)}</span>` : '';
+      const badge = action === 'created' ? '<span class="tag new">new</span> '
+                  : action === 'deleted' ? '<span class="tag del">del</span> ' : '';
+      const lineStr = ls?.length ? ` <span class="ln">:${formatRanges(ls)}</span>` : '';
       return `<li>${badge}<code>${path}</code>${lineStr}</li>`;
     }).join('');
-    return `<details><summary>${files.length} file${files.length > 1 ? 's' : ''}</summary><ul>${items}</ul></details>`;
+    const n = files.length;
+    return `<details><summary>${n} file${n !== 1 ? 's' : ''} ▾</summary><ul>${items}</ul></details>`;
   };
 
-  const row = (label, done, detailKey = '', countStr = '') => {
-    const icon = done === null ? '⏳' : done ? '✅' : '—';
-    const cls  = done === null ? 'pending' : done ? 'done' : 'skip';
-    const det  = detailKey ? fileList(detailKey) : countStr;
-    return `<tr class="${cls}"><td>${icon}</td><td>${label}</td><td>${det}</td></tr>`;
+  const row = (label, done, key) => {
+    if (done === false) return '';   // skip not-yet-started rows while ng update still runs
+    const icon = done === null ? '<span class="spin">◌</span>' : done ? '✓' : '–';
+    const cls  = done === null ? 'row-pending' : done ? 'row-done' : 'row-skip';
+    const det  = key ? fileList(key) : '';
+    return `<tr class="${cls}">
+      <td class="ic">${icon}</td>
+      <td>${label}</td>
+      <td class="det">${det}</td>
+    </tr>`;
   };
-
-  const m = report.modernize;
 
   const html = `<!DOCTYPE html>
 <html lang="pt">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="refresh" content="4">
-  <title>Migration Status</title>
+  <title>ng-migrator — Migration Status</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; background: #0d1117; color: #e6edf3; }
-    h1 { font-size: 1.4rem; margin-bottom: .25rem; }
-    .meta { color: #8b949e; font-size: .85rem; margin-bottom: 1.5rem; }
-    .bar-wrap { background: #21262d; border-radius: 6px; height: 14px; margin-bottom: 1.5rem; overflow: hidden; }
-    .bar { background: #238636; height: 100%; border-radius: 6px; transition: width .4s; }
-    h2 { font-size: 1rem; margin: 1.5rem 0 .4rem; color: #8b949e; text-transform: uppercase; letter-spacing: .05em; }
-    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-    td { padding: .3rem .5rem; border-bottom: 1px solid #21262d; }
-    td:first-child { width: 2rem; text-align: center; }
-    td:last-child { color: #8b949e; font-size: .8rem; }
-    tr.done td:nth-child(2) { color: #3fb950; }
-    tr.pending td:nth-child(2) { color: #e3b341; }
-    tr.skip td { opacity: .45; }
-    .badge { display:inline-block; background:#21262d; border-radius:4px; padding:1px 6px; font-size:.75rem; margin-left:.4rem; }
-    .ts { float:right; color:#8b949e; font-size:.75rem; }
-    details { display:inline; }
-    details summary { display:inline; cursor:pointer; color:#58a6ff; font-size:.8rem; }
-    details ul { margin:.3rem 0 .3rem 1rem; padding:0; list-style:none; }
-    details li { font-size:.78rem; color:#8b949e; padding:.1rem 0; }
-    details code { color:#e6edf3; background:#161b22; padding:1px 4px; border-radius:3px; font-size:.77rem; }
-    .lines { color:#6e7681; }
-    .new { color:#3fb950; font-size:.7rem; font-weight:600; margin-right:.3rem; }
-    .del { color:#f85149; font-size:.7rem; font-weight:600; margin-right:.3rem; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --red:#DD0031;--red-dk:#C3002F;
+      --bg:#0F0F1A;--surf:#16162A;--surf2:#1E1E35;
+      --bdr:#2A2A45;--text:#E8E8F0;--muted:#7070A0;
+      --green:#4CAF50;--amber:#FF9800;--blue:#5CB8F5;
+    }
+    body{font-family:'Roboto',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+    a{color:var(--blue)}
+
+    /* ── Header ── */
+    header{
+      background:linear-gradient(135deg,var(--red-dk) 0%,var(--red) 60%,#E91E63 100%);
+      padding:.9rem 2rem;display:flex;align-items:center;gap:1rem;
+      box-shadow:0 2px 12px rgba(0,0,0,.5);
+    }
+    .logo-shield{width:28px;height:31px;flex-shrink:0}
+    .logo-text{font-size:1.15rem;font-weight:700;color:#fff;letter-spacing:-.3px}
+    .logo-sub{font-size:.78rem;color:rgba(255,255,255,.65);margin-top:1px}
+    .ts{margin-left:auto;font-size:.72rem;color:rgba(255,255,255,.55);white-space:nowrap}
+
+    /* ── Main layout ── */
+    main{max-width:900px;margin:2rem auto;padding:0 1.25rem;display:flex;flex-direction:column;gap:1.25rem}
+
+    /* ── Cards ── */
+    .card{background:var(--surf);border:1px solid var(--bdr);border-radius:10px;overflow:hidden}
+    .card-head{
+      background:var(--surf2);border-bottom:1px solid var(--bdr);
+      padding:.55rem 1rem;display:flex;align-items:center;gap:.6rem;
+    }
+    .card-title{font-size:.72rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+    .card-badge{
+      margin-left:auto;background:rgba(221,0,49,.18);color:var(--red);
+      border:1px solid rgba(221,0,49,.3);border-radius:4px;
+      font-size:.68rem;font-weight:600;padding:1px 7px;
+    }
+
+    /* ── Progress bar ── */
+    .prog-wrap{padding:.75rem 1rem;border-bottom:1px solid var(--bdr)}
+    .prog-track{background:var(--bdr);border-radius:99px;height:8px;overflow:hidden}
+    .prog-fill{background:linear-gradient(90deg,var(--red),#E91E63);height:100%;border-radius:99px;transition:width .5s ease}
+    .prog-label{font-size:.72rem;color:var(--muted);margin-top:.4rem}
+
+    /* ── Table ── */
+    table{width:100%;border-collapse:collapse}
+    tr{border-bottom:1px solid var(--bdr)}
+    tr:last-child{border-bottom:none}
+    td{padding:.5rem 1rem;font-size:.855rem;vertical-align:middle}
+    td.ic{width:2.2rem;text-align:center;font-size:1rem;padding-right:0}
+    td.det{color:var(--muted);font-size:.8rem;min-width:160px}
+
+    .row-done td:nth-child(2){color:var(--green)}
+    .row-done .ic{color:var(--green)}
+    .row-pending td:nth-child(2){color:var(--amber)}
+    .row-pending .ic{color:var(--amber)}
+    .row-skip td{opacity:.38}
+
+    @keyframes pulse{0%,100%{opacity:.3}50%{opacity:.8}}
+    .spin{animation:pulse 1.4s ease-in-out infinite;display:inline-block}
+
+    /* ── File details ── */
+    details{display:inline-block}
+    details summary{cursor:pointer;color:var(--blue);font-size:.78rem;list-style:none;user-select:none}
+    details summary::-webkit-details-marker{display:none}
+    details[open] summary{margin-bottom:.3rem}
+    details ul{list-style:none;margin-left:.2rem;padding:0}
+    details li{font-size:.73rem;color:var(--muted);padding:.15rem 0;font-family:'Roboto Mono',monospace;display:flex;align-items:baseline;gap:.3rem}
+    details code{color:#B0B0D0;background:#0A0A18;padding:1px 5px;border-radius:3px;font-size:.72rem;font-family:inherit}
+    .ln{color:#4A4A70;font-size:.68rem}
+    .tag{font-size:.65rem;font-weight:700;padding:0 4px;border-radius:3px;line-height:1.5}
+    .tag.new{background:rgba(76,175,80,.15);color:var(--green);border:1px solid rgba(76,175,80,.3)}
+    .tag.del{background:rgba(239,83,80,.15);color:#EF5350;border:1px solid rgba(239,83,80,.3)}
   </style>
 </head>
 <body>
-  <h1>ng-migrator <span class="badge">Angular ${report.sourceVersion ?? '?'} → ${report.targetVersion}</span></h1>
-  <div class="meta">${report.destPath} <span class="ts">⟳ ${now}</span></div>
 
-  <div class="bar-wrap"><div class="bar" style="width:${pct}%"></div></div>
+<header>
+  <svg class="logo-shield" viewBox="0 0 250 300" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <polygon points="125,5 245,50 224,238 125,295 26,238 5,50"
+      fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.6)" stroke-width="10"/>
+    <path d="M125 52 L182 200 H163 L150 163 H100 L87 200 H68 Z M125 88 L145 150 H105 Z"
+      fill="white"/>
+  </svg>
+  <div>
+    <div class="logo-text">ng-migrator</div>
+    <div class="logo-sub">Angular ${report.sourceVersion ?? '?'} → ${report.targetVersion}</div>
+  </div>
+  <div class="ts">⟳ ${now}</div>
+</header>
 
-  <h2>ng update — ${doneVersions}/${totalVersions} versões</h2>
-  <table>
-    ${report.ngUpdateSteps.map(s =>
-      `<tr class="${s.ok ? 'done' : 'pending'}">
-        <td>${s.ok ? '✅' : '⚠️'}</td>
+<main>
+
+  <!-- ng update card -->
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">ng update</span>
+      <span class="card-badge">${doneVersions} / ${totalVersions} versions</span>
+    </div>
+    <div class="prog-wrap">
+      <div class="prog-track"><div class="prog-fill" style="width:${pct}%"></div></div>
+      <div class="prog-label">${pct}% complete</div>
+    </div>
+    <table>
+      ${report.ngUpdateSteps.map(s => `
+      <tr class="${s.ok ? 'row-done' : 'row-pending'}">
+        <td class="ic">${s.ok ? '✓' : '⚠'}</td>
         <td>Angular ${s.version}</td>
-        <td>${s.ok ? '' : 'warnings'}</td>
-      </tr>`
-    ).join('\n    ')}
-    ${Array.from({ length: Math.max(0, totalVersions - doneVersions) }, (_, i) => {
-      const v = (report.sourceVersion ?? 11) + doneVersions + i + 1;
-      return `<tr class="skip"><td>⏳</td><td>Angular ${v}</td><td></td></tr>`;
-    }).join('\n    ')}
-  </table>
+        <td class="det">${fileList(`ngUpdate_${s.version}`) || (s.ok ? '' : '<span style="color:var(--amber)">warnings</span>')}</td>
+      </tr>`).join('')}
+      ${Array.from({ length: Math.max(0, totalVersions - doneVersions) }, (_, i) => {
+        const v = (report.sourceVersion ?? 11) + doneVersions + i + 1;
+        return `<tr class="row-skip"><td class="ic">·</td><td>Angular ${v}</td><td class="det"></td></tr>`;
+      }).join('')}
+    </table>
+  </div>
 
   ${opts.modernize ? `
-  <h2>Modernização</h2>
-  <table>
-    ${row('inject() — constructor DI → inject()',            m.inject          ? true : (doneVersions >= totalVersions ? null : false), 'inject')}
-    ${row('Signals — @Input/@Output/@ViewChild → signal APIs', m.signals        ? true : (m.inject ? null : false),                       'signals')}
-    ${row('UntypedForm* → typed forms',                        m.untypedFormsFixed > 0 ? true : (m.signals ? null : false),              'untypedForms')}
-    ${row('throwError() → factory function (RxJS 7)',          m.throwErrorFixed > 0 ? true : (m.signals ? null : false),                'throwError')}
-    ${row('Standalone (convert → prune → bootstrap)',          m.standalone      ? true : (m.signals ? null : false),                    'standalone')}
-    ${row('standalone: true — patches em pipes/directives',    m.standaloneFixed > 0 ? true : (m.standalone ? null : false),            'standaloneFixed')}
-    ${row('Control flow — @if/@for/@switch',                   m.controlFlow     ? true : (m.standalone ? null : false),                 'controlFlow')}
-    ${row('[ngClass] → [class]',                               m.ngClassToClass  ? true : (m.controlFlow ? null : false),                'ngClassToClass')}
-    ${row('[ngStyle] → [style]',                               m.ngStyleToStyle  ? true : (m.ngClassToClass ? null : false),             'ngStyleToStyle')}
-    ${row('app.config.ts + app.routes.ts',                     m.appConfig       ? true : (m.ngStyleToStyle ? null : false),             'appConfig')}
-    ${row('Lazy NgModules → routes files',                     m.lazyRoutesConverted > 0 ? true : (m.appConfig !== undefined ? null : false), 'lazyRoutes')}
-    ${row('Builder → esbuild/Vite',                            m.builder         ? true : (m.appConfig !== undefined ? null : false),    'builder')}
-    ${row('polyfills.ts → zone.js inline',                     m.polyfillsInlined ? true : (m.builder ? null : false),                  'polyfills')}
-    ${row('tsconfig — ES2022 / bundler',                       m.tsconfigModernized ? true : (m.builder ? null : false),                'tsconfig')}
-    ${row('Path aliases (@app, @core, @shared…)',              m.pathAliases     ? true : (m.tsconfigModernized !== undefined ? null : false), 'pathAliases')}
-    ${row('ESLint (@angular/eslint)',                          m.eslintAdded     ? true : (m.pathAliases ? null : false),                'eslint')}
-    ${row('SCSS @import → @use as *',                         m.sassImports > 0 ? true : (m.eslintAdded !== undefined ? null : false),  'sass')}
-    ${row('Módulos .module.ts obsoletos removidos',           m.modulesRemoved > 0 ? true : (m.sassImports !== undefined ? null : false), 'modules')}
-    ${row('styleUrls → styleUrl',                             m.styleUrlFixed > 0 ? true : (m.modulesRemoved !== undefined ? null : false), 'styleUrl')}
-    ${row('Self-closing tags',                                m.selfClosingTags ? true : (m.styleUrlFixed !== undefined ? null : false), 'selfClosing')}
-    ${row('Cleanup unused imports',                           m.cleanupImports  ? true : (m.selfClosingTags ? null : false),             'cleanupImports')}
-  </table>` : ''}
+  <!-- Modernization card -->
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Modernization</span>
+    </div>
+    <table>
+      ${row('inject() — constructor DI → inject()',             m.inject          ? true : (doneVersions >= totalVersions ? null : false), 'inject')}
+      ${row('Signals — @Input/@Output/@ViewChild → signal APIs', m.signals        ? true : (m.inject ? null : false),                       'signals')}
+      ${row('UntypedForm* → typed forms',                        m.untypedFormsFixed > 0 ? true : (m.signals ? null : false),              'untypedForms')}
+      ${row('throwError() → factory function (RxJS 7)',          m.throwErrorFixed > 0 ? true : (m.signals ? null : false),                'throwError')}
+      ${row('Standalone (convert → prune → bootstrap)',          m.standalone      ? true : (m.signals ? null : false),                    'standalone')}
+      ${row('standalone: true — patches em pipes/directives',    m.standaloneFixed > 0 ? true : (m.standalone ? null : false),            'standaloneFixed')}
+      ${row('Control flow — @if / @for / @switch',               m.controlFlow     ? true : (m.standalone ? null : false),                 'controlFlow')}
+      ${row('[ngClass] → [class]',                               m.ngClassToClass  ? true : (m.controlFlow ? null : false),                'ngClassToClass')}
+      ${row('[ngStyle] → [style]',                               m.ngStyleToStyle  ? true : (m.ngClassToClass ? null : false),             'ngStyleToStyle')}
+      ${row('app.config.ts + app.routes.ts',                     m.appConfig       ? true : (m.ngStyleToStyle ? null : false),             'appConfig')}
+      ${row('Lazy NgModules → routes files',                     m.lazyRoutesConverted > 0 ? true : (m.appConfig !== undefined ? null : false), 'lazyRoutes')}
+      ${row('Builder → esbuild / Vite',                          m.builder         ? true : (m.appConfig !== undefined ? null : false),    'builder')}
+      ${row('polyfills.ts → zone.js inline',                     m.polyfillsInlined ? true : (m.builder ? null : false),                  'polyfills')}
+      ${row('tsconfig — ES2022 / bundler',                       m.tsconfigModernized ? true : (m.builder ? null : false),                'tsconfig')}
+      ${row('Path aliases (@app, @core, @shared…)',              m.pathAliases     ? true : (m.tsconfigModernized !== undefined ? null : false), 'pathAliases')}
+      ${row('ESLint (@angular/eslint)',                          m.eslintAdded     ? true : (m.pathAliases ? null : false),                'eslint')}
+      ${row('SCSS @import → @use as *',                         m.sassImports > 0 ? true : (m.eslintAdded !== undefined ? null : false),  'sass')}
+      ${row('Unused .module.ts removed',                        m.modulesRemoved > 0 ? true : (m.sassImports !== undefined ? null : false), 'modules')}
+      ${row('styleUrls → styleUrl',                             m.styleUrlFixed > 0 ? true : (m.modulesRemoved !== undefined ? null : false), 'styleUrl')}
+      ${row('Self-closing tags',                                m.selfClosingTags ? true : (m.styleUrlFixed !== undefined ? null : false), 'selfClosing')}
+      ${row('Cleanup unused imports',                           m.cleanupImports  ? true : (m.selfClosingTags ? null : false),             'cleanupImports')}
+    </table>
+  </div>` : ''}
+
+</main>
 </body>
 </html>`;
 
@@ -1620,6 +1702,7 @@ if (npmInstall().status !== 0) {
 // 5. ng update incremental
 const startVersion = (detectedVersion || 11) + 1;
 const steps = [];
+let ngUpdatePrevHash = capture('git rev-parse HEAD');
 
 for (let v = startVersion; v <= opts.to; v++) {
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
@@ -1647,6 +1730,10 @@ for (let v = startVersion; v <= opts.to; v++) {
 
   run('git add -A');
   run(`git commit -m "chore: Angular ${v}" --allow-empty`);
+
+  const h = capture('git rev-parse HEAD');
+  report.details[`ngUpdate_${v}`] = captureGitDiff(ngUpdatePrevHash, h);
+  ngUpdatePrevHash = h;
 
   steps.push({ version: v, ok });
   report.ngUpdateSteps.push({ version: v, ok });
