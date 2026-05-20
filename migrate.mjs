@@ -965,6 +965,70 @@ function removeImportsFromNonStandalone() {
   if (count > 0) console.log(`  ↳ imports: [] removido de ${count} componente(s) standalone: false`);
 }
 
+// Converte componentes standalone: false que não aparecem em nenhum declarations[]
+// de NgModule sobrevivente. Após prune-ng-modules, esses componentes estão órfãos
+// (nenhum módulo os declara) e devem ser standalone: true.
+function convertOrphanedNonStandalone() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  // Coleta todos os nomes de classe presentes em declarations: [] de NgModules ainda existentes
+  const declaredInModule = new Set();
+  function indexModules(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { indexModules(full); continue; }
+      if (!entry.endsWith('.module.ts')) continue;
+      const src = readFileSync(full, 'utf8');
+      if (!src.includes('@NgModule')) continue;
+      // Extrai declarations: [...] com bracket counter
+      const declIdx = src.search(/\bdeclarations\s*:/);
+      if (declIdx === -1) continue;
+      const arrOpen = src.indexOf('[', declIdx);
+      if (arrOpen === -1) continue;
+      let depth = 0, arrEnd = -1;
+      for (let i = arrOpen; i < src.length; i++) {
+        if (src[i] === '[') depth++;
+        else if (src[i] === ']') { if (--depth === 0) { arrEnd = i; break; } }
+      }
+      if (arrEnd === -1) continue;
+      for (const m of src.slice(arrOpen + 1, arrEnd).matchAll(/\b[A-Z][A-Za-z0-9_]*\b/g)) {
+        declaredInModule.add(m[0]);
+      }
+    }
+  }
+  indexModules(srcDir);
+
+  let count = 0;
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
+      const src = readFileSync(full, 'utf8');
+      if (!src.includes('@Component(')) continue;
+      if (!src.includes('standalone: false') && !src.includes('standalone:false')) continue;
+
+      // Verifica se alguma classe deste arquivo ainda está declarada em módulo sobrevivente
+      const classNames = [...src.matchAll(/export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g)].map(m => m[1]);
+      if (classNames.some(cls => declaredInModule.has(cls))) continue;
+
+      // Nenhum módulo restante declara este componente — converter para standalone: true
+      const updated = src.replace(/\bstandalone\s*:\s*false/g, 'standalone: true');
+      if (updated !== src) {
+        writeFileSync(full, updated);
+        count++;
+        console.log(`  ↳ ${basename(full)}: standalone: false → true (órfão)`);
+      }
+    }
+  }
+  walk(srcDir);
+  if (count > 0) console.log(`  ↳ ${count} componente(s) órfão(s) convertidos para standalone: true`);
+  return count;
+}
+
 // ─── Shared helpers: template import detection (NgModule + standalone) ──────────
 
 const TMPL_ELEM = {
@@ -2385,6 +2449,9 @@ function runModernizationMigrations() {
 
     console.log(`\n  🔄 standalone  (prune-ng-modules)...`);
     run('npx ng generate @angular/core:standalone-migration --mode prune-ng-modules --defaults', { ignoreError: true });
+    // Componentes que ficaram com standalone: false mas não pertencem a nenhum
+    // NgModule sobrevivente são órfãos — convertê-los para standalone: true.
+    convertOrphanedNonStandalone();
     console.log(`\n  🔄 standalone  (standalone-bootstrap)...`);
     run('npx ng generate @angular/core:standalone-migration --mode standalone-bootstrap --defaults', { ignoreError: true });
     report.modernize.standalone = true;
