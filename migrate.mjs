@@ -2481,17 +2481,25 @@ function runModernizationMigrations() {
   }
 
   function commitStep(key, label) {
-    // Auto-fix lint issues before committing whenever ESLint is already set up
-    // and the lintFix step is not skipped. This keeps each step's output clean.
-    if (!skipSteps.has('lintFix') && hasEslintConfig()) {
-      run('npx ng lint --fix', { ignoreError: true });
-      report.modernize.lintFixed = 1;
-    }
+    // Commit the migration transformation first — isolated diff, no lint noise
     run('git add -A');
     run(`git commit --allow-empty -m "refactor: ${label ?? key}"`, { ignoreError: true });
     const h = capture('git rev-parse HEAD');
     report.details[key] = captureGitDiff(prevHash, h);
     prevHash = h;
+
+    // ESLint fix in a separate commit so it never contaminates step diffs
+    if (!skipSteps.has('lintFix') && hasEslintConfig()) {
+      run('npx ng lint --fix', { ignoreError: true });
+      report.modernize.lintFixed = 1;
+      run('git add -A');
+      const staged = spawnSync('git', ['diff', '--staged', '--quiet'], { cwd: destPath });
+      if (staged.status !== 0) {
+        run(`git commit -m "chore: eslint --fix after ${label ?? key}"`, { ignoreError: true });
+        prevHash = capture('git rev-parse HEAD');
+      }
+    }
+
     writeReport(true);
     writeMigrationData();
   }
