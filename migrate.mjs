@@ -125,9 +125,9 @@ function captureGitDiff(h0, h1) {
     const parts = line.split('\t');
     const status = parts[0][0];          // A/M/D/R
     const path = parts[parts.length - 1];
-    if (status === 'D') { result.push({ path, action: 'deleted', lines: [] }); continue; }
+    if (status === 'D') { result.push({ path, action: 'deleted', lines: [], h0, h1 }); continue; }
     const diff = capture(`git diff ${h0} ${h1} -- "${path}"`);
-    result.push({ path, action: status === 'A' ? 'created' : 'modified', lines: parseAddedLines(diff) });
+    result.push({ path, action: status === 'A' ? 'created' : 'modified', lines: parseAddedLines(diff), h0, h1 });
   }
   return result;
 }
@@ -885,8 +885,10 @@ function fixMissingStandalone() {
           if (openBrace === -1) continue;
 
           if (decRegion.includes('standalone:')) {
-            // standalone present — ensure imports: [] exists
-            if (!decRegion.includes('imports:')) {
+            // standalone already present — only add imports: [] if it's explicitly true.
+            // standalone: false means the component is NgModule-declared; imports is invalid there.
+            const isExplicitlyFalse = /standalone\s*:\s*false/.test(decRegion);
+            if (!isExplicitlyFalse && !decRegion.includes('imports:')) {
               const insertAt = compIdx + openBrace + 1;
               const extra = '\n  imports: [],';
               result = result.slice(0, insertAt) + extra + result.slice(insertAt);
@@ -910,6 +912,57 @@ function fixMissingStandalone() {
   if (existsSync(srcDir)) walk(srcDir);
   if (count > 0) console.log(`  ↳ standalone: true adicionado em ${count} arquivo(s)`);
   return count;
+}
+
+// Remove imports: [...] from @Component decorators that have standalone: false.
+// imports: is only valid on standalone components; leaving it causes NG2010.
+function removeImportsFromNonStandalone() {
+  let count = 0;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return;
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
+      const src = readFileSync(full, 'utf8');
+      if (!src.includes('standalone: false') && !src.includes('standalone:false')) continue;
+      if (!src.includes('@Component(')) continue;
+
+      // Use export-class boundaries to isolate each decorator
+      const classBoundaryRe = /^export\s+(?:abstract\s+)?class\s+/gm;
+      const boundaries = [];
+      let bm;
+      while ((bm = classBoundaryRe.exec(src)) !== null) boundaries.push(bm.index);
+      boundaries.push(src.length);
+
+      let result = src;
+      let shift = 0;
+      for (let bi = 0; bi < boundaries.length - 1; bi++) {
+        const classStart = boundaries[bi] + shift;
+        const before = result.slice(0, classStart);
+        const compIdx = before.lastIndexOf('@Component(');
+        if (compIdx === -1) continue;
+        const decRegion = result.slice(compIdx, classStart);
+        if (!/standalone\s*:\s*false/.test(decRegion)) continue;
+        if (!decRegion.includes('imports:')) continue;
+
+        // Strip imports: [...] (single or multi-line) from this decorator region
+        const cleaned = decRegion.replace(/\n[ \t]*imports\s*:\s*\[[^\]]*\]\s*,?/g, '');
+        if (cleaned === decRegion) continue;
+        result = result.slice(0, compIdx) + cleaned + result.slice(classStart);
+        shift += cleaned.length - decRegion.length;
+      }
+
+      if (result !== src) {
+        writeFileSync(full, result);
+        count++;
+      }
+    }
+  }
+  walk(srcDir);
+  if (count > 0) console.log(`  ↳ imports: [] removido de ${count} componente(s) standalone: false`);
 }
 
 // ─── Shared helpers: template import detection (NgModule + standalone) ──────────
@@ -2343,6 +2396,7 @@ function runModernizationMigrations() {
   if (!skipSteps.has('standaloneFixed')) {
     console.log(`\n  🔄 standalone  (fix missing standalone: true in pipes/directives)...`);
     report.modernize.standaloneFixed = fixMissingStandalone();
+    removeImportsFromNonStandalone();
     console.log(`\n  🔄 standalone  (add missing Material/Angular imports)...`);
     report.modernize.standaloneFixed += fixStandaloneImports();
     commitStep('standaloneFixed', 'standalone: true patch + imports');
@@ -2460,6 +2514,7 @@ function runModernizationMigrations() {
     // Re-apply standalone fixes after cleanup: schematic may remove standalone: true from
     // components still referenced in surviving NgModules, leaving imports: [] without standalone.
     fixMissingStandalone();
+    removeImportsFromNonStandalone();
     // Fix double commas left by schematics (prune-ng-modules, cleanup-unused-imports)
     fixTsCompat();
     const reFixed = fixStandaloneImports();
