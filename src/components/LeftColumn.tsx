@@ -6,9 +6,10 @@ import { NgUpdateCard } from './NgUpdateCard'
 interface Props {
   data: MigrationData
   onDataChange: (data: MigrationData) => void
+  onLoadMigration: (data: MigrationData) => void
 }
 
-export function LeftColumn({ data, onDataChange }: Props) {
+export function LeftColumn({ data, onDataChange, onLoadMigration }: Props) {
   const [isRunning, setIsRunning] = useState(false)
 
   const handleStop = useCallback(async () => {
@@ -28,6 +29,7 @@ export function LeftColumn({ data, onDataChange }: Props) {
         onStart={() => setIsRunning(true)}
         onStop={handleStop}
         onDataChange={onDataChange}
+        onLoadMigration={onLoadMigration}
       />
       {(data.status !== 'idle' || data.ngUpdateSteps.length > 0) && (
         <NgUpdateCard data={data} />

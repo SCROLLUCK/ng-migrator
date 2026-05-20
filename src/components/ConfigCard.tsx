@@ -35,9 +35,10 @@ interface Props {
   onStart: () => void
   onStop: () => void
   onDataChange: (data: MigrationData) => void
+  onLoadMigration: (data: MigrationData) => void
 }
 
-export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
+export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }: Props) {
   const [sourcePath, setSourcePath] = useState(() => localStorage.getItem('ng-migrator.sourcePath') ?? '')
   const [targetVersion, setTargetVersion] = useState(() => {
     const v = localStorage.getItem('ng-migrator.targetVersion')
@@ -50,6 +51,9 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
   const [selectedSteps, setSelectedSteps] = useState<Set<string>>(new Set(ALL_STEPS))
   const [error, setError] = useState<string | null>(null)
   const [browsing, setBrowsing] = useState(false)
+  const [loadPath, setLoadPath] = useState('')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadBrowsing, setLoadBrowsing] = useState(false)
 
   useEffect(() => { localStorage.setItem('ng-migrator.sourcePath', sourcePath) }, [sourcePath])
   useEffect(() => { localStorage.setItem('ng-migrator.targetVersion', String(targetVersion)) }, [targetVersion])
@@ -67,6 +71,38 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
       // ignore
     } finally {
       setBrowsing(false)
+    }
+  }
+
+  const handleLoadBrowse = async () => {
+    setLoadBrowsing(true)
+    try {
+      const res = await fetch('/api/browse')
+      const json = await res.json()
+      if (json.path) setLoadPath(json.path)
+    } catch {
+      // ignore
+    } finally {
+      setLoadBrowsing(false)
+    }
+  }
+
+  const handleLoad = async () => {
+    setLoadError(null)
+    if (!loadPath.trim()) {
+      setLoadError('Enter the migrated project path.')
+      return
+    }
+    try {
+      const res = await fetch(`/api/load-migration?path=${encodeURIComponent(loadPath.trim())}`)
+      const json = await res.json()
+      if (!res.ok) {
+        setLoadError(json.error || 'Could not load migration data.')
+        return
+      }
+      onLoadMigration(json)
+    } catch {
+      setLoadError('Failed to connect to server.')
     }
   }
 
@@ -271,6 +307,47 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
           <div className="text-[0.72rem] text-[#7070A0] break-all leading-normal">
             <span className="text-text">Destination: </span>
             {data.destPath}
+          </div>
+        )}
+
+        {/* Load report */}
+        {!isRunning && (
+          <div className="border-t border-[#2A2A45] pt-3 flex flex-col gap-2">
+            <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">
+              Carregar relatório
+            </span>
+            <div className="flex gap-1.5">
+              <input
+                className={cn(inputBase, 'flex-1')}
+                type="text"
+                placeholder="/path/to/migrated-project"
+                value={loadPath}
+                onChange={(e) => setLoadPath(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleLoad()}
+              />
+              <button
+                onClick={handleLoadBrowse}
+                disabled={loadBrowsing}
+                title="Selecionar pasta"
+                className={cn(
+                  'bg-surface2 border border-[#2A2A45] rounded-[6px] px-[0.65rem] text-base flex items-center shrink-0 transition-colors',
+                  loadBrowsing ? 'text-[#4A4A70] cursor-not-allowed' : 'text-[#7070A0] cursor-pointer hover:text-text',
+                )}
+              >
+                📁
+              </button>
+            </div>
+            {loadError && (
+              <div className="bg-[#EF5350]/10 border border-[#EF5350]/30 rounded-[6px] px-[0.65rem] py-[0.45rem] text-[0.78rem] text-[#EF5350]">
+                {loadError}
+              </div>
+            )}
+            <button
+              onClick={handleLoad}
+              className="w-full bg-surface2 border border-[#2A2A45] text-[#B0B0D0] rounded-[6px] py-2 text-[0.82rem] font-semibold cursor-pointer hover:border-blue hover:text-blue transition-colors"
+            >
+              Carregar
+            </button>
           </div>
         )}
       </div>

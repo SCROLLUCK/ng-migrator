@@ -375,6 +375,19 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (path === '/api/load-migration' && req.method === 'GET') {
+    const loadPath = url.searchParams.get('path');
+    const loaded = readMigrationData(loadPath);
+    if (!loaded) {
+      res.writeHead(404, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: 'MIGRATION-DATA.json not found at this path' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(loaded));
+    return;
+  }
+
   if (path === '/api/browse' && req.method === 'GET') {
     let selected = null;
     try {

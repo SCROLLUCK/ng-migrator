@@ -1695,14 +1695,30 @@ function fixSassImports() {
       if (out.includes('~src/')) {
         const relToSrc = relative(dirname(full), srcDir).replace(/\\/g, '/') || '.';
         out = out.replace(/url\((['"])~src\//g, `url($1${relToSrc}/`);
-        // Also non-url references like background: url(~src/...)
         out = out.replace(/(['"])~src\//g, `$1${relToSrc}/`);
       }
 
-      // Reorder: @use rules must come before any other CSS rules in SCSS
-      if (out.includes('@use ')) {
+      // Fix deprecated Sass slash division: $x / $y → math.div($x, $y)
+      // Only matches clear SCSS math (both sides are variables or numeric literals, not CSS grid/font shorthands)
+      const divRe = /(\$[\w-]+|\d+(?:\.\d+)?)(\s*\/\s*)(\$[\w-]+|\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw)?)/g;
+      if (divRe.test(out) && !out.includes("'sass:math'") && !out.includes('"sass:math"')) {
+        out = out.replace(divRe, (_, a, __, b) => `math.div(${a}, ${b})`);
+        out = `@use 'sass:math' as math;\n${out}`;
+      }
+
+      // Fix deprecated darken()/lighten() → color.adjust() — Dart Sass 2.0 removes them
+      const hasDarken  = /\bdarken\s*\(/.test(out);
+      const hasLighten = /\blighten\s*\(/.test(out);
+      if ((hasDarken || hasLighten) && !out.includes("'sass:color'") && !out.includes('"sass:color"')) {
+        if (hasDarken)  out = out.replace(/\bdarken\s*\(([^,]+),\s*([^)]+)\)/g,  'color.adjust($1, $lightness: -$2)');
+        if (hasLighten) out = out.replace(/\blighten\s*\(([^,]+),\s*([^)]+)\)/g, 'color.adjust($1, $lightness: $2)');
+        out = `@use 'sass:color' as color;\n${out}`;
+      }
+
+      // Reorder: @use and @forward rules must come before any other CSS rules in SCSS
+      if (out.includes('@use ') || out.includes('@forward ')) {
         const lines = out.split('\n');
-        const leading = [];   // initial empty lines / comments
+        const leading = [];
         const useLines = [];
         const rest = [];
         let pastLeading = false;
@@ -1712,14 +1728,12 @@ function fixSassImports() {
             leading.push(line);
           } else {
             pastLeading = true;
-            if (/^\s*@use\s/.test(line)) useLines.push(line);
+            if (/^\s*@(use|forward)\s/.test(line)) useLines.push(line);
             else rest.push(line);
           }
         }
         if (useLines.length > 0) {
-          // Remove trailing blank lines from leading block
           while (leading.length && leading[leading.length - 1].trim() === '') leading.pop();
-          // Remove leading blank lines from rest
           while (rest.length && rest[0].trim() === '') rest.shift();
           out = [
             ...leading,
@@ -2403,19 +2417,35 @@ function migrateFlexLayoutToTailwind() {
   walkHtml(srcDir);
   walkTs(srcDir);
 
-  // Instala Tailwind CSS
-  console.log('  ↳ Instalando Tailwind CSS...');
-  run('npm install -D tailwindcss postcss autoprefixer', { ignoreError: true });
+  // Instala Tailwind CSS v3 (pinned: v4 uses a different config format incompatible with this setup)
+  console.log('  ↳ Instalando Tailwind CSS v3...');
+  run('npm install -D "tailwindcss@^3" postcss autoprefixer', { ignoreError: true });
 
-  const configPath = join(destPath, 'tailwind.config.js');
+  // Detect if project uses ESM ("type": "module" in package.json)
+  let projectIsEsm = false;
+  try {
+    const pkgJson = JSON.parse(readFileSync(join(destPath, 'package.json'), 'utf8'));
+    projectIsEsm = pkgJson.type === 'module';
+  } catch { /* ignore */ }
+
+  const twConfigName = projectIsEsm ? 'tailwind.config.mjs' : 'tailwind.config.js';
+  const configPath = join(destPath, twConfigName);
   if (!existsSync(configPath)) {
-    writeFileSync(configPath, `/** @type {import('tailwindcss').Config} */
+    const twContent = projectIsEsm
+      ? `/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./src/**/*.{html,ts}'],
+  theme: { extend: {} },
+  plugins: [],
+};\n`
+      : `/** @type {import('tailwindcss').Config} */
 module.exports = {
   content: ['./src/**/*.{html,ts}'],
   theme: { extend: {} },
   plugins: [],
-};\n`);
-    console.log('  ↳ tailwind.config.js criado');
+};\n`;
+    writeFileSync(configPath, twContent);
+    console.log(`  ↳ ${twConfigName} criado`);
   }
 
   // Adiciona @tailwind directives no styles global
@@ -2549,6 +2579,10 @@ function runModernizationMigrations() {
     removeImportsFromNonStandalone();
     console.log(`\n  🔄 standalone  (add missing Material/Angular imports)...`);
     report.modernize.standaloneFixed += fixStandaloneImports();
+    // Re-run NgModule import fix for components that remain standalone: false after migration.
+    // Their NgModules need the Material/CDK/pipe modules that templates reference.
+    console.log(`\n  🔄 standalone  (fix remaining NgModule imports for standalone:false components)...`);
+    fixNgModuleImports();
     commitStep('standaloneFixed', 'standalone: true patch + imports');
   }
 
@@ -3254,7 +3288,13 @@ for (let v = startVersion; v <= opts.to; v++) {
   }
 
   verifyTsconfigPaths();
-  const result = run(`npx ng update ${packages} --allow-dirty --force`, { ignoreError: true });
+  // Try without --force first (Angular recommendation). If peer dep conflicts block the update,
+  // fall back to --force so the migration can continue across all intermediate versions.
+  let result = run(`npx ng update ${packages} --allow-dirty`, { ignoreError: true });
+  if (result.status !== 0) {
+    console.warn(`\n  ⚠ ng update v${v} falhou sem --force — tentando com --force...`);
+    result = run(`npx ng update ${packages} --allow-dirty --force`, { ignoreError: true });
+  }
   const ok = result.status === 0;
 
   if (!ok) console.warn(`\n  ⚠ ng update v${v} reportou erros — sincronizando versões manualmente.`);

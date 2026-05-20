@@ -45,6 +45,7 @@ const EMPTY_DATA: MigrationData = {
 
 export default function App() {
   const [data, setData] = useState<MigrationData>(EMPTY_DATA)
+  const [viewedData, setViewedData] = useState<MigrationData | null>(null)
   const [terminalLines, setTerminalLines] = useState<string[]>([])
   const terminalRef = useRef<HTMLDivElement>(null)
   const sseRef = useRef<EventSource | null>(null)
@@ -89,6 +90,9 @@ export default function App() {
 
   const handleClearTerminal = useCallback(() => setTerminalLines([]), [])
 
+  const displayData = viewedData ?? data
+  const isViewingLoaded = viewedData !== null
+
   return (
     <div className="min-h-screen bg-[#0F0F1A] text-text">
       {/* Header */}
@@ -105,9 +109,20 @@ export default function App() {
 
         <span className="text-[0.72rem] text-[#4A4A70] tracking-[0.03em]">Angular migration tool</span>
 
-        {data.sourceVersion && (
+        {displayData.sourceVersion && (
           <span className="ml-1 bg-red/10 text-red border border-red/25 rounded px-1.75 py-px text-[0.68rem] font-semibold">
-            v{data.sourceVersion} → v{data.targetVersion}
+            v{displayData.sourceVersion} → v{displayData.targetVersion}
+          </span>
+        )}
+
+        {isViewingLoaded && (
+          <span className="ml-1 bg-blue/10 text-blue border border-blue/25 rounded px-1.75 py-px text-[0.68rem] font-semibold flex items-center gap-1">
+            Relatório carregado
+            <button
+              onClick={() => setViewedData(null)}
+              className="ml-0.5 text-blue/60 hover:text-blue transition-colors leading-none"
+              title="Fechar relatório"
+            >✕</button>
           </span>
         )}
 
@@ -133,12 +148,12 @@ export default function App() {
       {/* Main two-column layout */}
       <main className="max-w-400 mx-auto px-8 py-6 grid grid-cols-[380px_1fr] gap-5 items-start">
         <div className="sticky top-20 max-h-[calc(100vh-3.5rem-3rem)] overflow-y-auto flex flex-col gap-5">
-          <LeftColumn data={data} onDataChange={setData} />
+          <LeftColumn data={data} onDataChange={setData} onLoadMigration={setViewedData} />
         </div>
 
         <div>
           <RightColumn
-            data={data}
+            data={displayData}
             terminalLines={terminalLines}
             terminalRef={terminalRef}
             onClearTerminal={handleClearTerminal}
