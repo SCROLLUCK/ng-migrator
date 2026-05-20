@@ -26,6 +26,26 @@ let migrationProcess = null;
 let terminalLines = [];
 const sseClients = new Set();
 
+// Diff cache: key = "${path}::${h0}::${h1}", populated from MIGRATION-DIFFS.json
+// Keyed by dest path to support multiple loaded migrations.
+const diffCacheByDest = new Map();
+
+function loadDiffCache(destPath) {
+  if (!destPath || diffCacheByDest.has(destPath)) return;
+  const locations = [
+    join(destPath, '.ng-migrator', 'MIGRATION-DIFFS.json'),
+    join(destPath, 'MIGRATION-DIFFS.json'),
+  ];
+  for (const p of locations) {
+    if (existsSync(p)) {
+      try {
+        diffCacheByDest.set(destPath, JSON.parse(readFileSync(p, 'utf8')));
+        return;
+      } catch { /* ignore parse errors */ }
+    }
+  }
+}
+
 // Default migration data when idle
 const defaultMigrationData = {
   status: 'idle',
@@ -194,6 +214,7 @@ const server = createServer(async (req, res) => {
           ...fresh,
           status: migrationProcess ? 'running' : (fresh.status || 'done'),
         };
+        loadDiffCache(currentMigrationData.destPath);
       }
     }
     res.writeHead(200, {
@@ -362,16 +383,22 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Missing parameters' }));
       return;
     }
-    const result = spawnSync('git', ['diff', h0, h1, '--', filePath], {
-      cwd: dest,
-      encoding: 'utf8',
-    });
+    const cacheKey = `${filePath}::${h0}::${h1}`;
+    const cached = diffCacheByDest.get(dest)?.[cacheKey];
+    const diffText = cached !== undefined
+      ? cached
+      : spawnSync('git', ['diff', h0, h1, '--', filePath], { cwd: dest, encoding: 'utf8' }).stdout || '';
+    // Populate in-memory cache for subsequent requests this session
+    if (cached === undefined && dest) {
+      if (!diffCacheByDest.has(dest)) diffCacheByDest.set(dest, {});
+      diffCacheByDest.get(dest)[cacheKey] = diffText;
+    }
     res.writeHead(200, {
       'Content-Type': 'application/json',
       'Cache-Control': 'no-cache',
       'Access-Control-Allow-Origin': '*',
     });
-    res.end(JSON.stringify({ diff: result.stdout || '' }));
+    res.end(JSON.stringify({ diff: diffText }));
     return;
   }
 
@@ -383,6 +410,7 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'MIGRATION-DATA.json not found at this path' }));
       return;
     }
+    if (loaded.destPath) loadDiffCache(loaded.destPath);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(loaded));
     return;

@@ -117,6 +117,9 @@ function formatRanges(lines) {
   return ranges.join(', ');
 }
 
+// Stores all computed diffs: key = "path::h0::h1", value = raw diff string
+const allDiffs = {};
+
 function captureGitDiff(h0, h1) {
   if (!h0 || !h1 || h0 === h1) return [];
   const raw = capture(`git diff ${h0} ${h1} --name-status -- ':!package-lock.json'`);
@@ -128,6 +131,7 @@ function captureGitDiff(h0, h1) {
     const path = parts[parts.length - 1];
     if (status === 'D') { result.push({ path, action: 'deleted', lines: [], h0, h1 }); continue; }
     const diff = capture(`git diff ${h0} ${h1} -- "${path}"`);
+    allDiffs[`${path}::${h0}::${h1}`] = diff || '';
     result.push({ path, action: status === 'A' ? 'created' : 'modified', lines: parseAddedLines(diff), h0, h1 });
   }
   return result;
@@ -3190,6 +3194,8 @@ function writeMigrationData() {
   try {
     const dataPath = join(migratorDir, 'MIGRATION-DATA.json');
     writeFileSync(dataPath, JSON.stringify(report, null, 2) + '\n');
+    const diffsPath = join(migratorDir, 'MIGRATION-DIFFS.json');
+    writeFileSync(diffsPath, JSON.stringify(allDiffs) + '\n');
   } catch {
     // non-fatal — UI polling will just show stale data
   }
