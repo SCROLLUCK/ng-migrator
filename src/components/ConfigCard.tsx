@@ -132,7 +132,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
           </label>
           <div style={{ display: 'flex', gap: 6 }}>
             <input
-              style={{ flex: 1, background: '#0F0F1A', border: '1px solid #2A2A45', borderRadius: 6, color: '#E8E8F0', padding: '0.45rem 0.65rem', fontSize: '0.82rem', outline: 'none' }}
+              style={{ flex: 1, background: '#0F0F1A', border: '1px solid #2A2A45', borderRadius: 6, color: '#E8E8F0', padding: '0.45rem 0.65rem', fontSize: '0.82rem', outline: 'none', cursor: isRunning ? 'not-allowed' : 'auto' }}
               type="text"
               placeholder="/path/to/my-angular-app"
               value={sourcePath}
@@ -143,7 +143,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
               onClick={handleBrowse}
               disabled={isRunning || browsing}
               title="Selecionar pasta"
-              style={{ background: '#1E1E35', border: '1px solid #2A2A45', borderRadius: 6, color: browsing ? '#4A4A70' : '#7070A0', padding: '0 0.65rem', fontSize: '1rem', cursor: isRunning || browsing ? 'default' : 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center' }}
+              style={{ background: '#1E1E35', border: '1px solid #2A2A45', borderRadius: 6, color: browsing ? '#4A4A70' : '#7070A0', padding: '0 0.65rem', fontSize: '1rem', cursor: isRunning ? 'not-allowed' : browsing ? 'wait' : 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center' }}
             >
               📁
             </button>
@@ -156,7 +156,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
             Target version
           </label>
           <select
-            style={{ width: '100%', background: '#0F0F1A', border: '1px solid #2A2A45', borderRadius: 6, color: '#E8E8F0', padding: '0.45rem 0.65rem', fontSize: '0.82rem', outline: 'none', cursor: 'pointer' }}
+            style={{ width: '100%', background: '#0F0F1A', border: '1px solid #2A2A45', borderRadius: 6, color: '#E8E8F0', padding: '0.45rem 0.65rem', fontSize: '0.82rem', outline: 'none', cursor: isRunning ? 'not-allowed' : 'pointer' }}
             value={targetVersion}
             onChange={(e) => setTargetVersion(parseInt(e.target.value))}
             disabled={isRunning}
@@ -175,9 +175,9 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
             checked={modernize}
             onChange={(e) => setModernize(e.target.checked)}
             disabled={isRunning}
-            style={{ accentColor: '#DD0031', width: 15, height: 15, cursor: 'pointer' }}
+            style={{ accentColor: '#DD0031', width: 15, height: 15, cursor: isRunning ? 'not-allowed' : 'pointer' }}
           />
-          <label htmlFor="modernize-check" style={{ fontSize: '0.82rem', color: '#E8E8F0', cursor: 'pointer' }}>
+          <label htmlFor="modernize-check" style={{ fontSize: '0.82rem', color: '#E8E8F0', cursor: isRunning ? 'not-allowed' : 'pointer' }}>
             Run modernization steps
           </label>
         </div>
@@ -190,9 +190,9 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
             checked={cleanDest}
             onChange={(e) => setCleanDest(e.target.checked)}
             disabled={isRunning}
-            style={{ accentColor: '#DD0031', width: 15, height: 15, cursor: 'pointer' }}
+            style={{ accentColor: '#DD0031', width: 15, height: 15, cursor: isRunning ? 'not-allowed' : 'pointer' }}
           />
-          <label htmlFor="clean-dest-check" style={{ fontSize: '0.82rem', color: '#E8E8F0', cursor: 'pointer' }}>
+          <label htmlFor="clean-dest-check" style={{ fontSize: '0.82rem', color: '#E8E8F0', cursor: isRunning ? 'not-allowed' : 'pointer' }}>
             Delete destination folder if it exists
           </label>
         </div>
@@ -205,9 +205,9 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
             checked={runAfter}
             onChange={(e) => setRunAfter(e.target.checked)}
             disabled={isRunning}
-            style={{ accentColor: '#DD0031', width: 15, height: 15, cursor: 'pointer' }}
+            style={{ accentColor: '#DD0031', width: 15, height: 15, cursor: isRunning ? 'not-allowed' : 'pointer' }}
           />
-          <label htmlFor="run-after-check" style={{ fontSize: '0.82rem', color: '#E8E8F0', cursor: 'pointer' }}>
+          <label htmlFor="run-after-check" style={{ fontSize: '0.82rem', color: '#E8E8F0', cursor: isRunning ? 'not-allowed' : 'pointer' }}>
             Install &amp; serve after migration
           </label>
         </div>
@@ -217,7 +217,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
           <div>
             <button
               onClick={() => setStepsOpen((o) => !o)}
-              style={{ background: 'none', border: '1px solid #2A2A45', borderRadius: 6, color: '#7070A0', fontSize: '0.75rem', padding: '0.35rem 0.65rem', cursor: 'pointer', width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between' }}
+              style={{ background: 'none', border: '1px solid #2A2A45', borderRadius: 6, color: '#7070A0', fontSize: '0.75rem', padding: '0.35rem 0.65rem', cursor: isRunning ? 'not-allowed' : 'pointer', width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between' }}
               disabled={isRunning}
             >
               <span>Modernization steps</span>
@@ -226,13 +226,13 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
             {stepsOpen && (
               <div style={{ background: '#0F0F1A', border: '1px solid #2A2A45', borderRadius: 6, padding: '0.5rem 0.75rem', marginTop: 4, display: 'flex', flexDirection: 'column', gap: '0.35rem', maxHeight: '220px', overflowY: 'auto' }}>
                 {ALL_STEPS.map((key) => (
-                  <label key={key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem', color: '#B0B0D0', cursor: isRunning ? 'default' : 'pointer' }}>
+                  <label key={key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem', color: '#B0B0D0', cursor: isRunning ? 'not-allowed' : 'pointer' }}>
                     <input
                       type="checkbox"
                       checked={selectedSteps.has(key)}
                       onChange={() => toggleStep(key)}
                       disabled={isRunning}
-                      style={{ accentColor: '#DD0031', width: 13, height: 13 }}
+                      style={{ accentColor: '#DD0031', width: 13, height: 13, cursor: isRunning ? 'not-allowed' : 'pointer' }}
                     />
                     {STEP_LABELS[key]}
                   </label>
