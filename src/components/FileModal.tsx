@@ -46,7 +46,7 @@ function UnifiedDiff({ lines }: { lines: DiffLine[] }) {
           const isDel = line.type === 'del'
           return (
             <tr key={i} style={{ background: isAdd ? 'rgba(76,175,80,0.10)' : isDel ? 'rgba(239,83,80,0.10)' : 'transparent' }}>
-              <td style={{ width: 16, padding: '0 6px 0 10px', userSelect: 'none', color: isAdd ? '#4CAF50' : isDel ? '#EF5350' : '#3A3A60', fontWeight: 700, fontFamily: 'monospace', fontSize: '0.72rem' }}>
+              <td style={{ width: 16, padding: '0 6px 0 4px', userSelect: 'none', color: isAdd ? '#4CAF50' : isDel ? '#EF5350' : '#3A3A60', fontWeight: 700, fontFamily: 'monospace', fontSize: '0.72rem' }}>
                 {isAdd ? '+' : isDel ? '-' : ' '}
               </td>
               <td style={{ padding: '0 10px 0 0', color: isAdd ? '#88D58A' : isDel ? '#EF8080' : '#8080A0', whiteSpace: 'pre', fontFamily: 'monospace', fontSize: '0.72rem', overflow: 'hidden' }}>
@@ -67,7 +67,7 @@ function PlainCode({ text }: { text: string }) {
       <tbody>
         {lines.map((line, i) => (
           <tr key={i}>
-            <td style={{ width: 36, padding: '0 8px 0 10px', userSelect: 'none', color: '#3A3A60', textAlign: 'right', fontFamily: 'monospace', fontSize: '0.65rem' }}>
+            <td style={{ width: 36, padding: '0 8px 0 4px', userSelect: 'none', color: '#3A3A60', textAlign: 'right', fontFamily: 'monospace', fontSize: '0.65rem' }}>
               {i + 1}
             </td>
             <td style={{ padding: '0 10px 0 0', color: '#8080A0', whiteSpace: 'pre', fontFamily: 'monospace', fontSize: '0.72rem', overflow: 'hidden' }}>
@@ -89,7 +89,7 @@ function DiffPanel({ state, onTabChange }: { state: ExpandedState; onTabChange: 
   const { lines, loading, tab } = state
   return (
     <div style={{ background: '#090914', borderTop: '1px solid #1E1E35', borderBottom: '1px solid #1E1E35' }}>
-      <div style={{ display: 'flex', borderBottom: '1px solid #1E1E35', paddingLeft: '0.75rem' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid #1E1E35', paddingLeft: '0.5rem' }}>
         {TABS.map(t => (
           <button key={t.key} onClick={() => onTabChange(t.key)} style={{
             background: 'none', border: 'none',
@@ -107,7 +107,7 @@ function DiffPanel({ state, onTabChange }: { state: ExpandedState; onTabChange: 
           </span>
         )}
       </div>
-      <div style={{ maxHeight: 380, overflowY: 'auto', overflowX: 'auto' }}>
+      <div style={{ maxHeight: 520, overflowY: 'auto', overflowX: 'auto' }}>
         {loading && <div style={{ color: '#4A4A70', padding: '0.75rem 1rem', fontSize: '0.75rem', fontFamily: 'monospace' }}>Loading…</div>}
         {!loading && (!lines || lines.length === 0) && (
           <div style={{ color: '#4A4A70', padding: '0.75rem 1rem', fontSize: '0.75rem' }}>No diff available.</div>
@@ -175,11 +175,11 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
   return createPortal(
     <div
       onClick={onClose}
-      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1.5rem' }}
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2vh 2vw' }}
     >
       <div
         onClick={e => e.stopPropagation()}
-        style={{ background: '#16162A', border: '1px solid #2A2A45', borderRadius: 12, width: '100%', maxWidth: 860, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(0,0,0,0.6)' }}
+        style={{ background: '#16162A', border: '1px solid #2A2A45', borderRadius: 12, width: '80vw', height: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(0,0,0,0.6)' }}
       >
         {/* Header */}
         <div style={{ background: '#1E1E35', borderBottom: '1px solid #2A2A45', borderRadius: '12px 12px 0 0', padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
@@ -227,7 +227,7 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
               <div key={i} style={{ flexShrink: 0 }}>
                 <div
                   onClick={() => toggleFile(i, f)}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0.3rem 1rem', cursor: hasDiff ? 'pointer' : 'default', background: isOpen ? 'rgba(92,184,245,0.05)' : i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent', borderLeft: isOpen ? '2px solid rgba(92,184,245,0.35)' : '2px solid transparent' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0.28rem 0.5rem', cursor: hasDiff ? 'pointer' : 'default', background: isOpen ? 'rgba(92,184,245,0.05)' : i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent', borderLeft: isOpen ? '2px solid rgba(92,184,245,0.35)' : '2px solid transparent' }}
                   onMouseEnter={e => { if (!isOpen) e.currentTarget.style.background = 'rgba(255,255,255,0.04)' }}
                   onMouseLeave={e => { if (!isOpen) e.currentTarget.style.background = i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent' }}
                 >
