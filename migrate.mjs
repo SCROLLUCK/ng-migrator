@@ -886,10 +886,20 @@ function fixMissingStandalone() {
           if (openBrace === -1) continue;
 
           if (decRegion.includes('standalone:')) {
-            // standalone already present — only add imports: [] if it's explicitly true.
-            // standalone: false means the component is NgModule-declared; imports is invalid there.
             const isExplicitlyFalse = /standalone\s*:\s*false/.test(decRegion);
-            if (!isExplicitlyFalse && !decRegion.includes('imports:')) {
+            if (isExplicitlyFalse) {
+              // standalone: false + imports: [] is an inconsistent state (migration added imports
+              // but didn't flip the flag). Promote to standalone: true.
+              if (decRegion.includes('imports:')) {
+                const fixedRegion = decRegion.replace(/standalone\s*:\s*false/, 'standalone: true');
+                const regionStart = compIdx;
+                const regionEnd = compIdx + decRegion.length;
+                result = result.slice(0, regionStart) + fixedRegion + result.slice(regionEnd);
+                shift += fixedRegion.length - decRegion.length;
+              }
+              // else: standalone: false without imports: [] — leave it (it's an NgModule component)
+            } else if (!decRegion.includes('imports:')) {
+              // standalone: true but missing imports: [] — add it
               const insertAt = compIdx + openBrace + 1;
               const extra = '\n  imports: [],';
               result = result.slice(0, insertAt) + extra + result.slice(insertAt);
@@ -1188,7 +1198,9 @@ function tmplGetTemplate(tsFile, src) {
 
 function tmplDetectNeeded(tpl) {
   const needed = new Map();
-  const elemRe = /<(mat-[\w-]+|router-outlet|cdk-virtual-scroll-viewport)[\s\/>]/g;
+  // Build pattern from all known element keys so third-party elements (ng-progress, etc.) are also detected
+  const elemKeys = Object.keys(TMPL_ELEM).map(k => k.replace(/[-[\]]/g, '\\$&')).join('|');
+  const elemRe = new RegExp(`<(${elemKeys})[\\s\\/>]`, 'g');
   let m;
   while ((m = elemRe.exec(tpl)) !== null) {
     const e = TMPL_ELEM[m[1]];
@@ -1750,6 +1762,9 @@ function modernizeTsconfig() {
   if (!modernTargets.includes(co.module)) { co.module = 'ES2022'; changes.push('module→ES2022'); }
   if (co.moduleResolution !== 'bundler') { co.moduleResolution = 'bundler'; changes.push('moduleResolution→bundler'); }
   if (co.useDefineForClassFields !== false) { co.useDefineForClassFields = false; changes.push('useDefineForClassFields→false'); }
+  // Third-party libraries often lag behind Angular releases and reference removed internal types.
+  // skipLibCheck avoids type errors in node_modules that we can't control (e.g. InjectFlags removed in Angular v20).
+  if (!co.skipLibCheck) { co.skipLibCheck = true; changes.push('skipLibCheck→true'); }
 
   if (changes.length) {
     writeJson(tsconfigPath, tsconfig);
@@ -1838,38 +1853,80 @@ function createAppConfigAndRoutes() {
     const mainContent2 = existsSync(mainPath) ? readFileSync(mainPath, 'utf8') : '';
     let cfgChanged = false;
 
-    // Deduplicate import lines
+    // Deduplicate import lines (normalize quotes so single vs double quote differences are caught)
     const cfgLines = cfg.split('\n');
     const seenImports = new Set();
     const deduped = cfgLines.filter(line => {
       if (!/^\s*import\s+/.test(line)) return true;
-      const key = line.trim();
+      const key = line.trim().replace(/"/g, "'"); // normalize to single quotes for comparison
       if (seenImports.has(key)) return false;
       seenImports.add(key);
       return true;
     });
     if (deduped.length !== cfgLines.length) { cfg = deduped.join('\n'); cfgChanged = true; }
 
-    // Find symbols used in importProvidersFrom(...) that have no import statement
+    // Find symbols used in importProvidersFrom(...) that have no import statement.
+    // Search across multiple candidate files: app.config.ts may be missing imports that were
+    // in app.module.ts (third-party modules like NgxMaskModule, ToastrModule, etc. were never
+    // in main.ts — they were in the AppModule.imports array).
     const ipfMatch = cfg.match(/importProvidersFrom\s*\(([^)]+)\)/s);
-    if (ipfMatch && mainContent2) {
+    if (ipfMatch) {
+      // Build a corpus of all TS files that might have the original imports
+      const candidatePaths = [
+        mainPath,
+        join(appDir, 'app.module.ts'),
+        join(appDir, 'app-routing.module.ts'),
+      ];
+      // Also include any *.module.ts directly under src/app/
+      try {
+        for (const f of readdirSync(appDir)) {
+          if (f.endsWith('.module.ts')) candidatePaths.push(join(appDir, f));
+        }
+      } catch { /* ignore */ }
+      const candidateContent = candidatePaths
+        .filter(p => existsSync(p))
+        .map(p => readFileSync(p, 'utf8'))
+        .join('\n');
+
       const ipfBody = ipfMatch[1];
       const usedSyms = [...ipfBody.matchAll(/\b([A-Z][A-Za-z0-9_]*)\b/g)].map(m => m[1]);
       for (const sym of usedSyms) {
-        if (cfg.includes(`{ ${sym}`) || cfg.includes(`, ${sym}`) || cfg.includes(`{${sym}`)) continue;
-        // Symbol is not imported — find its import in main.ts
+        // Use regex instead of includes() so multi-line imports (schematic formatting) are detected
+        if (new RegExp(`\\bimport\\s*\\{[^}]*\\b${sym}\\b[^}]*\\}`).test(cfg)) continue;
+        // Symbol is not imported — search candidate files for an import containing this symbol
         const re = new RegExp(`import\\s*\\{[^}]*\\b${sym}\\b[^}]*\\}\\s*from\\s*['"][^'"]+['"]`);
-        const m2 = mainContent2.match(re);
+        const m2 = candidateContent.match(re);
         if (m2) {
-          const adjusted = m2[0]
-            .replace(/from\s*'\.\/app\//g, `from './`)
-            .replace(/from\s*"\.\/app\//g, `from "./`);
-          const lastImp = cfg.lastIndexOf('\nimport ');
-          const ins = lastImp !== -1 ? lastImp + 1 : 0;
-          cfg = cfg.slice(0, ins) + adjusted + ';\n' + cfg.slice(ins);
-          cfgChanged = true;
+          // Extract only the source module path from the matched import — we add a minimal
+          // single-symbol import to avoid pulling in other symbols that are already imported
+          // (which would cause TS2300 duplicate identifier errors).
+          const fromM = m2[0].match(/from\s*(['"][^'"]+['"])/);
+          if (fromM) {
+            const src = fromM[1]
+              .replace(/^'\.\/app\//, `'./`)
+              .replace(/^"\.\/app\//, `"./`);
+            const singleImport = `import { ${sym} } from ${src}`;
+            const lastImp = cfg.lastIndexOf('\nimport ');
+            const ins = lastImp !== -1 ? lastImp + 1 : 0;
+            cfg = cfg.slice(0, ins) + singleImport + ';\n' + cfg.slice(ins);
+            cfgChanged = true;
+          }
         }
       }
+    }
+
+    // Final dedup pass (safety net in case newly-added imports duplicated existing ones)
+    if (cfgChanged) {
+      const lines2 = cfg.split('\n');
+      const seen2 = new Set();
+      const deduped2 = lines2.filter(line => {
+        if (!/^\s*import\s+/.test(line)) return true;
+        const key = line.trim();
+        if (seen2.has(key)) return false;
+        seen2.add(key);
+        return true;
+      });
+      if (deduped2.length !== lines2.length) cfg = deduped2.join('\n');
     }
 
     if (cfgChanged) { writeFileSync(configPath, cfg); console.log('  ↳ app.config.ts deduplicado/corrigido'); }
@@ -2027,6 +2084,17 @@ function fixTsCompat() {
 
       // Double commas in TypeScript arrays/imports (from schematic add/remove operations)
       out = out.replace(/,(\s*,)+/g, ',');
+
+      // ModuleWithProviders without generic type arg (required since Angular 10+)
+      // static forRoot(): ModuleWithProviders → static forRoot(): ModuleWithProviders<ClassName>
+      // Try to infer the class name from the enclosing class declaration
+      if (out.includes('ModuleWithProviders') && !out.match(/ModuleWithProviders\s*<[^>]+>/)) {
+        const classNameM = out.match(/export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/);
+        const className = classNameM?.[1];
+        if (className) {
+          out = out.replace(/\bModuleWithProviders\b(?!\s*<)/g, `ModuleWithProviders<${className}>`);
+        }
+      }
 
       if (out !== src) { writeFileSync(full, out); count++; }
     }
