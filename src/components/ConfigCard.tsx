@@ -18,7 +18,7 @@ const STEP_LABELS: Record<string, string> = {
   tsconfig: 'tsconfig ES2022/bundler',
   pathAliases: 'Path aliases (@app, @core…)',
   eslint: 'ESLint via @angular/eslint',
-  lintFix: 'ESLint --fix (auto-correção)',
+  lintFix: 'ESLint --fix após cada passo',
   sass: 'SCSS @import → @use',
   modules: 'Remove unused modules',
   styleUrl: 'styleUrls → styleUrl',

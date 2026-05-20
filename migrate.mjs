@@ -2370,7 +2370,21 @@ function runModernizationMigrations() {
   let prevHash = capture('git rev-parse HEAD');
 
   // Grava o passo atual no git, captura o diff vs passo anterior e atualiza o relatório
+  // Returns true if ESLint is already configured in the project
+  function hasEslintConfig() {
+    return existsSync(join(destPath, 'eslint.config.js'))
+      || existsSync(join(destPath, '.eslintrc.json'))
+      || existsSync(join(destPath, '.eslintrc.js'))
+      || existsSync(join(destPath, '.eslintrc.cjs'));
+  }
+
   function commitStep(key, label) {
+    // Auto-fix lint issues before committing whenever ESLint is already set up
+    // and the lintFix step is not skipped. This keeps each step's output clean.
+    if (!skipSteps.has('lintFix') && hasEslintConfig()) {
+      run('npx ng lint --fix', { ignoreError: true });
+      report.modernize.lintFixed = 1;
+    }
     run('git add -A');
     run(`git commit --allow-empty -m "refactor: ${label ?? key}"`, { ignoreError: true });
     const h = capture('git rev-parse HEAD');
@@ -2546,13 +2560,6 @@ function runModernizationMigrations() {
     commitStep('eslint', 'ESLint');
   }
 
-  if (!skipSteps.has('lintFix') && report.modernize.eslintAdded) {
-    console.log(`\n  🔄 ESLint --fix  (auto-fix lint errors)...`);
-    const lintResult = run('npx ng lint --fix', { ignoreError: true });
-    report.modernize.lintFixed = lintResult.status === 0 ? 1 : 0;
-    commitStep('lintFix', 'eslint --fix');
-  }
-
   // 7. SCSS @import → @use as *
   if (!skipSteps.has('sass')) {
     console.log(`\n  🔄 SCSS  (@import → @use as *)...`);
@@ -2600,6 +2607,7 @@ function runModernizationMigrations() {
     report.modernize.cleanupImports = true;
     commitStep('cleanupImports', 'cleanup unused imports');
   }
+
 }
 
 // ─── Status HTML (auto-refresh a cada 4s) — Angular design ──────────────────
