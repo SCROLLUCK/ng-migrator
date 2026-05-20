@@ -3246,22 +3246,21 @@ function extraPackages(v) {
   return extra;
 }
 
-// Extrai pacotes Angular-ecosystem que causaram peer dependency conflict no output
-// do ng update e tenta incluí-los no próximo run com a versão alvo.
+// Extrai todos os pacotes que causaram peer dependency conflict no output do ng update
+// e tenta incluí-los no próximo run com a versão alvo.
+// Não filtramos por namespace — pacotes de terceiros (@angular-builders/jest, etc.)
+// também podem ser resolvidos assim. Se a versão @v não existir no npm, o ng update
+// falha de qualquer jeito e caímos no --force. Sem risco extra.
 function extractConflictPackages(output, v, alreadyIncluded) {
-  // "Package "@angular/cdk" has an incompatible peer dependency to "@angular/common"..."
   const re = /Package "(@[\w/-]+)" has an incompatible peer dependency/g;
   const extra = [];
   let m;
   while ((m = re.exec(output)) !== null) {
     const pkg = m[1];
     const versioned = `${pkg}@${v}`;
-    if (!alreadyIncluded.includes(versioned) &&
-        (pkg.startsWith('@angular/') || pkg.startsWith('@nguniversal/') || pkg.startsWith('@angular-eslint/'))) {
-      extra.push(versioned);
-    }
+    if (!alreadyIncluded.includes(versioned)) extra.push(versioned);
   }
-  return extra;
+  return [...new Set(extra)];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
