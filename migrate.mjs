@@ -37,6 +37,9 @@ const opts = {
   modernize: !args.includes('--no-modernize'),
 };
 
+// Steps to skip (passed via env var from ng-migrator-ui or --skip-steps CLI)
+const skipSteps = new Set((process.env.NG_MIGRATOR_SKIP_STEPS ?? '').split(',').filter(Boolean));
+
 const sourcePath = resolve(sourceArg);
 const destPath   = opts.dest ?? `${sourcePath}-ng${opts.to}`;
 
@@ -277,6 +280,18 @@ function preflight() {
     }
   }
 
+  // engines.node: projetos antigos fixam em ^14.x ou ^12.x; Angular 21 requer Node 18+
+  if (pkg.engines?.node) {
+    const nodeReq = pkg.engines.node;
+    // Only update if the requirement doesn't already allow Node 18+
+    const allowsNode18 = nodeReq.includes('>=18') || nodeReq.includes('>=20') || nodeReq.includes('>=22');
+    if (!allowsNode18) {
+      pkg.engines.node = '>=18';
+      console.log(`  ↳ engines.node: "${nodeReq}" → ">=18" (Angular 21 requer Node 18+)`);
+      changed = true;
+    }
+  }
+
   // Remove dependências instaladas mas não utilizadas no código
   for (const name of ['toastr']) {
     for (const section of ['dependencies', 'devDependencies']) {
@@ -496,6 +511,17 @@ function syncVersions(targetVersion) {
       if (pkg.dependencies?.eslint) delete pkg.dependencies.eslint;
       console.log(`  ↳ eslint: ${getMajor(eslintTarget)} → 9 (@angular-eslint@18+ exige ^8.57+)`);
       changed = true;
+    }
+    // @typescript-eslint/* v4/v5/v6/v7 only supports eslint@^5-7; v8.x supports eslint@9
+    for (const tsEslintPkg of ['@typescript-eslint/eslint-plugin', '@typescript-eslint/parser', '@typescript-eslint/utils']) {
+      for (const section of ['dependencies', 'devDependencies']) {
+        const ver = pkg[section]?.[tsEslintPkg];
+        if (ver && getMajor(ver) < 8) {
+          pkg[section][tsEslintPkg] = '^8.0.0';
+          console.log(`  ↳ ${tsEslintPkg}: ${getMajor(ver)} → 8 (compatível com eslint@9)`);
+          changed = true;
+        }
+      }
     }
   }
 
@@ -771,27 +797,31 @@ function removeUnusedModules() {
   }
   collect(srcDir);
 
-  // 2. Constrói índice com o conteúdo de todos os .ts (exceto os próprios modules)
-  const allTsContent = [];
+  // 2. Constrói índice com o conteúdo de TODOS os .ts (incluindo outros modules)
+  //    para detectar referências cruzadas entre módulos (ex: main.module.ts → translate.module)
+  const allTsFiles = [];
   function indexTs(dir) {
     for (const entry of readdirSync(dir)) {
       if (SKIP_DIRS.has(entry)) continue;
       const full = join(dir, entry);
       if (statSync(full).isDirectory()) { indexTs(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.module.ts')) continue;
-      allTsContent.push(readFileSync(full, 'utf8'));
+      if (!entry.endsWith('.ts')) continue;
+      allTsFiles.push({ path: full, content: readFileSync(full, 'utf8') });
     }
   }
   indexTs(srcDir);
-  const combined = allTsContent.join('\n');
 
-  // 3. Remove módulos não referenciados
+  // 3. Remove módulos não referenciados por nenhum outro arquivo .ts
   let removed = 0;
   for (const modulePath of moduleFiles) {
     const base = basename(modulePath, '.ts'); // ex: 'vacancy.module'
-    const isReferenced = combined.includes(`/${base}'`) ||
-                         combined.includes(`/${base}"`) ||
-                         combined.includes(`/${base}\``);
+    const isReferenced = allTsFiles.some(({ path, content }) =>
+      path !== modulePath && (
+        content.includes(`/${base}'`) ||
+        content.includes(`/${base}"`) ||
+        content.includes(`/${base}\``)
+      )
+    );
     if (!isReferenced) {
       unlinkSync(modulePath);
       console.log(`  ↳ ${basename(modulePath)} removido`);
@@ -831,26 +861,43 @@ function fixMissingStandalone() {
         });
       }
 
-      // @Component: bracket-counting (corpos contêm estruturas aninhadas)
+      // @Component: use export-class boundaries (avoids bracket-counting failures
+      // with inline templates that contain { } in expressions or template literals)
       if (hasComponent) {
-        const marker = '@Component({';
+        // Find all 'export ... class' positions as decorator-end boundaries
+        const classBoundaryRe = /^export\s+(?:abstract\s+)?class\s+/gm;
+        const boundaries = [];
+        let bm;
+        while ((bm = classBoundaryRe.exec(out)) !== null) boundaries.push(bm.index);
+        boundaries.push(out.length);
+
         let result = out;
-        let offset = 0;
-        while (true) {
-          const idx = result.indexOf(marker, offset);
-          if (idx === -1) break;
-          let depth = 0, end = -1;
-          for (let i = idx + marker.length - 1; i < result.length; i++) {
-            if (result[i] === '{') depth++;
-            else if (result[i] === '}') { if (--depth === 0) { end = i; break; } }
-          }
-          if (end === -1) break;
-          if (!result.slice(idx, end + 1).includes('standalone:')) {
-            const insertPos = idx + marker.length;
-            result = result.slice(0, insertPos) + '\n  standalone: true,' + result.slice(insertPos);
-            offset = insertPos + '\n  standalone: true,'.length;
+        let shift = 0;
+        for (let bi = 0; bi < boundaries.length - 1; bi++) {
+          const classStart = boundaries[bi] + shift;
+          const before = result.slice(0, classStart);
+          const compIdx = before.lastIndexOf('@Component(');
+          if (compIdx === -1) continue;
+
+          // Decorator region: from @Component( to just before export class
+          const decRegion = result.slice(compIdx, classStart);
+          const openBrace = decRegion.indexOf('{');
+          if (openBrace === -1) continue;
+
+          if (decRegion.includes('standalone:')) {
+            // standalone present — ensure imports: [] exists
+            if (!decRegion.includes('imports:')) {
+              const insertAt = compIdx + openBrace + 1;
+              const extra = '\n  imports: [],';
+              result = result.slice(0, insertAt) + extra + result.slice(insertAt);
+              shift += extra.length;
+            }
           } else {
-            offset = end + 1;
+            // No standalone: — add standalone: true (and imports: [] if missing)
+            const insertAt = compIdx + openBrace + 1;
+            const extra = '\n  standalone: true,' + (decRegion.includes('imports:') ? '' : '\n  imports: [],');
+            result = result.slice(0, insertAt) + extra + result.slice(insertAt);
+            shift += extra.length;
           }
         }
         out = result;
@@ -865,10 +912,607 @@ function fixMissingStandalone() {
   return count;
 }
 
+// ─── Shared helpers: template import detection (NgModule + standalone) ──────────
+
+const TMPL_ELEM = {
+  'mat-autocomplete':        { sym: 'MatAutocompleteModule',      pkg: '@angular/material/autocomplete' },
+  'mat-option':              { sym: 'MatOptionModule',            pkg: '@angular/material/core' },
+  'mat-optgroup':            { sym: 'MatOptionModule',            pkg: '@angular/material/core' },
+  'mat-button-toggle':       { sym: 'MatButtonToggleModule',      pkg: '@angular/material/button-toggle' },
+  'mat-button-toggle-group': { sym: 'MatButtonToggleModule',      pkg: '@angular/material/button-toggle' },
+  'mat-card':                { sym: 'MatCardModule',              pkg: '@angular/material/card' },
+  'mat-card-header':         { sym: 'MatCardModule',              pkg: '@angular/material/card' },
+  'mat-card-content':        { sym: 'MatCardModule',              pkg: '@angular/material/card' },
+  'mat-card-actions':        { sym: 'MatCardModule',              pkg: '@angular/material/card' },
+  'mat-card-footer':         { sym: 'MatCardModule',              pkg: '@angular/material/card' },
+  'mat-card-title':          { sym: 'MatCardModule',              pkg: '@angular/material/card' },
+  'mat-card-subtitle':       { sym: 'MatCardModule',              pkg: '@angular/material/card' },
+  'mat-checkbox':            { sym: 'MatCheckboxModule',          pkg: '@angular/material/checkbox' },
+  'mat-chip':                { sym: 'MatChipsModule',             pkg: '@angular/material/chips' },
+  'mat-chip-list':           { sym: 'MatChipsModule',             pkg: '@angular/material/chips' },
+  'mat-chip-listbox':        { sym: 'MatChipsModule',             pkg: '@angular/material/chips' },
+  'mat-chip-grid':           { sym: 'MatChipsModule',             pkg: '@angular/material/chips' },
+  'mat-datepicker':          { sym: 'MatDatepickerModule',        pkg: '@angular/material/datepicker' },
+  'mat-datepicker-toggle':   { sym: 'MatDatepickerModule',        pkg: '@angular/material/datepicker' },
+  'mat-calendar':            { sym: 'MatDatepickerModule',        pkg: '@angular/material/datepicker' },
+  'mat-dialog-content':      { sym: 'MatDialogModule',            pkg: '@angular/material/dialog' },
+  'mat-dialog-actions':      { sym: 'MatDialogModule',            pkg: '@angular/material/dialog' },
+  'mat-dialog-title':        { sym: 'MatDialogModule',            pkg: '@angular/material/dialog' },
+  'mat-divider':             { sym: 'MatDividerModule',           pkg: '@angular/material/divider' },
+  'mat-expansion-panel':     { sym: 'MatExpansionModule',         pkg: '@angular/material/expansion' },
+  'mat-accordion':           { sym: 'MatExpansionModule',         pkg: '@angular/material/expansion' },
+  'mat-expansion-panel-header': { sym: 'MatExpansionModule',      pkg: '@angular/material/expansion' },
+  'mat-panel-title':         { sym: 'MatExpansionModule',         pkg: '@angular/material/expansion' },
+  'mat-panel-description':   { sym: 'MatExpansionModule',         pkg: '@angular/material/expansion' },
+  'mat-form-field':          { sym: 'MatFormFieldModule',         pkg: '@angular/material/form-field' },
+  'mat-label':               { sym: 'MatFormFieldModule',         pkg: '@angular/material/form-field' },
+  'mat-error':               { sym: 'MatFormFieldModule',         pkg: '@angular/material/form-field' },
+  'mat-hint':                { sym: 'MatFormFieldModule',         pkg: '@angular/material/form-field' },
+  'mat-grid-list':           { sym: 'MatGridListModule',          pkg: '@angular/material/grid-list' },
+  'mat-grid-tile':           { sym: 'MatGridListModule',          pkg: '@angular/material/grid-list' },
+  'mat-icon':                { sym: 'MatIconModule',              pkg: '@angular/material/icon' },
+  'mat-list':                { sym: 'MatListModule',              pkg: '@angular/material/list' },
+  'mat-nav-list':            { sym: 'MatListModule',              pkg: '@angular/material/list' },
+  'mat-action-list':         { sym: 'MatListModule',              pkg: '@angular/material/list' },
+  'mat-list-item':           { sym: 'MatListModule',              pkg: '@angular/material/list' },
+  'mat-selection-list':      { sym: 'MatListModule',              pkg: '@angular/material/list' },
+  'mat-list-option':         { sym: 'MatListModule',              pkg: '@angular/material/list' },
+  'mat-menu':                { sym: 'MatMenuModule',              pkg: '@angular/material/menu' },
+  'mat-paginator':           { sym: 'MatPaginatorModule',         pkg: '@angular/material/paginator' },
+  'mat-progress-bar':        { sym: 'MatProgressBarModule',       pkg: '@angular/material/progress-bar' },
+  'mat-progress-spinner':    { sym: 'MatProgressSpinnerModule',   pkg: '@angular/material/progress-spinner' },
+  'mat-spinner':             { sym: 'MatProgressSpinnerModule',   pkg: '@angular/material/progress-spinner' },
+  'mat-radio-button':        { sym: 'MatRadioModule',             pkg: '@angular/material/radio' },
+  'mat-radio-group':         { sym: 'MatRadioModule',             pkg: '@angular/material/radio' },
+  'mat-select':              { sym: 'MatSelectModule',            pkg: '@angular/material/select' },
+  'mat-sidenav':             { sym: 'MatSidenavModule',           pkg: '@angular/material/sidenav' },
+  'mat-sidenav-container':   { sym: 'MatSidenavModule',           pkg: '@angular/material/sidenav' },
+  'mat-sidenav-content':     { sym: 'MatSidenavModule',           pkg: '@angular/material/sidenav' },
+  'mat-drawer':              { sym: 'MatSidenavModule',           pkg: '@angular/material/sidenav' },
+  'mat-slide-toggle':        { sym: 'MatSlideToggleModule',       pkg: '@angular/material/slide-toggle' },
+  'mat-slider':              { sym: 'MatSliderModule',            pkg: '@angular/material/slider' },
+  'mat-sort-header':         { sym: 'MatSortModule',              pkg: '@angular/material/sort' },
+  'mat-step':                { sym: 'MatStepperModule',           pkg: '@angular/material/stepper' },
+  'mat-stepper':             { sym: 'MatStepperModule',           pkg: '@angular/material/stepper' },
+  'mat-horizontal-stepper':  { sym: 'MatStepperModule',           pkg: '@angular/material/stepper' },
+  'mat-vertical-stepper':    { sym: 'MatStepperModule',           pkg: '@angular/material/stepper' },
+  'mat-table':               { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'mat-header-cell':         { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'mat-cell':                { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'mat-footer-cell':         { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'mat-header-row':          { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'mat-row':                 { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'mat-footer-row':          { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'mat-tab':                 { sym: 'MatTabsModule',              pkg: '@angular/material/tabs' },
+  'mat-tab-group':           { sym: 'MatTabsModule',              pkg: '@angular/material/tabs' },
+  'mat-tab-nav-bar':         { sym: 'MatTabsModule',              pkg: '@angular/material/tabs' },
+  'mat-toolbar':             { sym: 'MatToolbarModule',           pkg: '@angular/material/toolbar' },
+  'mat-toolbar-row':         { sym: 'MatToolbarModule',           pkg: '@angular/material/toolbar' },
+  'mat-tooltip':             { sym: 'MatTooltipModule',           pkg: '@angular/material/tooltip' },
+  'mat-tree':                { sym: 'MatTreeModule',              pkg: '@angular/material/tree' },
+  'mat-tree-node':           { sym: 'MatTreeModule',              pkg: '@angular/material/tree' },
+  'mat-nested-tree-node':    { sym: 'MatTreeModule',              pkg: '@angular/material/tree' },
+  'router-outlet':           { sym: 'RouterOutlet',               pkg: '@angular/router' },
+  'cdk-virtual-scroll-viewport': { sym: 'ScrollingModule',        pkg: '@angular/cdk/scrolling' },
+  // Third-party
+  'ng-progress':             { sym: 'NgProgressModule',           pkg: '@ngx-progressbar/core' },
+  'ngx-ui-loader':           { sym: 'NgxUiLoaderModule',          pkg: 'ngx-ui-loader' },
+  'ngx-spinner':             { sym: 'NgxSpinnerModule',           pkg: 'ngx-spinner' },
+};
+
+const TMPL_ATTR = {
+  'matTooltip':              { sym: 'MatTooltipModule',           pkg: '@angular/material/tooltip' },
+  'matMenuTriggerFor':       { sym: 'MatMenuModule',              pkg: '@angular/material/menu' },
+  'matSort':                 { sym: 'MatSortModule',              pkg: '@angular/material/sort' },
+  'matSortHeader':           { sym: 'MatSortModule',              pkg: '@angular/material/sort' },
+  'matColumnDef':            { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'matHeaderCellDef':        { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'matCellDef':              { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'matFooterCellDef':        { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'matHeaderRowDef':         { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'matRowDef':               { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'matFooterRowDef':         { sym: 'MatTableModule',             pkg: '@angular/material/table' },
+  'matInput':                { sym: 'MatInputModule',             pkg: '@angular/material/input' },
+  'matNativeControl':        { sym: 'MatInputModule',             pkg: '@angular/material/input' },
+  'mat-button':              { sym: 'MatButtonModule',            pkg: '@angular/material/button' },
+  'mat-raised-button':       { sym: 'MatButtonModule',            pkg: '@angular/material/button' },
+  'mat-flat-button':         { sym: 'MatButtonModule',            pkg: '@angular/material/button' },
+  'mat-stroked-button':      { sym: 'MatButtonModule',            pkg: '@angular/material/button' },
+  'mat-icon-button':         { sym: 'MatButtonModule',            pkg: '@angular/material/button' },
+  'mat-fab':                 { sym: 'MatButtonModule',            pkg: '@angular/material/button' },
+  'mat-mini-fab':            { sym: 'MatButtonModule',            pkg: '@angular/material/button' },
+  'mat-dialog-close':        { sym: 'MatDialogModule',            pkg: '@angular/material/dialog' },
+  'matDialogClose':          { sym: 'MatDialogModule',            pkg: '@angular/material/dialog' },
+  'ngClass':                 { sym: 'NgClass',                    pkg: '@angular/common' },
+  'ngStyle':                 { sym: 'NgStyle',                    pkg: '@angular/common' },
+  'matLine':                 { sym: 'MatListModule',              pkg: '@angular/material/list' },
+  'matListIcon':             { sym: 'MatListModule',              pkg: '@angular/material/list' },
+  'routerLink':              { sym: 'RouterLink',                 pkg: '@angular/router' },
+  'routerLinkActive':        { sym: 'RouterLinkActive',           pkg: '@angular/router' },
+  'cdkScrollable':           { sym: 'ScrollingModule',            pkg: '@angular/cdk/scrolling' },
+};
+
+const TMPL_PIPE = {
+  'translate':    { sym: 'TranslatePipe',    pkg: '@ngx-translate/core' },
+  'async':        { sym: 'AsyncPipe',        pkg: '@angular/common' },
+  'date':         { sym: 'DatePipe',         pkg: '@angular/common' },
+  'currency':     { sym: 'CurrencyPipe',     pkg: '@angular/common' },
+  'decimal':      { sym: 'DecimalPipe',      pkg: '@angular/common' },
+  'percent':      { sym: 'PercentPipe',      pkg: '@angular/common' },
+  'uppercase':    { sym: 'UpperCasePipe',    pkg: '@angular/common' },
+  'lowercase':    { sym: 'LowerCasePipe',    pkg: '@angular/common' },
+  'titlecase':    { sym: 'TitleCasePipe',    pkg: '@angular/common' },
+  'slice':        { sym: 'SlicePipe',        pkg: '@angular/common' },
+  'json':         { sym: 'JsonPipe',         pkg: '@angular/common' },
+  'keyvalue':     { sym: 'KeyValuePipe',     pkg: '@angular/common' },
+  'number':       { sym: 'DecimalPipe',      pkg: '@angular/common' },
+  'i18nPlural':   { sym: 'I18nPluralPipe',   pkg: '@angular/common' },
+  'i18nSelect':   { sym: 'I18nSelectPipe',   pkg: '@angular/common' },
+};
+
+function tmplPkgInstalled(pkg) {
+  const nmDir = join(destPath, 'node_modules');
+  const parts = pkg.split('/');
+  const p = pkg.startsWith('@') ? join(nmDir, parts[0], parts[1]) : join(nmDir, parts[0]);
+  return existsSync(p);
+}
+
+function tmplGetTemplate(tsFile, src) {
+  const inlineM = src.match(/template\s*:\s*(`(?:[^`\\]|\\.|\n)*?`|'(?:[^'\\]|\\.)*?'|"(?:[^"\\]|\\.)*?")/s);
+  if (inlineM) return inlineM[1].slice(1, -1);
+  const urlM = src.match(/templateUrl\s*:\s*['"]([^'"]+)['"]/);
+  if (urlM) {
+    const p = join(dirname(tsFile), urlM[1]);
+    if (existsSync(p)) return readFileSync(p, 'utf8');
+  }
+  return null;
+}
+
+function tmplDetectNeeded(tpl) {
+  const needed = new Map();
+  const elemRe = /<(mat-[\w-]+|router-outlet|cdk-virtual-scroll-viewport)[\s\/>]/g;
+  let m;
+  while ((m = elemRe.exec(tpl)) !== null) {
+    const e = TMPL_ELEM[m[1]];
+    if (e && tmplPkgInstalled(e.pkg)) needed.set(e.sym, e.pkg);
+  }
+  for (const [attr, { sym, pkg }] of Object.entries(TMPL_ATTR)) {
+    if (!tmplPkgInstalled(pkg)) continue;
+    const esc = attr.replace(/[-[\]]/g, '\\$&');
+    if (new RegExp(`(?:[\\s\\["])${esc}(?:[\\s=\\]">/])`).test(tpl)) needed.set(sym, pkg);
+  }
+  if (/\bmat-(?:button|raised-button|flat-button|stroked-button|icon-button|fab|mini-fab)\b/.test(tpl)) {
+    if (tmplPkgInstalled('@angular/material/button')) needed.set('MatButtonModule', '@angular/material/button');
+  }
+  const pipeRe = /\|\s*([\w]+)/g;
+  while ((m = pipeRe.exec(tpl)) !== null) {
+    const p = TMPL_PIPE[m[1]];
+    if (p && tmplPkgInstalled(p.pkg)) needed.set(p.sym, p.pkg);
+  }
+  if (/\(\s*ngModel\s*\)|\bngModel\b/.test(tpl)) needed.set('FormsModule', '@angular/forms');
+  if (/\[formControl\]|\bformControlName\b|\[formGroup\]|\bformGroupName\b|\bformArrayName\b/.test(tpl)) {
+    needed.set('ReactiveFormsModule', '@angular/forms');
+  }
+  return needed;
+}
+
+function tmplGetDecoratorImportsArray(src, decoratorRe) {
+  const compIdx = src.search(decoratorRe);
+  if (compIdx === -1) return null;
+  let depth = 0, compEnd = -1;
+  for (let i = src.indexOf('(', compIdx); i < src.length; i++) {
+    if (src[i] === '(') depth++;
+    else if (src[i] === ')') { if (--depth === 0) { compEnd = i; break; } }
+  }
+  if (compEnd === -1) return null;
+  const decBody = src.slice(compIdx, compEnd + 1);
+  const imM = decBody.match(/\bimports\s*:\s*\[/);
+  if (!imM) return null;
+  const arrStart = compIdx + imM.index + imM[0].length - 1;
+  let bdepth = 0, arrEnd = -1;
+  for (let i = arrStart; i < src.length; i++) {
+    if (src[i] === '[') bdepth++;
+    else if (src[i] === ']') { if (--bdepth === 0) { arrEnd = i; break; } }
+  }
+  if (arrEnd === -1) return null;
+  const existing = new Set(src.slice(arrStart + 1, arrEnd).match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? []);
+  return { start: arrStart, end: arrEnd, existing };
+}
+
+function tmplHasEsImport(src, sym) {
+  const atIdx = src.search(/@(?:Component|Directive|Pipe|Injectable|NgModule)\s*[({]/);
+  const section = atIdx > 0 ? src.slice(0, atIdx) : src;
+  return new RegExp(`\\b${sym}\\b`).test(section);
+}
+
+function tmplInjectImports(src, toAdd, decoratorRe) {
+  let modified = src;
+  for (const { sym, pkg } of toAdd) {
+    if (!tmplHasEsImport(modified, sym)) {
+      const lastIm = [...modified.matchAll(/^import\s+.+;?[ \t]*$/gm)].pop();
+      const pos = lastIm ? lastIm.index + lastIm[0].length : 0;
+      modified = modified.slice(0, pos) + `\nimport { ${sym} } from '${pkg}';` + modified.slice(pos);
+    }
+  }
+  let arr2 = tmplGetDecoratorImportsArray(modified, decoratorRe);
+  if (!arr2) {
+    // No imports: [] in the decorator — inject one before the closing brace
+    const decIdx = modified.search(decoratorRe);
+    if (decIdx === -1) return modified;
+    let depth = 0, decEnd = -1;
+    for (let i = modified.indexOf('(', decIdx); i < modified.length; i++) {
+      if (modified[i] === '(') depth++;
+      else if (modified[i] === ')') { if (--depth === 0) { decEnd = i; break; } }
+    }
+    if (decEnd === -1) return modified;
+    // Find the closing } of the decorator's object literal
+    let bdepth = 0, objEnd = -1;
+    for (let i = modified.indexOf('{', decIdx); i < decEnd; i++) {
+      if (modified[i] === '{') bdepth++;
+      else if (modified[i] === '}') { if (--bdepth === 0) { objEnd = i; break; } }
+    }
+    if (objEnd === -1) return modified;
+    modified = modified.slice(0, objEnd) + '\n  imports: [],\n' + modified.slice(objEnd);
+    arr2 = tmplGetDecoratorImportsArray(modified, decoratorRe);
+    if (!arr2) return modified;
+  }
+  const insertStr = toAdd.map(x => x.sym).join(',\n    ');
+  const before = modified.slice(0, arr2.end);
+  const sep = before.trimEnd().endsWith('[') ? '\n    ' : ',\n    ';
+  return before.trimEnd() + sep + insertStr + '\n  ' + modified.slice(arr2.end);
+}
+
+// ─── Fix NgModule imports BEFORE standalone migration ────────────────────────
+// When convert-to-standalone copies a module's imports to each component,
+// missing entries in the module cause the component to also miss them.
+// This pre-populates NgModule imports from template analysis.
+
+function fixNgModuleImports() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  // Map exported class name → file path
+  const classMap = new Map();
+  function buildClassMap(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { buildClassMap(full); continue; }
+      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
+      const src = readFileSync(full, 'utf8');
+      const re = /export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g;
+      let m;
+      while ((m = re.exec(src)) !== null) classMap.set(m[1], full);
+    }
+  }
+  buildClassMap(srcDir);
+
+  const MODULE_RE = /@NgModule\s*\(/;
+  let total = 0;
+
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.module.ts')) continue;
+
+      let src = readFileSync(full, 'utf8');
+      const modIdx = src.search(MODULE_RE);
+      if (modIdx === -1) continue;
+
+      // Find @NgModule decorator bounds
+      let depth = 0, modEnd = -1;
+      for (let i = src.indexOf('(', modIdx); i < src.length; i++) {
+        if (src[i] === '(') depth++;
+        else if (src[i] === ')') { if (--depth === 0) { modEnd = i; break; } }
+      }
+      if (modEnd === -1) continue;
+      const decBody = src.slice(modIdx, modEnd + 1);
+
+      // Collect declared class names
+      const declM = decBody.match(/\bdeclarations\s*:\s*\[/);
+      if (!declM) continue;
+      const declStart = modIdx + declM.index + declM[0].length - 1;
+      let bdepth = 0, declEnd = -1;
+      for (let i = declStart; i < src.length; i++) {
+        if (src[i] === '[') bdepth++;
+        else if (src[i] === ']') { if (--bdepth === 0) { declEnd = i; break; } }
+      }
+      if (declEnd === -1) continue;
+      const declared = src.slice(declStart + 1, declEnd).match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
+
+      // Detect imports needed by all declared components' templates
+      const needed = new Map();
+      for (const cls of declared) {
+        const compFile = classMap.get(cls);
+        if (!compFile) continue;
+        const compSrc = readFileSync(compFile, 'utf8');
+        const tpl = tmplGetTemplate(compFile, compSrc);
+        if (!tpl) continue;
+        for (const [sym, pkg] of tmplDetectNeeded(tpl)) needed.set(sym, pkg);
+      }
+      if (!needed.size) continue;
+
+      // Find existing imports: [] in module
+      const importsInfo = tmplGetDecoratorImportsArray(src, MODULE_RE);
+      const existing = importsInfo?.existing ?? new Set();
+      const toAdd = [...needed].filter(([sym]) => !existing.has(sym)).map(([sym, pkg]) => ({ sym, pkg }));
+      if (!toAdd.length) continue;
+
+      const modified = tmplInjectImports(src, toAdd, MODULE_RE);
+      if (modified !== src) {
+        writeFileSync(full, modified);
+        total++;
+        console.log(`  ↳ ${basename(full)}: +${toAdd.map(x => x.sym).join(', ')}`);
+      }
+    }
+  }
+  walk(srcDir);
+  if (total > 0) console.log(`  ↳ NgModule imports: ${total} module(s) corrigido(s)`);
+  return total;
+}
+
+// ─── Copia TODOS os imports do NgModule para cada componente standalone ──────
+// Roda APÓS convert-to-standalone (enquanto .module.ts ainda existe).
+// A estratégia: copiar tudo → cleanup-unused-imports remove o que não usa.
+// Isso é mais seguro que template-scan porque pega providers, CDK, pipes, etc.
+
+function copyModuleImportsToComponents() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  // Build class name → file path map
+  const classMap = new Map();
+  function buildClassMap(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { buildClassMap(full); continue; }
+      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
+      const src = readFileSync(full, 'utf8');
+      const re = /export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g;
+      let m;
+      while ((m = re.exec(src)) !== null) classMap.set(m[1], full);
+    }
+  }
+  buildClassMap(srcDir);
+
+  const COMPONENT_RE = /@Component\s*\(/;
+  const MODULE_RE = /@NgModule\s*\(/;
+  let total = 0;
+
+  function extractDecoratorArray(src, decoratorRe, key) {
+    const idx = src.search(decoratorRe);
+    if (idx === -1) return [];
+    let depth = 0, end = -1;
+    for (let i = src.indexOf('(', idx); i < src.length; i++) {
+      if (src[i] === '(') depth++;
+      else if (src[i] === ')') { if (--depth === 0) { end = i; break; } }
+    }
+    if (end === -1) return [];
+    const body = src.slice(idx, end + 1);
+    const km = body.match(new RegExp(`\\b${key}\\s*:\\s*\\[`));
+    if (!km) return [];
+    const arrStart = idx + km.index + km[0].length - 1;
+    let bd = 0, arrEnd = -1;
+    for (let i = arrStart; i < src.length; i++) {
+      if (src[i] === '[') bd++;
+      else if (src[i] === ']') { if (--bd === 0) { arrEnd = i; break; } }
+    }
+    if (arrEnd === -1) return [];
+    return src.slice(arrStart + 1, arrEnd).match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
+  }
+
+  // Build sym → pkg map from ES imports in any source string
+  function buildEsImportMap(src) {
+    const map = new Map();
+    for (const m of src.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+      for (const sym of m[1].split(',').map(s => s.replace(/\s+as\s+\w+/, '').trim())) {
+        if (sym) map.set(sym, m[2]);
+      }
+    }
+    return map;
+  }
+
+  // Collect all external-package symbols exported (directly or transitively) by
+  // a local module class. Angular's visibility rule: when Module A imports
+  // Module B, components in A can use what Module B *exports* — not what B imports.
+  // We recurse through exported local modules to collect their external re-exports.
+  function collectModuleExports(className, depth, result, visited = new Set()) {
+    if (depth > 8 || visited.has(className)) return;
+    visited.add(className);
+    const file = classMap.get(className);
+    if (!file || !existsSync(file)) return;
+    const src = readFileSync(file, 'utf8');
+    if (!src.includes('@NgModule')) return;
+    const es = buildEsImportMap(src);
+    for (const exported of extractDecoratorArray(src, MODULE_RE, 'exports')) {
+      const pkg = es.get(exported);
+      if (!pkg) continue;
+      if (!pkg.startsWith('.')) {
+        result.set(exported, pkg); // external symbol re-exported — add it
+      } else {
+        collectModuleExports(exported, depth + 1, result, visited); // recurse into local re-export
+      }
+    }
+  }
+
+  // Resolve all external symbols a component declared in modSrc can access.
+  // Direct external imports are added as-is; local module imports are replaced
+  // by whatever those modules transitively export.
+  function resolveTransitiveExternals(modSrc) {
+    const result = new Map();
+    const esImports = buildEsImportMap(modSrc);
+    for (const sym of extractDecoratorArray(modSrc, MODULE_RE, 'imports')) {
+      const pkg = esImports.get(sym);
+      if (!pkg) continue;
+      if (!pkg.startsWith('.')) {
+        result.set(sym, pkg); // external symbol — include directly
+      } else {
+        collectModuleExports(sym, 0, result); // local module — follow exports
+      }
+    }
+    return result;
+  }
+
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.module.ts')) continue;
+
+      const modSrc = readFileSync(full, 'utf8');
+      if (!modSrc.includes('@NgModule')) continue;
+
+      const declared = extractDecoratorArray(modSrc, MODULE_RE, 'declarations');
+      if (!declared.length) continue;
+
+      // Resolve all externally-importable symbols reachable from this module
+      // (direct + transitive sub-module exports)
+      const allExternals = resolveTransitiveExternals(modSrc);
+      if (!allExternals.size) continue;
+
+      for (const cls of declared) {
+        const compFile = classMap.get(cls);
+        if (!compFile) continue;
+        let compSrc = readFileSync(compFile, 'utf8');
+        if (!compSrc.includes('@Component(')) continue;
+        // Process both confirmed standalone components and those that will become
+        // standalone via fixMissingStandalone() which runs right after
+        if (!compSrc.includes('standalone: true') && !compSrc.includes('standalone:true')) continue;
+
+        const arrInfo = tmplGetDecoratorImportsArray(compSrc, COMPONENT_RE);
+        if (!arrInfo) continue;
+        const existing = arrInfo.existing;
+
+        const toAdd = [...allExternals]
+          .filter(([sym]) => !existing.has(sym))
+          .map(([sym, pkg]) => ({ sym, pkg }));
+        if (!toAdd.length) continue;
+
+        const modified = tmplInjectImports(compSrc, toAdd, COMPONENT_RE);
+        if (modified !== compSrc) {
+          writeFileSync(compFile, modified);
+          total++;
+          console.log(`  ↳ ${basename(compFile)}: +${toAdd.map(x => x.sym).join(', ')}`);
+        }
+      }
+    }
+  }
+  walk(srcDir);
+  if (total > 0) console.log(`  ↳ module imports copied to ${total} component(s)`);
+  return total;
+}
+
+// ─── Adiciona imports faltantes em componentes standalone ────────────────────
+// Após standalone-migration, componentes podem referenciar mat-* sem ter os
+// módulos no imports:[]. Detecta via template scan e adiciona automaticamente.
+
+function fixStandaloneImports() {
+  const COMPONENT_RE = /@Component\s*\(/;
+  let total = 0;
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
+      let src = readFileSync(full, 'utf8');
+      if (!src.includes('@Component(') || !src.includes('standalone: true')) continue;
+      const tpl = tmplGetTemplate(full, src);
+      if (!tpl) continue;
+      const needed = tmplDetectNeeded(tpl);
+      if (!needed.size) continue;
+      // arrInfo may be null (no imports: [] yet) — tmplInjectImports will create it
+      const arrInfo = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
+      const existing = arrInfo?.existing ?? new Set();
+      const toAdd = [...needed].filter(([sym]) => !existing.has(sym)).map(([sym, pkg]) => ({ sym, pkg }));
+      if (!toAdd.length) continue;
+      const modified = tmplInjectImports(src, toAdd, COMPONENT_RE);
+      if (modified !== src) {
+        writeFileSync(full, modified);
+        total++;
+        console.log(`  ↳ ${basename(full)}: +${toAdd.map(x => x.sym).join(', ')}`);
+      }
+    }
+  }
+  const srcDir = join(destPath, 'src');
+  if (existsSync(srcDir)) walk(srcDir);
+  if (total > 0) console.log(`  ↳ standalone imports: ${total} componente(s) corrigido(s)`);
+  return total;
+}
+
+// ─── Fix: import * as moment → default import ─────────────────────────────────
+// moduleResolution:bundler + moduleDetection:force quebra namespace imports de CJS
+
+function fixMomentImport() {
+  let count = 0;
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts')) continue;
+      let src = readFileSync(full, 'utf8');
+      const out = src.replace(/import\s+\*\s+as\s+moment\s+from\s+(['"])moment\1/g, `import moment from 'moment'`);
+      if (out !== src) { writeFileSync(full, out); count++; }
+    }
+  }
+  const srcDir = join(destPath, 'src');
+  if (existsSync(srcDir)) walk(srcDir);
+  if (count > 0) {
+    const tsconfigPath = join(destPath, 'tsconfig.json');
+    if (existsSync(tsconfigPath)) {
+      const tc = readJson(tsconfigPath);
+      if (!tc.compilerOptions) tc.compilerOptions = {};
+      if (!tc.compilerOptions.esModuleInterop) {
+        tc.compilerOptions.esModuleInterop = true;
+        writeJson(tsconfigPath, tc);
+      }
+    }
+    console.log(`  ↳ moment: import * as → default import (${count} arquivo(s))`);
+  }
+  return count;
+}
+
+// ─── Fix: new Subject() → new Subject<void>() em destroy signals ──────────────
+// RxJS 7 + TS strict: Subject<unknown>.next() exige argumento. Subject<void> não.
+
+function fixSubjectVoid() {
+  let count = 0;
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts')) continue;
+      let src = readFileSync(full, 'utf8');
+      if (!src.includes('new Subject()') && !src.includes('new Subject<unknown>()')) continue;
+      let out = src
+        .replace(/new\s+Subject\s*<unknown>\s*\(\)/g, 'new Subject<void>()')
+        .replace(
+          /((?:private|protected|public|readonly)\s+)?(\w+)\$?\s*(?:=\s*)new\s+Subject\s*\(\)/g,
+          (match, _mod, name) =>
+            /(?:unsubscribe|destroy|teardown|stop|complete|close)/i.test(name)
+              ? match.replace('new Subject()', 'new Subject<void>()') : match,
+        );
+      if (out !== src) { writeFileSync(full, out); count++; }
+    }
+  }
+  const srcDir = join(destPath, 'src');
+  if (existsSync(srcDir)) walk(srcDir);
+  if (count > 0) console.log(`  ↳ Subject<void>: ${count} arquivo(s)`);
+  return count;
+}
+
 // ─── SCSS @import → @use ─────────────────────────────────────────────────────
 
 function fixSassImports() {
   let count = 0;
+  const srcDir = join(destPath, 'src');
+
   function walk(dir) {
     for (const entry of readdirSync(dir)) {
       if (SKIP_DIRS.has(entry)) continue;
@@ -876,15 +1520,93 @@ function fixSassImports() {
       if (statSync(full).isDirectory()) { walk(full); continue; }
       if (!entry.endsWith('.scss')) continue;
       let src = readFileSync(full, 'utf8');
-      // @import "~pkg" or @import "path" → @use "path" as *  (strips tilde prefix)
-      const out = src.replace(/@import\s+(['"])(~?)([^'"]+)\1\s*;/g,
+      let out = src;
+
+      // @angular/material/theming was merged into @angular/material in v15
+      out = out.replace(/@angular\/material\/theming/g, '@angular/material');
+
+      // @import "~pkg" / @import "path" → @use "path" as *  (strips tilde prefix)
+      out = out.replace(/@import\s+(['"])(~?)([^'"]+)\1\s*;/g,
         (_, q, _tilde, path) => `@use ${q}${path}${q} as *;`);
+
+      // Material v1 SCSS API → v15+ API
+      // When old mat-* functions are present, switch @use '@angular/material' as * → as mat
+      // and rename functions to their new names.
+      if (out.includes('mat-typography-config(') || out.includes('mat-typography-level(') ||
+          out.includes('mat-palette(') || out.includes('mat-light-theme(') ||
+          out.includes('mat-dark-theme(') || out.includes('mat-core()')) {
+        // Use explicit namespace so the new function names resolve correctly
+        out = out.replace(/@use\s+(['"])@angular\/material\1\s+as\s+\*/g,
+          `@use '@angular/material' as mat`);
+        // Rename function CALLS to Material v15 API — skip @function/@mixin declarations
+        // to avoid invalid syntax like `@function mat.define-light-theme(`
+        const matFnRenames = [
+          [/\bmat-typography-config\s*\(/g,  'mat.define-typography-config('],
+          [/\bmat-typography-level\s*\(/g,   'mat.define-typography-level('],
+          [/\bmat-palette\s*\(/g,            'mat.define-palette('],
+          [/\bmat-light-theme\s*\(/g,        'mat.define-light-theme('],
+          [/\bmat-dark-theme\s*\(/g,         'mat.define-dark-theme('],
+        ];
+        out = out.split('\n').map(line => {
+          if (/^\s*@(function|mixin)\s/.test(line)) return line;
+          for (const [from, to] of matFnRenames) line = line.replace(from, to);
+          return line;
+        }).join('\n');
+        out = out.replace(/@include\s+mat-core\s*\(\s*\)/g, '@include mat.core()');
+        out = out.replace(/@include\s+angular-material-theme\s*\(/g, '@include mat.all-component-themes(');
+        out = out.replace(/@include\s+angular-material-color\s*\(/g, '@include mat.all-component-colors(');
+        out = out.replace(/@include\s+angular-material-typography\s*\(/g, '@include mat.all-component-typographies(');
+        // $letter-spacing keyword arg not supported in define-typography-level — strip it
+        out = out.replace(/,\s*\$letter-spacing\s*:\s*[^,)]+/g, '');
+      }
+
+      // Fix url("~src/...") → relative path from this file to src/
+      // (tilde+src/ was a webpack alias for Angular's source root)
+      if (out.includes('~src/')) {
+        const relToSrc = relative(dirname(full), srcDir).replace(/\\/g, '/') || '.';
+        out = out.replace(/url\((['"])~src\//g, `url($1${relToSrc}/`);
+        // Also non-url references like background: url(~src/...)
+        out = out.replace(/(['"])~src\//g, `$1${relToSrc}/`);
+      }
+
+      // Reorder: @use rules must come before any other CSS rules in SCSS
+      if (out.includes('@use ')) {
+        const lines = out.split('\n');
+        const leading = [];   // initial empty lines / comments
+        const useLines = [];
+        const rest = [];
+        let pastLeading = false;
+        for (const line of lines) {
+          const t = line.trim();
+          if (!pastLeading && (t === '' || t.startsWith('//') || t.startsWith('/*') || t.startsWith('*'))) {
+            leading.push(line);
+          } else {
+            pastLeading = true;
+            if (/^\s*@use\s/.test(line)) useLines.push(line);
+            else rest.push(line);
+          }
+        }
+        if (useLines.length > 0) {
+          // Remove trailing blank lines from leading block
+          while (leading.length && leading[leading.length - 1].trim() === '') leading.pop();
+          // Remove leading blank lines from rest
+          while (rest.length && rest[0].trim() === '') rest.shift();
+          out = [
+            ...leading,
+            ...(leading.length ? [''] : []),
+            ...useLines,
+            ...(rest.length ? [''] : []),
+            ...rest,
+          ].join('\n');
+        }
+      }
+
       if (out !== src) { writeFileSync(full, out); count++; }
     }
   }
-  const srcDir = join(destPath, 'src');
+
   if (existsSync(srcDir)) walk(srcDir);
-  if (count > 0) console.log(`  ↳ SCSS @import → @use: ${count} arquivo(s)`);
+  if (count > 0) console.log(`  ↳ SCSS @import → @use + tilde fix: ${count} arquivo(s)`);
   return count;
 }
 
@@ -990,7 +1712,51 @@ function createAppConfigAndRoutes() {
   const configPath  = join(appDir, 'app.config.ts');
   const routesPath  = join(appDir, 'app.routes.ts');
 
-  if (existsSync(configPath)) { console.log('  ↳ app.config.ts já existe'); return; }
+  if (existsSync(configPath)) {
+    // Post-process existing app.config.ts (created by standalone-bootstrap schematic):
+    // 1. Deduplicate import lines (schematic sometimes generates duplicates)
+    // 2. Add missing ES imports for symbols used in importProvidersFrom(...)
+    let cfg = readFileSync(configPath, 'utf8');
+    const mainContent2 = existsSync(mainPath) ? readFileSync(mainPath, 'utf8') : '';
+    let cfgChanged = false;
+
+    // Deduplicate import lines
+    const cfgLines = cfg.split('\n');
+    const seenImports = new Set();
+    const deduped = cfgLines.filter(line => {
+      if (!/^\s*import\s+/.test(line)) return true;
+      const key = line.trim();
+      if (seenImports.has(key)) return false;
+      seenImports.add(key);
+      return true;
+    });
+    if (deduped.length !== cfgLines.length) { cfg = deduped.join('\n'); cfgChanged = true; }
+
+    // Find symbols used in importProvidersFrom(...) that have no import statement
+    const ipfMatch = cfg.match(/importProvidersFrom\s*\(([^)]+)\)/s);
+    if (ipfMatch && mainContent2) {
+      const ipfBody = ipfMatch[1];
+      const usedSyms = [...ipfBody.matchAll(/\b([A-Z][A-Za-z0-9_]*)\b/g)].map(m => m[1]);
+      for (const sym of usedSyms) {
+        if (cfg.includes(`{ ${sym}`) || cfg.includes(`, ${sym}`) || cfg.includes(`{${sym}`)) continue;
+        // Symbol is not imported — find its import in main.ts
+        const re = new RegExp(`import\\s*\\{[^}]*\\b${sym}\\b[^}]*\\}\\s*from\\s*['"][^'"]+['"]`);
+        const m2 = mainContent2.match(re);
+        if (m2) {
+          const adjusted = m2[0]
+            .replace(/from\s*'\.\/app\//g, `from './`)
+            .replace(/from\s*"\.\/app\//g, `from "./`);
+          const lastImp = cfg.lastIndexOf('\nimport ');
+          const ins = lastImp !== -1 ? lastImp + 1 : 0;
+          cfg = cfg.slice(0, ins) + adjusted + ';\n' + cfg.slice(ins);
+          cfgChanged = true;
+        }
+      }
+    }
+
+    if (cfgChanged) { writeFileSync(configPath, cfg); console.log('  ↳ app.config.ts deduplicado/corrigido'); }
+    return;
+  }
 
   const mainContent = existsSync(mainPath) ? readFileSync(mainPath, 'utf8') : '';
 
@@ -1086,12 +1852,21 @@ function createAppConfigAndRoutes() {
   }
 
   // 3. main.ts — simplifica para usar appConfig
+  // Detect root component name and import path from the existing main.ts
+  // (standalone-bootstrap schematic already set the correct path and name)
+  const bootstrapM = mainContent.match(/bootstrapApplication\s*\(\s*([A-Z][A-Za-z0-9]*)/);
+  const compName = bootstrapM?.[1] ?? 'AppComponent';
+  const compImportM = mainContent.match(
+    new RegExp(`import\\s*\\{[^}]*\\b${compName}\\b[^}]*\\}\\s*from\\s*['"]([^'"]+)['"]`),
+  );
+  const compPath = compImportM?.[1] ?? './app/app.component';
+
   writeFileSync(mainPath, [
     `import { bootstrapApplication } from '@angular/platform-browser';`,
-    `import { AppComponent } from './app/app.component';`,
+    `import { ${compName} } from '${compPath}';`,
     `import { appConfig } from './app/app.config';`,
     ``,
-    `bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err));`,
+    `bootstrapApplication(${compName}, appConfig).catch((err) => console.error(err));`,
     ``,
   ].join('\n'));
   console.log('  ↳ main.ts simplificado');
@@ -1101,6 +1876,47 @@ function createAppConfigAndRoutes() {
 // ─── throwError() → factory function (RxJS 7) ────────────────────────────────
 // RxJS 7 deprecou throwError(value) — exige throwError(() => value).
 // Objeto literal precisa de () => ({...}) para não ser interpretado como function body.
+
+// ─── Fix TypeScript/RxJS compatibility issues ────────────────────────────────
+function fixTsCompat() {
+  let count = 0;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
+      let src = readFileSync(full, 'utf8');
+      let out = src;
+
+      // rxjs/internal-compatibility was removed in RxJS 7
+      // isObject(x) → (x !== null && typeof x === 'object')
+      if (out.includes('rxjs/internal-compatibility')) {
+        out = out.replace(
+          /import\s*\{[^}]*\bisObject\b[^}]*\}\s*from\s*['"]rxjs\/internal-compatibility['"]\s*;?\n?/g, '');
+        out = out.replace(/\bisObject\s*\(([^)]+)\)/g, '($1 !== null && typeof $1 === \'object\')');
+        out = out.replace(
+          /import\s*\{[^}]*\}\s*from\s*['"]rxjs\/internal-compatibility['"]\s*;?\n?/g, '');
+      }
+
+      // _countGroupLabelsBeforeLegacyOption → _countGroupLabelsBeforeOption (Material v15)
+      out = out.replace(/_countGroupLabelsBeforeLegacyOption/g, '_countGroupLabelsBeforeOption');
+      // _getLegacyOptionScrollPosition → _getOptionScrollPosition (Material v15)
+      out = out.replace(/_getLegacyOptionScrollPosition/g, '_getOptionScrollPosition');
+
+      // Double commas in TypeScript arrays/imports (from schematic add/remove operations)
+      out = out.replace(/,(\s*,)+/g, ',');
+
+      if (out !== src) { writeFileSync(full, out); count++; }
+    }
+  }
+  walk(srcDir);
+  if (count > 0) console.log(`  ↳ ts-compat fixes: ${count} arquivo(s)`);
+  return count;
+}
 
 function fixThrowError() {
   let count = 0;
@@ -1199,7 +2015,14 @@ function inlinePolyfills() {
   const polyfillsPath = join(destPath, 'src', 'polyfills.ts');
   if (!existsSync(polyfillsPath)) return false;
 
-  const content = readFileSync(polyfillsPath, 'utf8');
+  let content = readFileSync(polyfillsPath, 'utf8');
+
+  // Normalize legacy zone.js path: 'zone.js/dist/zone' → 'zone.js'
+  if (content.includes('zone.js/dist/zone')) {
+    content = content.replace(/zone\.js\/dist\/zone/g, 'zone.js');
+    writeFileSync(polyfillsPath, content);
+  }
+
   const stripped = content
     .replace(/\/\/.*$/gm, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -1232,6 +2055,24 @@ function inlinePolyfills() {
     writeJson(ngPath, ng);
     unlinkSync(polyfillsPath);
     console.log('  ↳ polyfills.ts inlined → angular.json ["zone.js"]');
+
+    // Remove polyfills.ts (and its ngtypecheck counterpart) from tsconfig.app.json files array
+    const tsconfigAppPath = join(destPath, 'tsconfig.app.json');
+    if (existsSync(tsconfigAppPath)) {
+      try {
+        const tsapp = readJson(tsconfigAppPath);
+        if (Array.isArray(tsapp.files)) {
+          const before = tsapp.files.length;
+          tsapp.files = tsapp.files.filter(f =>
+            !String(f).includes('polyfills.ts') && !String(f).includes('polyfills.ngtypecheck.ts')
+          );
+          if (tsapp.files.length !== before) {
+            writeJson(tsconfigAppPath, tsapp);
+            console.log('  ↳ polyfills.ts removido do tsconfig.app.json');
+          }
+        }
+      } catch { /* ignore malformed tsconfig */ }
+    }
     return true;
   }
   return false;
@@ -1418,10 +2259,11 @@ function runModernizationMigrations() {
     report.details[key] = captureGitDiff(prevHash, h);
     prevHash = h;
     writeReport(true);
+    writeMigrationData();
   }
 
   // 0. @angular/flex-layout → Tailwind CSS
-  if (hasPackage('@angular/flex-layout') || (() => {
+  if (!skipSteps.has('flexLayout') && (hasPackage('@angular/flex-layout') || (() => {
     // Verifica se há atributos fx* nos templates (o pacote já foi removido do package.json no preflight)
     const hasFx = (dir) => {
       try {
@@ -1434,132 +2276,200 @@ function runModernizationMigrations() {
       return false;
     };
     return hasFx(join(destPath, 'src'));
-  })()) {
+  })())) {
     console.log(`\n  🔄 @angular/flex-layout → Tailwind CSS...`);
     report.modernize.flexLayoutMigrated = migrateFlexLayoutToTailwind();
     commitStep('flexLayout', '@angular/flex-layout → Tailwind');
   }
 
   // 1. inject(): constructor DI → inject()
-  console.log(`\n  🔄 inject()  (constructor DI → inject())...`);
-  run('npx ng generate @angular/core:inject-migration --defaults', { ignoreError: true });
-  report.modernize.inject = true;
-  commitStep('inject', 'inject()');
+  if (!skipSteps.has('inject')) {
+    console.log(`\n  🔄 inject()  (constructor DI → inject())...`);
+    run('npx ng generate @angular/core:inject-migration --defaults', { ignoreError: true });
+    report.modernize.inject = true;
+    commitStep('inject', 'inject()');
+  }
 
   // 2. signals: @Input/@Output/@ViewChild → signal APIs
-  console.log(`\n  🔄 signals  (@Input/@Output/@ViewChild → signal APIs)...`);
-  run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
-  report.modernize.signals = true;
-  commitStep('signals', 'signals');
+  if (!skipSteps.has('signals')) {
+    console.log(`\n  🔄 signals  (@Input/@Output/@ViewChild → signal APIs)...`);
+    run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
+    report.modernize.signals = true;
+    commitStep('signals', 'signals');
+  }
 
   // 2b. UntypedForm* → typed forms (ponte de migração v14, obsoleta no v21)
-  report.modernize.untypedFormsFixed = fixUntypedForms();
-  commitStep('untypedForms', 'untyped forms');
+  if (!skipSteps.has('untypedForms')) {
+    report.modernize.untypedFormsFixed = fixUntypedForms();
+    commitStep('untypedForms', 'untyped forms');
+  }
 
-  // 2c. throwError() → factory function (RxJS 7)
-  console.log(`\n  🔄 throwError  (RxJS 7 factory function)...`);
-  report.modernize.throwErrorFixed = fixThrowError();
-  commitStep('throwError', 'throwError factory');
+  // 2c. throwError() → factory function (RxJS 7) + fixes RxJS/TS compat
+  if (!skipSteps.has('throwError')) {
+    console.log(`\n  🔄 throwError  (RxJS 7 factory function)...`);
+    report.modernize.throwErrorFixed = fixThrowError();
+    fixSubjectVoid();
+    fixMomentImport();
+    fixTsCompat();
+    commitStep('throwError', 'throwError factory + RxJS/TS fixes');
+  }
 
   // 3. standalone migration (3 passos obrigatórios em sequência)
-  runUntilStable(
-    'npx ng generate @angular/core:standalone-migration --mode convert-to-standalone --defaults',
-    'standalone  (convert-to-standalone)',
-  );
-  console.log(`\n  🔄 standalone  (prune-ng-modules)...`);
-  run('npx ng generate @angular/core:standalone-migration --mode prune-ng-modules --defaults', { ignoreError: true });
-  console.log(`\n  🔄 standalone  (standalone-bootstrap)...`);
-  run('npx ng generate @angular/core:standalone-migration --mode standalone-bootstrap --defaults', { ignoreError: true });
-  report.modernize.standalone = true;
-  commitStep('standalone', 'standalone migration');
+  if (!skipSteps.has('standalone')) {
+    // Pre-populate NgModule imports from template analysis so the schematic
+    // correctly copies them to each standalone component's imports: []
+    console.log(`\n  🔄 standalone  (pre-fix NgModule imports)...`);
+    fixNgModuleImports();
+
+    runUntilStable(
+      'npx ng generate @angular/core:standalone-migration --mode convert-to-standalone --defaults',
+      'standalone  (convert-to-standalone)',
+    );
+    // Copy ALL NgModule imports to each converted component while .module.ts files still exist.
+    // cleanup-unused-imports (last step) will prune what's not actually used.
+    console.log(`\n  🔄 standalone  (copy all module imports to components)...`);
+    copyModuleImportsToComponents();
+
+    console.log(`\n  🔄 standalone  (prune-ng-modules)...`);
+    run('npx ng generate @angular/core:standalone-migration --mode prune-ng-modules --defaults', { ignoreError: true });
+    console.log(`\n  🔄 standalone  (standalone-bootstrap)...`);
+    run('npx ng generate @angular/core:standalone-migration --mode standalone-bootstrap --defaults', { ignoreError: true });
+    report.modernize.standalone = true;
+    commitStep('standalone', 'standalone migration');
+  }
 
   // 3b. Garante standalone: true em pipes/directives que o schematic ignorou
-  console.log(`\n  🔄 standalone  (fix missing standalone: true in pipes/directives)...`);
-  report.modernize.standaloneFixed = fixMissingStandalone();
-  commitStep('standaloneFixed', 'standalone: true patch');
+  //     e adiciona imports faltantes de Material/Angular em componentes standalone
+  if (!skipSteps.has('standaloneFixed')) {
+    console.log(`\n  🔄 standalone  (fix missing standalone: true in pipes/directives)...`);
+    report.modernize.standaloneFixed = fixMissingStandalone();
+    console.log(`\n  🔄 standalone  (add missing Material/Angular imports)...`);
+    report.modernize.standaloneFixed += fixStandaloneImports();
+    commitStep('standaloneFixed', 'standalone: true patch + imports');
+  }
 
   // 3c. control-flow: *ngIf/*ngFor/*ngSwitch → @if/@for/@switch
-  runUntilStable(
-    'npx ng generate @angular/core:control-flow',
-    'control-flow  (*ngIf/*ngFor → @if/@for)',
-  );
-  report.modernize.controlFlow = true;
-  commitStep('controlFlow', 'control-flow');
+  if (!skipSteps.has('controlFlow')) {
+    runUntilStable(
+      'npx ng generate @angular/core:control-flow',
+      'control-flow  (*ngIf/*ngFor → @if/@for)',
+    );
+    report.modernize.controlFlow = true;
+    commitStep('controlFlow', 'control-flow');
+  }
 
   // 3d. [ngClass] → [class] bindings
-  console.log(`\n  🔄 ngClass → class bindings...`);
-  run('npx ng generate @angular/core:ngclass-to-class', { ignoreError: true });
-  report.modernize.ngClassToClass = true;
-  commitStep('ngClassToClass', 'ngClass → class');
+  if (!skipSteps.has('ngClassToClass')) {
+    console.log(`\n  🔄 ngClass → class bindings...`);
+    run('npx ng generate @angular/core:ngclass-to-class', { ignoreError: true });
+    report.modernize.ngClassToClass = true;
+    commitStep('ngClassToClass', 'ngClass → class');
+  }
 
   // 3e. [ngStyle] → [style] bindings
-  console.log(`\n  🔄 ngStyle → style bindings...`);
-  run('npx ng generate @angular/core:ngstyle-to-style --best-effort-mode', { ignoreError: true });
-  report.modernize.ngStyleToStyle = true;
-  commitStep('ngStyleToStyle', 'ngStyle → style');
+  if (!skipSteps.has('ngStyleToStyle')) {
+    console.log(`\n  🔄 ngStyle → style bindings...`);
+    run('npx ng generate @angular/core:ngstyle-to-style --best-effort-mode', { ignoreError: true });
+    report.modernize.ngStyleToStyle = true;
+    commitStep('ngStyleToStyle', 'ngStyle → style');
+  }
 
   // 4. app.config.ts + app.routes.ts
-  console.log(`\n  🔄 app.config.ts + app.routes.ts...`);
-  createAppConfigAndRoutes();
-  commitStep('appConfig', 'app.config.ts + app.routes.ts');
+  if (!skipSteps.has('appConfig')) {
+    console.log(`\n  🔄 app.config.ts + app.routes.ts...`);
+    createAppConfigAndRoutes();
+    commitStep('appConfig', 'app.config.ts + app.routes.ts');
+  }
 
   // 4b. Lazy NgModule → routes file (resolve NG0200)
-  console.log(`\n  🔄 lazy routes  (NgModule → routes file)...`);
-  report.modernize.lazyRoutesConverted = convertLazyModulesToRoutes();
-  commitStep('lazyRoutes', 'lazy routes');
+  if (!skipSteps.has('lazyRoutes')) {
+    console.log(`\n  🔄 lazy routes  (NgModule → routes file)...`);
+    report.modernize.lazyRoutesConverted = convertLazyModulesToRoutes();
+    commitStep('lazyRoutes', 'lazy routes');
+  }
 
   // 5. Vite/esbuild builder
-  migrateToApplicationBuilder();
-  report.modernize.builder = true;
-  commitStep('builder', 'application builder');
+  if (!skipSteps.has('builder')) {
+    migrateToApplicationBuilder();
+    report.modernize.builder = true;
+    commitStep('builder', 'application builder');
+  }
 
   // 5b. polyfills.ts → inline zone.js em angular.json
-  console.log(`\n  🔄 polyfills  (inline zone.js em angular.json)...`);
-  report.modernize.polyfillsInlined = inlinePolyfills();
-  commitStep('polyfills', 'polyfills inline');
+  if (!skipSteps.has('polyfills')) {
+    console.log(`\n  🔄 polyfills  (inline zone.js em angular.json)...`);
+    report.modernize.polyfillsInlined = inlinePolyfills();
+    commitStep('polyfills', 'polyfills inline');
+  }
 
   // 6. Moderniza tsconfig (ES2022 / bundler / useDefineForClassFields)
-  console.log(`\n  🔄 tsconfig  (ES2022, moduleResolution→bundler)...`);
-  report.modernize.tsconfigModernized = modernizeTsconfig();
-  commitStep('tsconfig', 'tsconfig ES2022/bundler');
+  if (!skipSteps.has('tsconfig')) {
+    console.log(`\n  🔄 tsconfig  (ES2022, moduleResolution→bundler)...`);
+    report.modernize.tsconfigModernized = modernizeTsconfig();
+    commitStep('tsconfig', 'tsconfig ES2022/bundler');
+  }
 
   // 6b. Path aliases
-  console.log(`\n  🔄 path aliases no tsconfig...`);
-  addTsconfigPathAliases();
-  report.modernize.pathAliases = true;
-  commitStep('pathAliases', 'tsconfig path aliases');
+  if (!skipSteps.has('pathAliases')) {
+    console.log(`\n  🔄 path aliases no tsconfig...`);
+    addTsconfigPathAliases();
+    report.modernize.pathAliases = true;
+    commitStep('pathAliases', 'tsconfig path aliases');
+  }
 
   // 6c. ESLint
-  console.log(`\n  🔄 ESLint  (@angular/eslint)...`);
-  report.modernize.eslintAdded = addEslint();
-  commitStep('eslint', 'ESLint');
+  if (!skipSteps.has('eslint')) {
+    console.log(`\n  🔄 ESLint  (@angular/eslint)...`);
+    report.modernize.eslintAdded = addEslint();
+    commitStep('eslint', 'ESLint');
+  }
 
   // 7. SCSS @import → @use as *
-  console.log(`\n  🔄 SCSS  (@import → @use as *)...`);
-  report.modernize.sassImports = fixSassImports();
-  commitStep('sass', 'SCSS @use');
+  if (!skipSteps.has('sass')) {
+    console.log(`\n  🔄 SCSS  (@import → @use as *)...`);
+    report.modernize.sassImports = fixSassImports();
+    commitStep('sass', 'SCSS @use');
+  }
 
   // 8. Remove .module.ts que não são mais referenciados
-  console.log(`\n  🔄 módulos  (removendo .module.ts obsoletos)...`);
-  report.modernize.modulesRemoved = removeUnusedModules();
-  commitStep('modules', 'remove unused modules');
+  if (!skipSteps.has('modules')) {
+    console.log(`\n  🔄 módulos  (removendo .module.ts obsoletos)...`);
+    report.modernize.modulesRemoved = removeUnusedModules();
+    commitStep('modules', 'remove unused modules');
+  }
 
   // 9. styleUrls → styleUrl (Angular 19+)
-  console.log(`\n  🔄 styleUrls → styleUrl...`);
-  report.modernize.styleUrlFixed = fixStyleUrls();
-  commitStep('styleUrl', 'styleUrls → styleUrl');
+  if (!skipSteps.has('styleUrl')) {
+    console.log(`\n  🔄 styleUrls → styleUrl...`);
+    report.modernize.styleUrlFixed = fixStyleUrls();
+    commitStep('styleUrl', 'styleUrls → styleUrl');
+  }
 
   // 10. self-closing tags
-  console.log(`\n  🔄 self-closing tags...`);
-  run('npx ng generate @angular/core:self-closing-tag', { ignoreError: true });
-  report.modernize.selfClosingTags = true;
-  commitStep('selfClosing', 'self-closing tags');
+  if (!skipSteps.has('selfClosing')) {
+    console.log(`\n  🔄 self-closing tags...`);
+    run('npx ng generate @angular/core:self-closing-tag', { ignoreError: true });
+    report.modernize.selfClosingTags = true;
+    commitStep('selfClosing', 'self-closing tags');
+  }
 
   // 11. cleanup unused imports (deve rodar por último, após todas as migrações de template)
-  console.log(`\n  🔄 cleanup unused imports...`);
-  run('npx ng generate @angular/core:cleanup-unused-imports', { ignoreError: true });
-  report.modernize.cleanupImports = true;
-  commitStep('cleanupImports', 'cleanup unused imports');
+  if (!skipSteps.has('cleanupImports')) {
+    console.log(`\n  🔄 cleanup unused imports...`);
+    run('npx ng generate @angular/core:cleanup-unused-imports', { ignoreError: true });
+    // Re-apply standalone fixes after cleanup: schematic may remove standalone: true from
+    // components still referenced in surviving NgModules, leaving imports: [] without standalone.
+    fixMissingStandalone();
+    // Fix double commas left by schematics (prune-ng-modules, cleanup-unused-imports)
+    fixTsCompat();
+    const reFixed = fixStandaloneImports();
+    if (reFixed > 0) {
+      run('git add -A');
+      run('git commit -m "fix: restore standalone imports removed by cleanup" --allow-empty');
+    }
+    report.modernize.cleanupImports = true;
+    commitStep('cleanupImports', 'cleanup unused imports');
+  }
 }
 
 // ─── Status HTML (auto-refresh a cada 4s) — Angular design ──────────────────
@@ -2033,6 +2943,18 @@ function writeReport(skipDiff = false) {
   }
 }
 
+// ─── Grava dados de migração como JSON (lido pelo servidor UI) ───────────────
+
+function writeMigrationData() {
+  if (!existsSync(destPath)) return;
+  try {
+    const dataPath = join(destPath, 'MIGRATION-DATA.json');
+    writeFileSync(dataPath, JSON.stringify(report, null, 2) + '\n');
+  } catch {
+    // non-fatal — UI polling will just show stale data
+  }
+}
+
 // ─── Pacotes extras por versão ───────────────────────────────────────────────
 
 function extraPackages(v) {
@@ -2095,6 +3017,7 @@ report.initialCommit = capture('git rev-parse HEAD');
 const detectedVersion = opts.from ?? getInstalledMajor('@angular/core');
 report.sourceVersion = detectedVersion || null;
 writeReport(true);  // primeiro snapshot — abre o arquivo no destino
+writeMigrationData();
 console.log(`\n📦 Versão detectada: Angular ${detectedVersion || '?'}`);
 console.log('📦 Instalando dependências...');
 if (npmInstall().status !== 0) {
@@ -2142,6 +3065,7 @@ for (let v = startVersion; v <= opts.to; v++) {
   steps.push({ version: v, ok });
   report.ngUpdateSteps.push({ version: v, ok });
   writeReport(true);
+  writeMigrationData();
 }
 
 // 6. Modernização: inject() + signals + output()
@@ -2170,6 +3094,7 @@ if (warnings.length) {
 console.log(`\n  Projeto migrado: ${destPath}`);
 
 writeReport();
+writeMigrationData();
 
 console.log('\n Próximos passos:');
 console.log(` 1. cd ${destPath}`);
