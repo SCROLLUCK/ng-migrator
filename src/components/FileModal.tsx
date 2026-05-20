@@ -9,6 +9,7 @@ type DiffLineType = 'file-header' | 'hunk' | 'add' | 'del' | 'context'
 interface DiffLine { type: DiffLineType; content: string }
 
 function parseDiff(raw: string): DiffLine[] {
+  if (!raw.trim()) return []
   return raw.split('\n').map(line => {
     if (/^(diff |index |--- |\+\+\+ )/.test(line)) return { type: 'file-header', content: line }
     if (line.startsWith('@@'))  return { type: 'hunk',    content: line }
@@ -18,11 +19,33 @@ function parseDiff(raw: string): DiffLine[] {
   })
 }
 
+function hasMeaningfulContent(lines: DiffLine[]): boolean {
+  return lines.some(l => l.type === 'add' || l.type === 'del' || l.type === 'hunk')
+}
+
 function reconstructBefore(lines: DiffLine[]) {
   return lines.filter(l => l.type === 'context' || l.type === 'del').map(l => l.content).join('\n')
 }
 function reconstructAfter(lines: DiffLine[]) {
   return lines.filter(l => l.type === 'context' || l.type === 'add').map(l => l.content).join('\n')
+}
+
+// ─── Search highlight ─────────────────────────────────────────────────────────
+
+function highlightPath(path: string, query: string) {
+  if (!query.trim()) return <>{path}</>
+  const lower = path.toLowerCase()
+  const q = query.toLowerCase()
+  const parts: React.ReactNode[] = []
+  let i = 0
+  while (i < path.length) {
+    const idx = lower.indexOf(q, i)
+    if (idx === -1) { parts.push(path.slice(i)); break }
+    if (idx > i) parts.push(path.slice(i, idx))
+    parts.push(<mark key={idx} className="bg-amber/40 text-text rounded-xs px-0">{path.slice(idx, idx + q.length)}</mark>)
+    i = idx + q.length
+  }
+  return <>{parts}</>
 }
 
 // ─── Diff panel ───────────────────────────────────────────────────────────────
@@ -94,6 +117,7 @@ function DiffPanel({ state, onTabChange }: { state: ExpandedState; onTabChange: 
     { key: 'after',  label: 'After' },
   ]
   const { lines, loading, tab } = state
+  const hasContent = lines && hasMeaningfulContent(lines)
   return (
     <div className="bg-[#090914] border-t border-b border-surface2">
       <div className="flex border-b border-surface2 pl-2">
@@ -121,13 +145,13 @@ function DiffPanel({ state, onTabChange }: { state: ExpandedState; onTabChange: 
         {loading && (
           <div className="text-[#4A4A70] px-4 py-3 text-[0.75rem] font-mono">Loading…</div>
         )}
-        {!loading && (!lines || lines.length === 0) && (
+        {!loading && !hasContent && (
           <div className="text-[#4A4A70] px-4 py-3 text-[0.75rem]">No diff available.</div>
         )}
-        {!loading && lines && lines.length > 0 && (
-          tab === 'diff'   ? <UnifiedDiff lines={lines} /> :
-          tab === 'before' ? <PlainCode text={reconstructBefore(lines)} /> :
-                             <PlainCode text={reconstructAfter(lines)} />
+        {!loading && hasContent && (
+          tab === 'diff'   ? <UnifiedDiff lines={lines!} /> :
+          tab === 'before' ? <PlainCode text={reconstructBefore(lines!)} /> :
+                             <PlainCode text={reconstructAfter(lines!)} />
         )}
       </div>
     </div>
@@ -146,7 +170,7 @@ interface Props {
 export function FileModal({ title, files, destPath, onClose }: Props) {
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
-  const [expanded, setExpanded] = useState<Record<number, ExpandedState>>({})
+  const [expanded, setExpanded] = useState<Record<string, ExpandedState>>({})
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -160,28 +184,28 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
     ? files.filter(f => f.path.toLowerCase().includes(query.toLowerCase()))
     : files
 
-  async function toggleFile(idx: number, file: StepDetail) {
-    if (expanded[idx]) {
-      setExpanded(prev => { const n = { ...prev }; delete n[idx]; return n })
+  async function toggleFile(key: string, file: StepDetail) {
+    if (expanded[key]) {
+      setExpanded(prev => { const n = { ...prev }; delete n[key]; return n })
       return
     }
     if (!file.h0 || !file.h1) {
-      setExpanded(prev => ({ ...prev, [idx]: { lines: [], loading: false, tab: 'diff' } }))
+      setExpanded(prev => ({ ...prev, [key]: { lines: [], loading: false, tab: 'diff' } }))
       return
     }
-    setExpanded(prev => ({ ...prev, [idx]: { lines: null, loading: true, tab: 'diff' } }))
+    setExpanded(prev => ({ ...prev, [key]: { lines: null, loading: true, tab: 'diff' } }))
     try {
       const params = new URLSearchParams({ dest: destPath, path: file.path, h0: file.h0, h1: file.h1 })
       const res = await fetch(`/api/diff?${params}`)
       const json = await res.json()
-      setExpanded(prev => ({ ...prev, [idx]: { ...prev[idx], lines: parseDiff(json.diff || ''), loading: false } }))
+      setExpanded(prev => ({ ...prev, [key]: { ...prev[key], lines: parseDiff(json.diff || ''), loading: false } }))
     } catch {
-      setExpanded(prev => ({ ...prev, [idx]: { lines: [], loading: false, tab: 'diff' } }))
+      setExpanded(prev => ({ ...prev, [key]: { lines: [], loading: false, tab: 'diff' } }))
     }
   }
 
-  function setTab(idx: number, tab: TabType) {
-    setExpanded(prev => ({ ...prev, [idx]: { ...prev[idx], tab } }))
+  function setTab(key: string, tab: TabType) {
+    setExpanded(prev => ({ ...prev, [key]: { ...prev[key], tab } }))
   }
 
   return createPortal(
@@ -228,8 +252,9 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
               No files match "{query}"
             </div>
           )}
-          {filtered.map((f, i) => {
-            const isOpen = !!expanded[i]
+          {filtered.map((f) => {
+            const key = `${f.path}::${f.h0 ?? ''}::${f.h1 ?? ''}`
+            const isOpen = !!expanded[key]
             const hasDiff = !!f.h0 && !!f.h1
             const firstLine = f.lines?.[0] ?? 1
             const absPath = `${destPath}/${f.path}`.replace(/\/+/g, '/')
@@ -238,22 +263,21 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
 
             const badge =
               f.action === 'created'
-                ? <span className="shrink-0 text-[0.62rem] font-bold px-[5px] rounded-[3px] bg-green/15 text-green border border-green/30 leading-[1.6]">new</span>
+                ? <span className="shrink-0 text-[0.62rem] font-bold px-1.25 rounded-[3px] bg-green/15 text-green border border-green/30 leading-[1.6]">new</span>
                 : f.action === 'deleted'
-                ? <span className="shrink-0 text-[0.62rem] font-bold px-[5px] rounded-[3px] bg-[#EF5350]/15 text-[#EF5350] border border-[#EF5350]/30 leading-[1.6]">del</span>
+                ? <span className="shrink-0 text-[0.62rem] font-bold px-1.25 rounded-[3px] bg-[#EF5350]/15 text-[#EF5350] border border-[#EF5350]/30 leading-[1.6]">del</span>
                 : <span className="shrink-0 w-6" />
 
             return (
-              <div key={i} className="shrink-0">
+              <div key={key} className="shrink-0">
                 <div
-                  onClick={() => toggleFile(i, f)}
+                  onClick={() => toggleFile(key, f)}
                   className={cn(
                     'flex items-center gap-2 px-2 py-[0.28rem] border-l-2 transition-colors',
                     isOpen
                       ? 'bg-blue/5 border-blue/35'
                       : cn(
                           'border-transparent',
-                          i % 2 === 0 ? 'bg-white/2' : 'bg-transparent',
                           hasDiff ? 'cursor-pointer hover:bg-white/4' : 'cursor-default',
                         ),
                   )}
@@ -264,7 +288,7 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
                   {badge}
                   <span className="flex-1 min-w-0">
                     <code className="font-mono text-[0.78rem] bg-[#0A0A18] px-1.5 py-0.5 rounded-[3px] block overflow-hidden text-ellipsis whitespace-nowrap text-[#B0B0D0]">
-                      {f.path}
+                      {highlightPath(f.path, query)}
                     </code>
                   </span>
                   {lineCount > 0 && (
@@ -285,7 +309,7 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
                 </div>
 
                 {isOpen && (
-                  <DiffPanel state={expanded[i]} onTabChange={tab => setTab(i, tab)} />
+                  <DiffPanel state={expanded[key]} onTabChange={tab => setTab(key, tab)} />
                 )}
               </div>
             )
