@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { MigrationData } from '../types'
+import { cn } from '@/lib/utils'
 
 const STEP_LABELS: Record<string, string> = {
   flexLayout: '@angular/flex-layout → Tailwind CSS',
@@ -111,28 +112,33 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
     }
   }
 
+  const inputBase = cn(
+    'w-full bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] text-text px-[0.65rem] py-[0.45rem]',
+    'text-[0.82rem] outline-none transition-colors focus:border-blue',
+  )
+
   return (
-    <div style={{ background: '#16162A', border: '1px solid #2A2A45', borderRadius: 10, overflow: 'hidden', flexShrink: 0 }}>
-      <div style={{ background: '#1E1E35', borderBottom: '1px solid #2A2A45', padding: '0.55rem 1rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-        <span style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#7070A0' }}>
+    <div className="bg-surface border border-[#2A2A45] rounded-[10px] overflow-hidden shrink-0">
+      <div className="bg-surface2 border-b border-[#2A2A45] px-4 py-[0.55rem] flex items-center gap-[0.6rem]">
+        <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">
           Configuration
         </span>
         {data.sourcePath && (
-          <span style={{ marginLeft: 'auto', background: 'rgba(221,0,49,0.18)', color: '#DD0031', border: '1px solid rgba(221,0,49,0.3)', borderRadius: 4, fontSize: '0.68rem', fontWeight: 600, padding: '1px 7px' }}>
+          <span className="ml-auto bg-red/18 text-red border border-red/30 rounded px-1.75 py-px text-[0.68rem] font-semibold">
             {data.status}
           </span>
         )}
       </div>
 
-      <div style={{ padding: '0.85rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <div className="px-4 py-[0.85rem] flex flex-col gap-3">
         {/* Source path */}
         <div>
-          <label style={{ fontSize: '0.78rem', color: '#7070A0', display: 'block', marginBottom: 4 }}>
+          <label className="text-[0.78rem] text-[#7070A0] block mb-1">
             Source project path
           </label>
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div className="flex gap-1.5">
             <input
-              style={{ flex: 1, background: '#0F0F1A', border: '1px solid #2A2A45', borderRadius: 6, color: '#E8E8F0', padding: '0.45rem 0.65rem', fontSize: '0.82rem', outline: 'none', cursor: isRunning ? 'not-allowed' : 'auto' }}
+              className={cn(inputBase, 'flex-1', isRunning && 'cursor-not-allowed opacity-60')}
               type="text"
               placeholder="/path/to/my-angular-app"
               value={sourcePath}
@@ -143,7 +149,10 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
               onClick={handleBrowse}
               disabled={isRunning || browsing}
               title="Selecionar pasta"
-              style={{ background: '#1E1E35', border: '1px solid #2A2A45', borderRadius: 6, color: browsing ? '#4A4A70' : '#7070A0', padding: '0 0.65rem', fontSize: '1rem', cursor: isRunning ? 'not-allowed' : browsing ? 'wait' : 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center' }}
+              className={cn(
+                'bg-surface2 border border-[#2A2A45] rounded-[6px] px-[0.65rem] text-base flex items-center shrink-0 transition-colors',
+                isRunning || browsing ? 'text-[#4A4A70] cursor-not-allowed' : 'text-[#7070A0] cursor-pointer hover:text-text',
+              )}
             >
               📁
             </button>
@@ -152,11 +161,14 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
 
         {/* Target version */}
         <div>
-          <label style={{ fontSize: '0.78rem', color: '#7070A0', display: 'block', marginBottom: 4 }}>
+          <label className="text-[0.78rem] text-[#7070A0] block mb-1">
             Target version
           </label>
           <select
-            style={{ width: '100%', background: '#0F0F1A', border: '1px solid #2A2A45', borderRadius: 6, color: '#E8E8F0', padding: '0.45rem 0.65rem', fontSize: '0.82rem', outline: 'none', cursor: isRunning ? 'not-allowed' : 'pointer' }}
+            className={cn(
+              'w-full bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] text-text px-[0.65rem] py-[0.45rem] text-[0.82rem] outline-none transition-colors focus:border-blue',
+              isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
+            )}
             value={targetVersion}
             onChange={(e) => setTargetVersion(parseInt(e.target.value))}
             disabled={isRunning}
@@ -167,72 +179,60 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
           </select>
         </div>
 
-        {/* Modernization toggle */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <input
-            type="checkbox"
-            id="modernize-check"
-            checked={modernize}
-            onChange={(e) => setModernize(e.target.checked)}
-            disabled={isRunning}
-            style={{ accentColor: '#DD0031', width: 15, height: 15, cursor: isRunning ? 'not-allowed' : 'pointer' }}
-          />
-          <label htmlFor="modernize-check" style={{ fontSize: '0.82rem', color: '#E8E8F0', cursor: isRunning ? 'not-allowed' : 'pointer' }}>
-            Run modernization steps
-          </label>
-        </div>
-
-        {/* Clean destination toggle */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <input
-            type="checkbox"
-            id="clean-dest-check"
-            checked={cleanDest}
-            onChange={(e) => setCleanDest(e.target.checked)}
-            disabled={isRunning}
-            style={{ accentColor: '#DD0031', width: 15, height: 15, cursor: isRunning ? 'not-allowed' : 'pointer' }}
-          />
-          <label htmlFor="clean-dest-check" style={{ fontSize: '0.82rem', color: '#E8E8F0', cursor: isRunning ? 'not-allowed' : 'pointer' }}>
-            Delete destination folder if it exists
-          </label>
-        </div>
-
-        {/* Run after toggle */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <input
-            type="checkbox"
-            id="run-after-check"
-            checked={runAfter}
-            onChange={(e) => setRunAfter(e.target.checked)}
-            disabled={isRunning}
-            style={{ accentColor: '#DD0031', width: 15, height: 15, cursor: isRunning ? 'not-allowed' : 'pointer' }}
-          />
-          <label htmlFor="run-after-check" style={{ fontSize: '0.82rem', color: '#E8E8F0', cursor: isRunning ? 'not-allowed' : 'pointer' }}>
-            Install &amp; serve after migration
-          </label>
-        </div>
+        {/* Toggles */}
+        {[
+          { id: 'modernize', label: 'Run modernization steps', checked: modernize, onChange: setModernize },
+          { id: 'cleanDest', label: 'Delete destination folder if it exists', checked: cleanDest, onChange: setCleanDest },
+          { id: 'runAfter', label: 'Install & serve after migration', checked: runAfter, onChange: setRunAfter },
+        ].map(({ id, label, checked, onChange }) => (
+          <div key={id} className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id={id}
+              checked={checked}
+              onChange={(e) => onChange(e.target.checked)}
+              disabled={isRunning}
+              className={cn('accent-red w-3.75 h-3.75', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
+            />
+            <label
+              htmlFor={id}
+              className={cn('text-[0.82rem] text-text', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
+            >
+              {label}
+            </label>
+          </div>
+        ))}
 
         {/* Collapsible steps */}
         {modernize && (
           <div>
             <button
               onClick={() => setStepsOpen((o) => !o)}
-              style={{ background: 'none', border: '1px solid #2A2A45', borderRadius: 6, color: '#7070A0', fontSize: '0.75rem', padding: '0.35rem 0.65rem', cursor: isRunning ? 'not-allowed' : 'pointer', width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between' }}
               disabled={isRunning}
+              className={cn(
+                'w-full bg-transparent border border-[#2A2A45] rounded-[6px] text-[#7070A0] text-[0.75rem] px-[0.65rem] py-[0.35rem] flex justify-between transition-colors',
+                isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-[#3A3A65] hover:text-text',
+              )}
             >
               <span>Modernization steps</span>
               <span>{stepsOpen ? '▲' : '▾'}</span>
             </button>
             {stepsOpen && (
-              <div style={{ background: '#0F0F1A', border: '1px solid #2A2A45', borderRadius: 6, padding: '0.5rem 0.75rem', marginTop: 4, display: 'flex', flexDirection: 'column', gap: '0.35rem', maxHeight: '220px', overflowY: 'auto' }}>
+              <div className="bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] px-3 py-2 mt-1 flex flex-col gap-[0.35rem] max-h-55 overflow-y-auto">
                 {ALL_STEPS.map((key) => (
-                  <label key={key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem', color: '#B0B0D0', cursor: isRunning ? 'not-allowed' : 'pointer' }}>
+                  <label
+                    key={key}
+                    className={cn(
+                      'flex items-center gap-[0.4rem] text-[0.75rem] text-[#B0B0D0]',
+                      isRunning ? 'cursor-not-allowed' : 'cursor-pointer',
+                    )}
+                  >
                     <input
                       type="checkbox"
                       checked={selectedSteps.has(key)}
                       onChange={() => toggleStep(key)}
                       disabled={isRunning}
-                      style={{ accentColor: '#DD0031', width: 13, height: 13, cursor: isRunning ? 'not-allowed' : 'pointer' }}
+                      className={cn('accent-red w-3.25 h-3.25', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
                     />
                     {STEP_LABELS[key]}
                   </label>
@@ -244,32 +244,32 @@ export function ConfigCard({ data, isRunning, onStart, onStop }: Props) {
 
         {/* Error */}
         {error && (
-          <div style={{ background: 'rgba(239,83,80,0.1)', border: '1px solid rgba(239,83,80,0.3)', borderRadius: 6, padding: '0.45rem 0.65rem', fontSize: '0.78rem', color: '#EF5350' }}>
+          <div className="bg-[#EF5350]/10 border border-[#EF5350]/30 rounded-[6px] px-[0.65rem] py-[0.45rem] text-[0.78rem] text-[#EF5350]">
             {error}
           </div>
         )}
 
-        {/* Buttons */}
+        {/* Start / Stop */}
         {!isRunning ? (
           <button
             onClick={handleStart}
-            style={{ background: 'linear-gradient(135deg, #2E7D32, #4CAF50)', color: '#fff', border: 'none', borderRadius: 6, padding: '0.6rem 1rem', fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer', width: '100%' }}
+            className="w-full bg-linear-to-br from-[#2E7D32] to-green text-white border-none rounded-[6px] py-[0.6rem] text-[0.88rem] font-semibold cursor-pointer hover:opacity-90 transition-opacity"
           >
             Start Migration
           </button>
         ) : (
           <button
             onClick={onStop}
-            style={{ background: 'linear-gradient(135deg, #C62828, #EF5350)', color: '#fff', border: 'none', borderRadius: 6, padding: '0.6rem 1rem', fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer', width: '100%' }}
+            className="w-full bg-linear-to-br from-[#C62828] to-[#EF5350] text-white border-none rounded-[6px] py-[0.6rem] text-[0.88rem] font-semibold cursor-pointer hover:opacity-90 transition-opacity"
           >
             Stop
           </button>
         )}
 
-        {/* Current dest info */}
+        {/* Destination path info */}
         {data.destPath && (
-          <div style={{ fontSize: '0.72rem', color: '#7070A0', wordBreak: 'break-all', lineHeight: 1.5 }}>
-            <span style={{ color: '#E8E8F0' }}>Destination: </span>
+          <div className="text-[0.72rem] text-[#7070A0] break-all leading-normal">
+            <span className="text-text">Destination: </span>
             {data.destPath}
           </div>
         )}

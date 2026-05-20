@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { StepDetail } from '../types'
+import { cn } from '@/lib/utils'
 
 // ─── Diff parsing ─────────────────────────────────────────────────────────────
 
@@ -31,13 +32,13 @@ interface ExpandedState { lines: DiffLine[] | null; loading: boolean; tab: TabTy
 
 function UnifiedDiff({ lines }: { lines: DiffLine[] }) {
   return (
-    <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+    <table className="border-collapse w-full">
       <tbody>
         {lines.map((line, i) => {
           if (line.type === 'file-header') return null
           if (line.type === 'hunk') return (
-            <tr key={i} style={{ background: 'rgba(92,184,245,0.07)' }}>
-              <td colSpan={2} style={{ padding: '0 0.75rem', color: '#5CB8F5', fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre' }}>
+            <tr key={i} className="bg-blue/7">
+              <td colSpan={2} className="px-3 text-blue font-mono text-[0.72rem] whitespace-pre">
                 {line.content}
               </td>
             </tr>
@@ -45,11 +46,17 @@ function UnifiedDiff({ lines }: { lines: DiffLine[] }) {
           const isAdd = line.type === 'add'
           const isDel = line.type === 'del'
           return (
-            <tr key={i} style={{ background: isAdd ? 'rgba(76,175,80,0.10)' : isDel ? 'rgba(239,83,80,0.10)' : 'transparent' }}>
-              <td style={{ width: 16, padding: '0 6px 0 4px', userSelect: 'none', color: isAdd ? '#4CAF50' : isDel ? '#EF5350' : '#3A3A60', fontWeight: 700, fontFamily: 'monospace', fontSize: '0.72rem' }}>
+            <tr key={i} className={cn(isAdd ? 'bg-green/10' : isDel ? 'bg-[#EF5350]/10' : 'bg-transparent')}>
+              <td className={cn(
+                'w-4 px-1.5 select-none font-bold font-mono text-[0.72rem]',
+                isAdd ? 'text-green' : isDel ? 'text-[#EF5350]' : 'text-[#3A3A60]',
+              )}>
                 {isAdd ? '+' : isDel ? '-' : ' '}
               </td>
-              <td style={{ padding: '0 10px 0 0', color: isAdd ? '#88D58A' : isDel ? '#EF8080' : '#8080A0', whiteSpace: 'pre', fontFamily: 'monospace', fontSize: '0.72rem', overflow: 'hidden' }}>
+              <td className={cn(
+                'pr-2.5 whitespace-pre font-mono text-[0.72rem] overflow-hidden',
+                isAdd ? 'text-[#88D58A]' : isDel ? 'text-[#EF8080]' : 'text-[#8080A0]',
+              )}>
                 {line.content}
               </td>
             </tr>
@@ -63,14 +70,14 @@ function UnifiedDiff({ lines }: { lines: DiffLine[] }) {
 function PlainCode({ text }: { text: string }) {
   const lines = text.split('\n')
   return (
-    <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+    <table className="border-collapse w-full">
       <tbody>
         {lines.map((line, i) => (
           <tr key={i}>
-            <td style={{ width: 36, padding: '0 8px 0 4px', userSelect: 'none', color: '#3A3A60', textAlign: 'right', fontFamily: 'monospace', fontSize: '0.65rem' }}>
+            <td className="w-9 px-2 select-none text-right text-[#3A3A60] font-mono text-[0.65rem]">
               {i + 1}
             </td>
-            <td style={{ padding: '0 10px 0 0', color: '#8080A0', whiteSpace: 'pre', fontFamily: 'monospace', fontSize: '0.72rem', overflow: 'hidden' }}>
+            <td className="pr-2.5 text-[#8080A0] whitespace-pre font-mono text-[0.72rem] overflow-hidden">
               {line}
             </td>
           </tr>
@@ -88,29 +95,34 @@ function DiffPanel({ state, onTabChange }: { state: ExpandedState; onTabChange: 
   ]
   const { lines, loading, tab } = state
   return (
-    <div style={{ background: '#090914', borderTop: '1px solid #1E1E35', borderBottom: '1px solid #1E1E35' }}>
-      <div style={{ display: 'flex', borderBottom: '1px solid #1E1E35', paddingLeft: '0.5rem' }}>
+    <div className="bg-[#090914] border-t border-b border-surface2">
+      <div className="flex border-b border-surface2 pl-2">
         {TABS.map(t => (
-          <button key={t.key} onClick={() => onTabChange(t.key)} style={{
-            background: 'none', border: 'none',
-            borderBottom: tab === t.key ? '2px solid #5CB8F5' : '2px solid transparent',
-            color: tab === t.key ? '#5CB8F5' : '#4A4A70',
-            fontSize: '0.7rem', fontWeight: 600, padding: '0.35rem 0.65rem',
-            cursor: 'pointer', letterSpacing: '0.04em',
-          }}>
+          <button
+            key={t.key}
+            onClick={() => onTabChange(t.key)}
+            className={cn(
+              'bg-transparent border-none border-b-2 text-[0.7rem] font-semibold px-[0.65rem] py-[0.35rem] cursor-pointer tracking-[0.04em] transition-colors',
+              tab === t.key
+                ? 'border-blue text-blue'
+                : 'border-transparent text-[#4A4A70] hover:text-[#7070A0]',
+            )}
+          >
             {t.label}
           </button>
         ))}
         {(tab === 'before' || tab === 'after') && (
-          <span style={{ alignSelf: 'center', marginLeft: 'auto', marginRight: '0.75rem', fontSize: '0.63rem', color: '#3A3A60' }}>
+          <span className="self-center ml-auto mr-3 text-[0.63rem] text-[#3A3A60]">
             excerpt
           </span>
         )}
       </div>
-      <div style={{ maxHeight: 520, overflowY: 'auto', overflowX: 'auto' }}>
-        {loading && <div style={{ color: '#4A4A70', padding: '0.75rem 1rem', fontSize: '0.75rem', fontFamily: 'monospace' }}>Loading…</div>}
+      <div className="max-h-[520px] overflow-y-auto overflow-x-auto">
+        {loading && (
+          <div className="text-[#4A4A70] px-4 py-3 text-[0.75rem] font-mono">Loading…</div>
+        )}
         {!loading && (!lines || lines.length === 0) && (
-          <div style={{ color: '#4A4A70', padding: '0.75rem 1rem', fontSize: '0.75rem' }}>No diff available.</div>
+          <div className="text-[#4A4A70] px-4 py-3 text-[0.75rem]">No diff available.</div>
         )}
         {!loading && lines && lines.length > 0 && (
           tab === 'diff'   ? <UnifiedDiff lines={lines} /> :
@@ -175,40 +187,46 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
   return createPortal(
     <div
       onClick={onClose}
-      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2vh 2vw' }}
+      className="fixed inset-0 z-[1000] bg-black/65 backdrop-blur-[2px] flex items-center justify-center p-[2vh_2vw]"
     >
       <div
         onClick={e => e.stopPropagation()}
-        style={{ background: '#16162A', border: '1px solid #2A2A45', borderRadius: 12, width: '80vw', height: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(0,0,0,0.6)' }}
+        className="bg-surface border border-[#2A2A45] rounded-[12px] w-[80vw] h-[90vh] flex flex-col shadow-[0_24px_64px_rgba(0,0,0,0.6)]"
       >
         {/* Header */}
-        <div style={{ background: '#1E1E35', borderBottom: '1px solid #2A2A45', borderRadius: '12px 12px 0 0', padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
-          <span style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#7070A0' }}>Files changed</span>
-          <span style={{ fontSize: '0.82rem', color: '#E8E8F0', fontWeight: 600 }}>{title}</span>
-          <span style={{ background: 'rgba(92,184,245,0.12)', color: '#5CB8F5', border: '1px solid rgba(92,184,245,0.25)', borderRadius: 4, fontSize: '0.68rem', fontWeight: 600, padding: '1px 8px', flexShrink: 0 }}>
+        <div className="bg-surface2 border-b border-[#2A2A45] rounded-t-[12px] px-4 py-3 flex items-center gap-3 shrink-0">
+          <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">Files changed</span>
+          <span className="text-[0.82rem] text-text font-semibold">{title}</span>
+          <span className="bg-blue/12 text-blue border border-blue/25 rounded px-2 py-px text-[0.68rem] font-semibold shrink-0">
             {filtered.length}{query ? ` / ${files.length}` : ''} file{files.length !== 1 ? 's' : ''}
           </span>
-          <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: '1px solid #2A2A45', borderRadius: 6, color: '#7070A0', cursor: 'pointer', padding: '2px 8px', fontSize: '0.85rem', lineHeight: 1, flexShrink: 0 }} title="Close (Esc)">✕</button>
+          <button
+            onClick={onClose}
+            className="ml-auto bg-transparent border border-[#2A2A45] rounded-[6px] text-[#7070A0] cursor-pointer px-2 py-0.5 text-[0.85rem] leading-none shrink-0 hover:text-text hover:border-[#3A3A65] transition-colors"
+            title="Close (Esc)"
+          >
+            ✕
+          </button>
         </div>
 
         {/* Filter */}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #2A2A45', flexShrink: 0 }}>
+        <div className="px-4 py-[0.6rem] border-b border-[#2A2A45] shrink-0">
           <input
             ref={inputRef}
             type="text"
             placeholder="Filter by filename…"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            style={{ width: '100%', background: '#0F0F1A', border: '1px solid #2A2A45', borderRadius: 6, color: '#E8E8F0', padding: '0.4rem 0.65rem', fontSize: '0.82rem', outline: 'none', fontFamily: 'monospace', boxSizing: 'border-box' }}
-            onFocus={e => (e.currentTarget.style.borderColor = '#5CB8F5')}
-            onBlur={e => (e.currentTarget.style.borderColor = '#2A2A45')}
+            className="w-full bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] text-text px-[0.65rem] py-[0.4rem] text-[0.82rem] outline-none font-mono box-border focus:border-blue transition-colors"
           />
         </div>
 
         {/* File list */}
-        <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+        <div className="overflow-y-auto flex flex-col">
           {filtered.length === 0 && (
-            <div style={{ textAlign: 'center', color: '#4A4A70', fontSize: '0.8rem', padding: '1.5rem 0' }}>No files match "{query}"</div>
+            <div className="text-center text-[#4A4A70] text-[0.8rem] py-6">
+              No files match "{query}"
+            </div>
           )}
           {filtered.map((f, i) => {
             const isOpen = !!expanded[i]
@@ -219,44 +237,48 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
             const lineCount = f.lines?.length ?? 0
 
             const badge =
-              f.action === 'created' ? <span style={{ flexShrink: 0, fontSize: '0.62rem', fontWeight: 700, padding: '0 5px', borderRadius: 3, background: 'rgba(76,175,80,0.15)', color: '#4CAF50', border: '1px solid rgba(76,175,80,0.3)', lineHeight: '1.6' }}>new</span>
-              : f.action === 'deleted' ? <span style={{ flexShrink: 0, fontSize: '0.62rem', fontWeight: 700, padding: '0 5px', borderRadius: 3, background: 'rgba(239,83,80,0.15)', color: '#EF5350', border: '1px solid rgba(239,83,80,0.3)', lineHeight: '1.6' }}>del</span>
-              : <span style={{ flexShrink: 0, width: 24 }} />
+              f.action === 'created'
+                ? <span className="shrink-0 text-[0.62rem] font-bold px-[5px] rounded-[3px] bg-green/15 text-green border border-green/30 leading-[1.6]">new</span>
+                : f.action === 'deleted'
+                ? <span className="shrink-0 text-[0.62rem] font-bold px-[5px] rounded-[3px] bg-[#EF5350]/15 text-[#EF5350] border border-[#EF5350]/30 leading-[1.6]">del</span>
+                : <span className="shrink-0 w-6" />
 
             return (
-              <div key={i} style={{ flexShrink: 0 }}>
+              <div key={i} className="shrink-0">
                 <div
                   onClick={() => toggleFile(i, f)}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0.28rem 0.5rem', cursor: hasDiff ? 'pointer' : 'default', background: isOpen ? 'rgba(92,184,245,0.05)' : i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent', borderLeft: isOpen ? '2px solid rgba(92,184,245,0.35)' : '2px solid transparent' }}
-                  onMouseEnter={e => { if (!isOpen) e.currentTarget.style.background = 'rgba(255,255,255,0.04)' }}
-                  onMouseLeave={e => { if (!isOpen) e.currentTarget.style.background = i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent' }}
+                  className={cn(
+                    'flex items-center gap-2 px-2 py-[0.28rem] border-l-2 transition-colors',
+                    isOpen
+                      ? 'bg-blue/5 border-blue/35'
+                      : cn(
+                          'border-transparent',
+                          i % 2 === 0 ? 'bg-white/2' : 'bg-transparent',
+                          hasDiff ? 'cursor-pointer hover:bg-white/4' : 'cursor-default',
+                        ),
+                  )}
                 >
-                  <span style={{ flexShrink: 0, fontSize: '0.58rem', color: '#3A3A60', width: 10, textAlign: 'center' }}>
+                  <span className="shrink-0 text-[0.58rem] text-[#3A3A60] w-2.5 text-center">
                     {hasDiff ? (isOpen ? '▼' : '▶') : ''}
                   </span>
                   {badge}
-                  {/* Filename — takes remaining space, truncates cleanly */}
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <code style={{ fontFamily: 'monospace', fontSize: '0.78rem', background: '#0A0A18', padding: '2px 6px', borderRadius: 3, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#B0B0D0' }}>
+                  <span className="flex-1 min-w-0">
+                    <code className="font-mono text-[0.78rem] bg-[#0A0A18] px-1.5 py-0.5 rounded-[3px] block overflow-hidden text-ellipsis whitespace-nowrap text-[#B0B0D0]">
                       {f.path}
                     </code>
                   </span>
-                  {/* Line count — compact, never wraps */}
                   {lineCount > 0 && (
-                    <span style={{ flexShrink: 0, color: '#4A4A70', fontSize: '0.68rem', fontFamily: 'monospace', minWidth: 0 }}>
+                    <span className="shrink-0 text-[#4A4A70] text-[0.68rem] font-mono">
                       +{lineCount}
                     </span>
                   )}
-                  {/* VS Code link */}
                   <a
                     href={vscodeUrl}
                     onClick={e => e.stopPropagation()}
                     title="Open in VS Code"
-                    style={{ flexShrink: 0, color: '#3A3A60', textDecoration: 'none', lineHeight: 0, padding: '2px' }}
-                    onMouseEnter={e => (e.currentTarget.style.color = '#5CB8F5')}
-                    onMouseLeave={e => (e.currentTarget.style.color = '#3A3A60')}
+                    className="shrink-0 text-[#3A3A60] no-underline leading-none p-0.5 hover:text-blue transition-colors"
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style={{ display: 'block' }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" className="block">
                       <path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3l5 5-5 5V6zm-4 0v12l-2-2V8l2-2z" />
                     </svg>
                   </a>
