@@ -179,6 +179,20 @@ function capture(cmd, cwd = destPath) {
   return result.stdout?.toString().trim() ?? '';
 }
 
+// Like run(), but also captures combined stdout+stderr for post-processing.
+function runCapture(cmd, { cwd = destPath } = {}) {
+  console.log(`  $ ${cmd}`);
+  const result = spawnSync(cmd, {
+    shell: true, cwd,
+    encoding: 'utf8',
+    env: { ...process.env, FORCE_COLOR: '1', CI: '1' },
+  });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  result.output = (result.stdout || '') + (result.stderr || '');
+  return result;
+}
+
 function npmInstall() {
   let r = run('npm install', { ignoreError: true });
   if (r.status !== 0) {
@@ -3214,12 +3228,39 @@ function writeMigrationData() {
 
 // ─── Pacotes extras por versão ───────────────────────────────────────────────
 
+// Pacotes do ecossistema Angular que seguem o mesmo versionamento major.
+const ANGULAR_ECOSYSTEM = [
+  '@angular/material',
+  '@angular/cdk',
+  '@angular/pwa',
+  '@angular/service-worker',
+];
+
 function extraPackages(v) {
   const extra = [];
-  if (hasPackage('@angular/material')) extra.push(`@angular/material@${v}`);
-  else if (hasPackage('@angular/cdk')) extra.push(`@angular/cdk@${v}`);
+  for (const pkg of ANGULAR_ECOSYSTEM) {
+    if (hasPackage(pkg)) extra.push(`${pkg}@${v}`);
+  }
   if (v < 17 && hasPackage('@nguniversal/express-engine'))
     extra.push(`@nguniversal/express-engine@${v}`);
+  return extra;
+}
+
+// Extrai pacotes Angular-ecosystem que causaram peer dependency conflict no output
+// do ng update e tenta incluí-los no próximo run com a versão alvo.
+function extractConflictPackages(output, v, alreadyIncluded) {
+  // "Package "@angular/cdk" has an incompatible peer dependency to "@angular/common"..."
+  const re = /Package "(@[\w/-]+)" has an incompatible peer dependency/g;
+  const extra = [];
+  let m;
+  while ((m = re.exec(output)) !== null) {
+    const pkg = m[1];
+    const versioned = `${pkg}@${v}`;
+    if (!alreadyIncluded.includes(versioned) &&
+        (pkg.startsWith('@angular/') || pkg.startsWith('@nguniversal/') || pkg.startsWith('@angular-eslint/'))) {
+      extra.push(versioned);
+    }
+  }
   return extra;
 }
 
@@ -3305,12 +3346,25 @@ for (let v = startVersion; v <= opts.to; v++) {
   }
 
   verifyTsconfigPaths();
-  // Try without --force first (Angular recommendation). If peer dep conflicts block the update,
-  // fall back to --force so the migration can continue across all intermediate versions.
-  let result = run(`npx ng update ${packages} --allow-dirty`, { ignoreError: true });
+  // 1ª tentativa: sem --force
+  let packageList = packages.split(' ');
+  let result = runCapture(`npx ng update ${packages} --allow-dirty`);
+
+  // 2ª tentativa: detectar pacotes conflitantes do output e incluí-los no comando
   if (result.status !== 0) {
-    console.warn(`\n  ⚠ ng update v${v} falhou sem --force — tentando com --force...`);
-    result = run(`npx ng update ${packages} --allow-dirty --force`, { ignoreError: true });
+    const conflictPkgs = extractConflictPackages(result.output, v, packageList);
+    if (conflictPkgs.length > 0) {
+      const allPkgs = [...packageList, ...conflictPkgs].join(' ');
+      console.warn(`\n  ⚠ ng update v${v} peer conflict — retentando com: ${conflictPkgs.join(' ')}`);
+      packageList = allPkgs.split(' ');
+      result = runCapture(`npx ng update ${allPkgs} --allow-dirty`);
+    }
+  }
+
+  // 3ª tentativa: fallback com --force
+  if (result.status !== 0) {
+    console.warn(`\n  ⚠ ng update v${v} ainda falhou — tentando com --force...`);
+    result = run(`npx ng update ${packageList.join(' ')} --allow-dirty --force`, { ignoreError: true });
   }
   const ok = result.status === 0;
 
