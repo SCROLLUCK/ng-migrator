@@ -128,7 +128,10 @@ function broadcastDone(code) {
 
 function readMigrationData(destPath) {
   if (!destPath) return null;
-  const dataPath = join(destPath, 'MIGRATION-DATA.json');
+  // New location: .ng-migrator/MIGRATION-DATA.json; fallback to root for old runs
+  const dataPath = existsSync(join(destPath, '.ng-migrator', 'MIGRATION-DATA.json'))
+    ? join(destPath, '.ng-migrator', 'MIGRATION-DATA.json')
+    : join(destPath, 'MIGRATION-DATA.json');
   if (!existsSync(dataPath)) return null;
   try {
     return JSON.parse(readFileSync(dataPath, 'utf8'));

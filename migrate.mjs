@@ -2872,7 +2872,7 @@ function writeStatusHtml() {
 </body>
 </html>`;
 
-  writeFileSync(join(destPath, 'MIGRATION-STATUS.html'), html);
+  writeFileSync(join(migratorDir, 'MIGRATION-STATUS.html'), html);
 }
 
 // ─── Relatório de migração ────────────────────────────────────────────────────
@@ -3064,20 +3064,20 @@ function writeReport(skipDiff = false) {
     // Full diff saved as patch for before/after inspection
     const fullDiff = capture(`git diff ${report.initialCommit} HEAD -- ':(exclude)package-lock.json'`);
     if (fullDiff) {
-      const patchPath = join(destPath, 'MIGRATION.patch');
+      const patchPath = join(migratorDir, 'MIGRATION.patch');
       writeFileSync(patchPath, fullDiff);
-      lines.push(`> Full before/after diff saved to \`MIGRATION.patch\``);
+      lines.push(`> Full before/after diff saved to \`.ng-migrator/MIGRATION.patch\``);
       lines.push(``);
       console.log(`  📄 Diff completo salvo em: ${patchPath}`);
     }
   }
 
-  const reportPath = join(destPath, 'MIGRATION-REPORT.md');
+  const reportPath = join(migratorDir, 'MIGRATION-REPORT.md');
   writeFileSync(reportPath, lines.join('\n'));
   if (!skipDiff) {
     writeStatusHtml();
     console.log(`\n  📄 Relatório final gravado em: ${reportPath}`);
-    console.log(`  🌐 Status HTML: ${join(destPath, 'MIGRATION-STATUS.html')}`);
+    console.log(`  🌐 Status HTML: ${join(migratorDir, 'MIGRATION-STATUS.html')}`);
   }
 }
 
@@ -3086,7 +3086,7 @@ function writeReport(skipDiff = false) {
 function writeMigrationData() {
   if (!existsSync(destPath)) return;
   try {
-    const dataPath = join(destPath, 'MIGRATION-DATA.json');
+    const dataPath = join(migratorDir, 'MIGRATION-DATA.json');
     writeFileSync(dataPath, JSON.stringify(report, null, 2) + '\n');
   } catch {
     // non-fatal — UI polling will just show stale data
@@ -3126,6 +3126,10 @@ if (opts.dryRun) {
 // 1. Copia o projeto
 console.log('📁 Copiando projeto...');
 copyDir(sourcePath, destPath);
+
+// Pasta para arquivos gerados pelo migrador (relatórios, dados, patch)
+const migratorDir = join(destPath, '.ng-migrator');
+mkdirSync(migratorDir, { recursive: true });
 
 // Remove lockfiles antigos
 for (const f of ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']) {
