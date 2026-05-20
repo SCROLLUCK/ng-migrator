@@ -2481,25 +2481,11 @@ function runModernizationMigrations() {
   }
 
   function commitStep(key, label) {
-    // Commit the migration transformation first — isolated diff, no lint noise
     run('git add -A');
     run(`git commit --allow-empty -m "refactor: ${label ?? key}"`, { ignoreError: true });
     const h = capture('git rev-parse HEAD');
     report.details[key] = captureGitDiff(prevHash, h);
     prevHash = h;
-
-    // ESLint fix in a separate commit so it never contaminates step diffs
-    if (!skipSteps.has('lintFix') && hasEslintConfig()) {
-      run('npx ng lint --fix', { ignoreError: true });
-      report.modernize.lintFixed = 1;
-      run('git add -A');
-      const staged = spawnSync('git', ['diff', '--staged', '--quiet'], { cwd: destPath });
-      if (staged.status !== 0) {
-        run(`git commit -m "chore: eslint --fix after ${label ?? key}"`, { ignoreError: true });
-        prevHash = capture('git rev-parse HEAD');
-      }
-    }
-
     writeReport(true);
     writeMigrationData();
   }
@@ -2720,6 +2706,23 @@ function runModernizationMigrations() {
     }
     report.modernize.cleanupImports = true;
     commitStep('cleanupImports', 'cleanup unused imports');
+  }
+
+  // Lint fix único no final — não contamina diffs de steps individuais
+  if (!skipSteps.has('lintFix') && hasEslintConfig()) {
+    console.log(`\n  🔄 ESLint --fix  (passo final)...`);
+    run('npx ng lint --fix', { ignoreError: true });
+    run('git add -A');
+    const staged = spawnSync('git', ['diff', '--staged', '--quiet'], { cwd: destPath });
+    if (staged.status !== 0) {
+      run('git commit -m "chore: eslint --fix"', { ignoreError: true });
+      const h = capture('git rev-parse HEAD');
+      report.details['lintFix'] = captureGitDiff(prevHash, h);
+      prevHash = h;
+      report.modernize.lintFixed = 1;
+    }
+    writeReport(true);
+    writeMigrationData();
   }
 
 }
