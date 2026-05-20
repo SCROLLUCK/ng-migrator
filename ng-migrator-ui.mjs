@@ -68,6 +68,37 @@ const defaultMigrationData = {
 
 let currentMigrationData = { ...defaultMigrationData };
 
+// ─── ng serve after migration ─────────────────────────────────────────────────
+
+function startServe(cwd) {
+  broadcast(`\n━━━ Iniciando ng serve em ${cwd} ━━━`);
+  currentMigrationData.status = 'serving';
+
+  migrationProcess = spawn('npx', ['ng', 'serve', '--open'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, FORCE_COLOR: '1' },
+    cwd,
+    detached: true,
+  });
+
+  migrationProcess.stdout.on('data', (data) => {
+    for (const line of data.toString().split('\n')) {
+      if (line) broadcast(line);
+    }
+  });
+  migrationProcess.stderr.on('data', (data) => {
+    for (const line of data.toString().split('\n')) {
+      if (line) broadcast(`[stderr] ${line}`);
+    }
+  });
+  migrationProcess.on('close', (code) => {
+    broadcast(`\n━━━ ng serve encerrado (exit code: ${code}) ━━━`);
+    broadcastDone(code);
+    migrationProcess = null;
+    currentMigrationData.status = code === 0 ? 'done' : 'error';
+  });
+}
+
 // ─── Broadcast terminal output to SSE clients ─────────────────────────────────
 
 function broadcast(line) {
@@ -212,7 +243,7 @@ const server = createServer(async (req, res) => {
     }
 
     const body = await parseBody(req);
-    const { source, to, from, dest, modernize, steps, cleanDest } = body;
+    const { source, to, from, dest, modernize, steps, cleanDest, runAfter } = body;
 
     if (!source) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -296,18 +327,20 @@ const server = createServer(async (req, res) => {
 
     migrationProcess.on('close', (code) => {
       broadcast(`\n━━━ Migration ${code === 0 ? 'completed' : 'finished'} (exit code: ${code}) ━━━`);
-      broadcastDone(code);
       migrationProcess = null;
 
       // Final data read
       const fresh = readMigrationData(destPath);
       if (fresh) {
-        currentMigrationData = {
-          ...fresh,
-          status: code === 0 ? 'done' : 'error',
-        };
+        currentMigrationData = { ...fresh, status: code === 0 ? 'done' : 'error' };
       } else {
         currentMigrationData.status = code === 0 ? 'done' : 'error';
+      }
+
+      if (code === 0 && runAfter) {
+        startServe(destPath);
+      } else {
+        broadcastDone(code);
       }
     });
 

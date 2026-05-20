@@ -75,6 +75,7 @@ const report = {
     pathAliases: false,
     tsconfigModernized: false,
     eslintAdded: false,
+    lintFixed: 0,
     sassImports: 0,
     modulesRemoved: 0,
     flexLayoutMigrated: null,   // { htmlCount, tsCount } quando executado
@@ -2543,6 +2544,13 @@ function runModernizationMigrations() {
     console.log(`\n  🔄 ESLint  (@angular/eslint)...`);
     report.modernize.eslintAdded = addEslint();
     commitStep('eslint', 'ESLint');
+  }
+
+  if (!skipSteps.has('lintFix') && report.modernize.eslintAdded) {
+    console.log(`\n  🔄 ESLint --fix  (auto-fix lint errors)...`);
+    const lintResult = run('npx ng lint --fix', { ignoreError: true });
+    report.modernize.lintFixed = lintResult.status === 0 ? 1 : 0;
+    commitStep('lintFix', 'eslint --fix');
   }
 
   // 7. SCSS @import → @use as *

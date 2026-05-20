@@ -7,7 +7,7 @@ export interface StepDetail {
 }
 
 export interface MigrationData {
-  status: 'idle' | 'running' | 'done' | 'error';
+  status: 'idle' | 'running' | 'done' | 'error' | 'serving';
   sourceVersion: number | null;
   targetVersion: number;
   sourcePath: string;
@@ -34,6 +34,7 @@ export interface MigrationData {
     tsconfigModernized: boolean;
     pathAliases: boolean;
     eslintAdded: boolean;
+    lintFixed: number;
     sassImports: number;
     modulesRemoved: number;
     styleUrlFixed: number;
