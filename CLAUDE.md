@@ -24,6 +24,21 @@ node migrate.mjs ./proj --from 14
 node migrate.mjs --dry-run
 ```
 
+## Stack do dashboard (src/)
+
+O dashboard é uma aplicação React com as seguintes tecnologias — **use sempre estas, nunca `style={{}}`**:
+
+- **Tailwind CSS v4** para todo estilo. As cores do tema estão definidas como variáveis CSS em `src/index.css` e mapeadas como classes Tailwind:
+  - `bg-background`, `bg-surface`, `bg-surface2`
+  - `border-border`
+  - `text-foreground`, `text-muted`
+  - `text-red`, `text-green`, `text-amber`, `text-blue`
+- **shadcn/ui** (base-ui) para componentes: `Button`, `Checkbox`, `Input`, `Select`, `Card`, `Badge`, `Progress`, `ScrollArea`, `Collapsible`, `Table`, `Separator` — todos em `src/components/ui/`
+- **`cn()`** de `@/lib/utils` para combinar classes condicionalmente
+- **`class-variance-authority` (cva)** para variantes de componentes
+
+Nunca use `style={{}}` inline nos componentes React. Exceção: valores verdadeiramente dinâmicos que não podem ser expressos em Tailwind (ex: larguras calculadas em JS, `width: \`${pct}%\``).
+
 ## Arquitetura
 
 Projeto single-file: toda a lógica está em `migrate.mjs`. Sem build step, sem testes automatizados. Sem dependências de produção.
