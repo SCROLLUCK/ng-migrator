@@ -465,7 +465,8 @@ server.listen(PORT, () => {
   console.log(`  Dashboard:       ${DIST_DIR}`);
   console.log(`  API:             /api/status  /api/terminal  /api/migrate  /api/stop\n`);
 
-  // Open browser
+  // Open browser (skipped when started via Vite plugin — NO_OPEN=1)
+  if (!process.env.NO_OPEN) {
   const url = `http://localhost:${PORT}`;
   const opener =
     process.platform === 'darwin' ? 'open' :
@@ -478,6 +479,7 @@ server.listen(PORT, () => {
   } catch {
     // Browser open is optional — ignore errors
   }
+  } // end NO_OPEN guard
 });
 
 server.on('error', (err) => {
