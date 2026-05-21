@@ -14,6 +14,7 @@
  *   node migrate.mjs ./proj --no-modernize   # pula inject()/signals/output() migration
  */
 
+import { parseTemplate } from '@angular/compiler';
 import { spawnSync } from 'child_process';
 import {
   readFileSync, writeFileSync, existsSync,
@@ -22,6 +23,7 @@ import {
 import { join, resolve, dirname, basename, relative } from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
+import { Project, SyntaxKind } from 'ts-morph';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1465,34 +1467,110 @@ function tmplGetTemplate(tsFile, src) {
   return null;
 }
 
-function tmplDetectNeeded(tpl) {
+function tmplDetectNeeded(tpl, tsFilePath = 'template.html') {
   const needed = new Map();
-  // Build pattern from all known element keys so third-party elements (ng-progress, etc.) are also detected
-  const elemKeys = Object.keys(TMPL_ELEM).map(k => k.replace(/[-[\]]/g, '\\$&')).join('|');
-  const elemRe = new RegExp(`<(${elemKeys})[\\s\\/>]`, 'g');
-  let m;
-  while ((m = elemRe.exec(tpl)) !== null) {
-    const e = TMPL_ELEM[m[1]];
-    if (e && tmplPkgInstalled(e.pkg)) needed.set(e.sym, e.pkg);
+
+  // ── AST-based detection (elements + attribute bindings) ────────────────────
+  // parseTemplate gives us a real AST so we avoid false positives from regex
+  // (e.g. mat-icon inside a string literal or comment).
+  try {
+    const ast = parseTemplate(tpl, tsFilePath, { preserveWhitespaces: false });
+    function visitNode(node) {
+      if (!node) return;
+      // Element names: <mat-card>, <router-outlet>, etc.
+      if (node.name) {
+        const e = TMPL_ELEM[node.name];
+        if (e && tmplPkgInstalled(e.pkg)) needed.set(e.sym, e.pkg);
+      }
+      // Attribute / input / output names: matInput, routerLink, matTooltip, etc.
+      const tokens = [
+        ...(node.attributes ?? []),
+        ...(node.inputs ?? []),
+        ...(node.outputs ?? []),
+        ...(node.references ?? []),
+      ];
+      for (const t of tokens) {
+        const a = TMPL_ATTR[t.name];
+        if (a && tmplPkgInstalled(a.pkg)) needed.set(a.sym, a.pkg);
+      }
+      if (node.children) for (const c of node.children) visitNode(c);
+    }
+    for (const node of ast.nodes) visitNode(node);
+  } catch {
+    // Fallback: regex scan (handles malformed / partial templates)
+    const elemKeys = Object.keys(TMPL_ELEM).map(k => k.replace(/[-[\]]/g, '\\$&')).join('|');
+    const elemRe = new RegExp(`<(${elemKeys})[\\s\\/>]`, 'g');
+    let m;
+    while ((m = elemRe.exec(tpl)) !== null) {
+      const e = TMPL_ELEM[m[1]];
+      if (e && tmplPkgInstalled(e.pkg)) needed.set(e.sym, e.pkg);
+    }
+    for (const [attr, { sym, pkg }] of Object.entries(TMPL_ATTR)) {
+      if (!tmplPkgInstalled(pkg)) continue;
+      const esc = attr.replace(/[-[\]]/g, '\\$&');
+      if (new RegExp(`(?:[\\s\\["])${esc}(?:[\\s=\\]">/])`).test(tpl)) needed.set(sym, pkg);
+    }
   }
-  for (const [attr, { sym, pkg }] of Object.entries(TMPL_ATTR)) {
-    if (!tmplPkgInstalled(pkg)) continue;
-    const esc = attr.replace(/[-[\]]/g, '\\$&');
-    if (new RegExp(`(?:[\\s\\["])${esc}(?:[\\s=\\]">/])`).test(tpl)) needed.set(sym, pkg);
-  }
-  if (/\bmat-(?:button|raised-button|flat-button|stroked-button|icon-button|fab|mini-fab)\b/.test(tpl)) {
-    if (tmplPkgInstalled('@angular/material/button')) needed.set('MatButtonModule', '@angular/material/button');
-  }
+
+  // ── Pipe detection (regex — pipe expressions live inside {{ }} / ternaries) ─
   const pipeRe = /\|\s*([\w]+)/g;
-  while ((m = pipeRe.exec(tpl)) !== null) {
-    const p = TMPL_PIPE[m[1]];
+  let pm;
+  while ((pm = pipeRe.exec(tpl)) !== null) {
+    const p = TMPL_PIPE[pm[1]];
     if (p && tmplPkgInstalled(p.pkg)) needed.set(p.sym, p.pkg);
   }
+
+  // ── Form directives (regex — attributes on any element, including dynamic) ──
   if (/\(\s*ngModel\s*\)|\bngModel\b/.test(tpl)) needed.set('FormsModule', '@angular/forms');
   if (/\[formControl\]|\bformControlName\b|\[formGroup\]|\bformGroupName\b|\bformArrayName\b/.test(tpl)) {
     needed.set('ReactiveFormsModule', '@angular/forms');
   }
+
   return needed;
+}
+
+// ─── Índice de componentes/directives standalone do próprio projeto ────────────
+// Mapeia selector → { symbol, filePath } para que fixStandaloneImports() possa
+// adicionar imports de componentes internos que o template referencia.
+let _internalProjectIndex = null;
+
+function buildInternalProjectIndex() {
+  if (_internalProjectIndex) return _internalProjectIndex;
+  const tsconfigPath = join(destPath, 'tsconfig.json');
+  if (!existsSync(tsconfigPath)) { _internalProjectIndex = new Map(); return _internalProjectIndex; }
+  try {
+    const project = new Project({ tsConfigFilePath: tsconfigPath, skipAddingFilesFromTsConfig: false });
+    const index = new Map();
+    for (const sf of project.getSourceFiles()) {
+      const filePath = sf.getFilePath();
+      if (!filePath.includes('/src/')) continue;
+      for (const cls of sf.getClasses()) {
+        const dec = cls.getDecorator('Component') ?? cls.getDecorator('Directive') ?? cls.getDecorator('Pipe');
+        if (!dec) continue;
+        const args = dec.getArguments();
+        if (!args.length || !args[0].isKind(SyntaxKind.ObjectLiteralExpression)) continue;
+        const objLit = args[0];
+        // Only index standalone declarations
+        const standaloneProp = objLit.getProperty('standalone');
+        if (!standaloneProp || !/\btrue\b/.test(standaloneProp.getText())) continue;
+        const className = cls.getName();
+        if (!className) continue;
+        // Get selector (Component/Directive) or name (Pipe)
+        const selectorProp = objLit.getProperty('selector') ?? objLit.getProperty('name');
+        if (!selectorProp || !selectorProp.isKind(SyntaxKind.PropertyAssignment)) continue;
+        const raw = selectorProp.getInitializer()?.getText().replace(/['"`]/g, '').trim() ?? '';
+        for (const sel of raw.split(',').map(s => s.trim()).filter(Boolean)) {
+          index.set(sel, { symbol: className, filePath });
+        }
+      }
+    }
+    _internalProjectIndex = index;
+    console.log(`  ↳ índice interno: ${index.size} selector(es) standalone mapeado(s)`);
+  } catch (e) {
+    console.log(`  ↳ índice interno: falha ao carregar AST (${e.message?.slice(0, 60)}), pulando`);
+    _internalProjectIndex = new Map();
+  }
+  return _internalProjectIndex;
 }
 
 function tmplGetDecoratorImportsArray(src, decoratorRe) {
@@ -1812,6 +1890,10 @@ function copyModuleImportsToComponents() {
 function fixStandaloneImports() {
   const COMPONENT_RE = /@Component\s*\(/;
   let total = 0;
+
+  // Build the internal project index once (lazy) for detecting project-internal components
+  const internalIndex = buildInternalProjectIndex();
+
   function walk(dir) {
     for (const entry of readdirSync(dir)) {
       if (SKIP_DIRS.has(entry)) continue;
@@ -1822,9 +1904,22 @@ function fixStandaloneImports() {
       if (!src.includes('@Component(') || !src.includes('standalone: true')) continue;
       const tpl = tmplGetTemplate(full, src);
       if (!tpl) continue;
-      const needed = tmplDetectNeeded(tpl);
+
+      // Pass the file path so parseTemplate uses it for better error messages
+      const needed = tmplDetectNeeded(tpl, full);
+
+      // Detect project-internal standalone components referenced in the template
+      for (const [selector, { symbol, filePath: depFile }] of internalIndex) {
+        if (depFile === full) continue;
+        const escaped = selector.replace(/[-[\].*+?^${}()|\\]/g, '\\$&');
+        if (!new RegExp(`<${escaped}[\\s\\/>]`).test(tpl)) continue;
+        // Compute the relative import path (without .ts extension)
+        const rel = relative(dirname(full), depFile).replace(/\.ts$/, '');
+        const importPath = rel.startsWith('.') ? rel : `./${rel}`;
+        needed.set(symbol, importPath);
+      }
+
       if (!needed.size) continue;
-      // arrInfo may be null (no imports: [] yet) — tmplInjectImports will create it
       const arrInfo = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
       const existing = arrInfo?.existing ?? new Set();
       const toAdd = [...needed].filter(([sym]) => !existing.has(sym)).map(([sym, pkg]) => ({ sym, pkg }));
@@ -2996,6 +3091,7 @@ function runModernizationMigrations() {
     console.log(`\n  🔄 standalone  (standalone-bootstrap)...`);
     run('npx ng generate @angular/core:standalone-migration --mode standalone-bootstrap --defaults', { ignoreError: true });
     report.modernize.standalone = true;
+    _internalProjectIndex = null; // invalidate cache: new standalone components were just created
     commitStep('standalone', 'standalone migration');
   }
 
