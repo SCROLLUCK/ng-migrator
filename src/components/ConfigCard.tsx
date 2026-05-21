@@ -6,6 +6,7 @@ const STEP_LABELS: Record<string, string> = {
   flexLayout: '@angular/flex-layout → Tailwind CSS',
   inject: 'inject() — constructor DI',
   signals: 'Signals — @Input/@Output/@ViewChild',
+  reservedKeywords: 'Reserved keyword variables (const for → forValue)',
   untypedForms: 'UntypedForm* → typed forms',
   throwError: 'throwError() → factory (RxJS 7)',
   standalone: 'Standalone migration',

@@ -86,31 +86,67 @@ let currentMigrationData = { ...defaultMigrationData };
 // ─── ng serve after migration ─────────────────────────────────────────────────
 
 function startServe(cwd) {
-  broadcast(`\n━━━ Iniciando ng serve em ${cwd} ━━━`);
+  broadcast(`\n━━━ Installing packages in ${cwd} ━━━`);
   currentMigrationData.status = 'serving';
 
-  migrationProcess = spawn('npx', ['ng', 'serve', '--open'], {
+  const install = spawn('npm', ['install'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, FORCE_COLOR: '1' },
     cwd,
     detached: true,
   });
 
-  migrationProcess.stdout.on('data', (data) => {
+  install.stdout.on('data', (data) => {
     for (const line of data.toString().split('\n')) {
       if (line) broadcast(line);
     }
   });
-  migrationProcess.stderr.on('data', (data) => {
+  install.stderr.on('data', (data) => {
     for (const line of data.toString().split('\n')) {
       if (line) broadcast(`[stderr] ${line}`);
     }
   });
-  migrationProcess.on('close', (code) => {
-    broadcast(`\n━━━ ng serve encerrado (exit code: ${code}) ━━━`);
-    broadcastDone(code);
-    migrationProcess = null;
-    currentMigrationData.status = code === 0 ? 'done' : 'error';
+  install.on('close', (code) => {
+    if (code !== 0) {
+      broadcast(`\n━━━ npm install failed (exit code: ${code}) ━━━`);
+      broadcastDone(code);
+      migrationProcess = null;
+      currentMigrationData.status = 'error';
+      return;
+    }
+
+    broadcast(`\n━━━ Opening project in VS Code ━━━`);
+    try {
+      const vscode = spawn('code', [cwd], { stdio: 'ignore', detached: true });
+      vscode.unref();
+    } catch {
+      broadcast('[ui] Could not open VS Code (is "code" in PATH?)');
+    }
+
+    broadcast(`\n━━━ Starting ng serve in ${cwd} ━━━`);
+    migrationProcess = spawn('npx', ['ng', 'serve', '--open'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, FORCE_COLOR: '1' },
+      cwd,
+      detached: true,
+    });
+
+    migrationProcess.stdout.on('data', (data) => {
+      for (const line of data.toString().split('\n')) {
+        if (line) broadcast(line);
+      }
+    });
+    migrationProcess.stderr.on('data', (data) => {
+      for (const line of data.toString().split('\n')) {
+        if (line) broadcast(`[stderr] ${line}`);
+      }
+    });
+    migrationProcess.on('close', (serveCode) => {
+      broadcast(`\n━━━ ng serve encerrado (exit code: ${serveCode}) ━━━`);
+      broadcastDone(serveCode);
+      migrationProcess = null;
+      currentMigrationData.status = serveCode === 0 ? 'done' : 'error';
+    });
   });
 }
 

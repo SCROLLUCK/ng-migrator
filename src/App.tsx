@@ -24,6 +24,7 @@ const EMPTY_DATA: MigrationData = {
     flexLayoutMigrated: null,
     inject: false,
     signals: false,
+    reservedKeywordsFixed: 0,
     untypedFormsFixed: 0,
     throwErrorFixed: 0,
     standalone: false,
@@ -57,7 +58,6 @@ export default function App() {
   const [viewedData, setViewedData] = useState<MigrationData | null>(null)
   const [terminalLines, setTerminalLines] = useState<string[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const terminalRef = useRef<HTMLDivElement>(null)
   const sseRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
@@ -92,11 +92,6 @@ export default function App() {
     connectSSE()
     return () => sseRef.current?.close()
   }, [connectSSE])
-
-  useEffect(() => {
-    if (terminalRef.current)
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight
-  }, [terminalLines])
 
   const handleClearTerminal = useCallback(() => setTerminalLines([]), [])
 
@@ -182,7 +177,6 @@ export default function App() {
           <RightColumn
             data={displayData}
             terminalLines={terminalLines}
-            terminalRef={terminalRef}
             onClearTerminal={handleClearTerminal}
           />
         </div>

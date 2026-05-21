@@ -18,6 +18,7 @@ export interface MigrationData {
     flexLayoutMigrated: { htmlCount: number; tsCount: number } | null;
     inject: boolean;
     signals: boolean;
+    reservedKeywordsFixed: number;
     untypedFormsFixed: number;
     throwErrorFixed: number;
     standalone: boolean;

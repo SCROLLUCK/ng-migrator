@@ -57,6 +57,7 @@ const report = {
   modernize: {
     inject: false,
     signals: false,
+    reservedKeywordsFixed: 0,
     untypedFormsFixed: 0,
     throwErrorFixed: 0,
     polyfillsInlined: false,
@@ -742,8 +743,8 @@ function convertLazyModulesToRoutes() {
 
       let modified = false;
       src = src.replace(
-        /loadChildren\s*:\s*\(\s*\)\s*=>\s*import\(\s*['"]([^'"]+\.module)['"]\s*\)\s*\.then\s*\(\s*m\s*=>\s*m\.(\w+Module)\s*\)/g,
-        (match, importPath, moduleName) => {
+        /loadChildren\s*:\s*\(\s*\)\s*=>\s*import\(\s*['"]([^'"]+\.module)['"]\s*\)\s*\.then\s*\(\s*\(?\s*(\w+)\s*\)?\s*=>\s*\2\.(\w+Module)\s*\)/g,
+        (match, importPath, _varName, moduleName) => {
           const thisDir = dirname(full);
           const moduleTsPath = join(thisDir, importPath + '.ts');
           if (!existsSync(moduleTsPath)) return match;
@@ -1085,6 +1086,28 @@ function removeImportsFromNonStandalone() {
   }
   walk(srcDir);
   if (count > 0) console.log(`  ↳ imports: [] removido de ${count} componente(s) standalone: false`);
+}
+
+// Returns the number of @Component/@Pipe/@Directive files that still have standalone: false.
+function collectStandaloneFalseCount() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+  let count = 0;
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
+      const src = readFileSync(full, 'utf8');
+      if ((src.includes('standalone: false') || src.includes('standalone:false')) &&
+          (src.includes('@Component(') || src.includes('@Pipe(') || src.includes('@Directive('))) {
+        count++;
+      }
+    }
+  }
+  walk(srcDir);
+  return count;
 }
 
 // Converte componentes standalone: false que não aparecem em nenhum declarations[]
@@ -2920,11 +2943,15 @@ function runModernizationMigrations() {
   if (!skipSteps.has('signals')) {
     console.log(`\n  🔄 signals  (@Input/@Output/@ViewChild → signal APIs)...`);
     run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
-    // The schematic may generate `const for = this.for()` when an Input is named after a
-    // reserved keyword. Rename those variables before they cause 50+ compile errors.
-    fixReservedKeywordVariables();
     report.modernize.signals = true;
     commitStep('signals', 'signals');
+  }
+
+  // 2b-extra. Renomeia variáveis geradas com nomes de palavras reservadas (ex: `const for = ...`)
+  if (!skipSteps.has('reservedKeywords')) {
+    console.log(`\n  🔄 reserved keywords  (renomeia variáveis com nomes reservados)...`);
+    report.modernize.reservedKeywordsFixed = fixReservedKeywordVariables();
+    if (report.modernize.reservedKeywordsFixed > 0) commitStep('reservedKeywords', 'reserved keyword variables');
   }
 
   // 2b. UntypedForm* → typed forms (ponte de migração v14, obsoleta no v21)
@@ -3087,6 +3114,22 @@ function runModernizationMigrations() {
       if (newlyConverted > 0) {
         console.log(`\n  🔄 standalone  (fix imports for ${newlyConverted} component(s) promoted after module removal)...`);
         fixStandaloneImports();
+      }
+      // Second standalone pass: now that lazy-routing modules and unused modules are gone,
+      // the Angular schematic can convert components it previously marked standalone: false.
+      const remaining = collectStandaloneFalseCount();
+      if (remaining > 0) {
+        console.log(`\n  🔄 standalone  (second pass — ${remaining} component(s) still standalone: false)...`);
+        runUntilStable(
+          'npx ng generate @angular/core:standalone-migration --mode convert-to-standalone --defaults',
+          'standalone  (second pass — convert-to-standalone)',
+        );
+        run('npx ng generate @angular/core:standalone-migration --mode prune-ng-modules --defaults', { ignoreError: true });
+        cleanupStandaloneTodos();
+        const secondPassConverted = convertOrphanedNonStandalone();
+        if (secondPassConverted > 0) fixStandaloneImports();
+        fixMissingStandalone();
+        removeImportsFromNonStandalone();
       }
     }
     commitStep('modules', 'remove unused modules');

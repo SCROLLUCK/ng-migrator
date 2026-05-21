@@ -44,6 +44,7 @@ export function ModernizationCard({ data, query = '' }: Props) {
     { key: 'flexLayout', label: '@angular/flex-layout → Tailwind CSS', status: m.flexLayoutMigrated ? 'done' : 'skipped', detail: m.flexLayoutMigrated ? `${m.flexLayoutMigrated.htmlCount} template(s), ${m.flexLayoutMigrated.tsCount} TS` : undefined },
     { key: 'inject', label: 'inject() — constructor DI → inject()', status: makeStatus(m.inject) },
     { key: 'signals', label: 'Signals — @Input/@Output/@ViewChild → signal APIs', status: makeStatus(m.signals, m.inject) },
+    { key: 'reservedKeywords', label: 'Reserved keyword variables renamed (e.g. const for →  forValue)', status: makeStatus(m.reservedKeywordsFixed, m.signals), detail: m.reservedKeywordsFixed > 0 ? `${m.reservedKeywordsFixed} file(s)` : undefined },
     { key: 'untypedForms', label: 'UntypedForm* → typed forms', status: makeStatus(m.untypedFormsFixed, m.signals), detail: m.untypedFormsFixed > 0 ? `${m.untypedFormsFixed} file(s)` : undefined },
     { key: 'throwError', label: 'throwError() → factory function (RxJS 7)', status: makeStatus(m.throwErrorFixed, m.signals), detail: m.throwErrorFixed > 0 ? `${m.throwErrorFixed} file(s)` : undefined },
     { key: 'standalone', label: 'Standalone — convert → prune → bootstrap', status: makeStatus(m.standalone, m.throwErrorFixed !== undefined ? m.throwErrorFixed : m.signals) },

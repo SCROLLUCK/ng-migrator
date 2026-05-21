@@ -1,4 +1,4 @@
-import { useState, type RefObject } from 'react'
+import { useState } from 'react'
 import type { MigrationData } from '../types'
 import { TerminalCard } from './TerminalCard'
 import { ModernizationCard } from './ModernizationCard'
@@ -7,11 +7,10 @@ import { NgUpdateCard } from './NgUpdateCard'
 interface Props {
   data: MigrationData
   terminalLines: string[]
-  terminalRef: RefObject<HTMLDivElement | null>
   onClearTerminal: () => void
 }
 
-export function RightColumn({ data, terminalLines, terminalRef, onClearTerminal }: Props) {
+export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
   const [query, setQuery] = useState('')
 
   const hasDetails = Object.keys(data.details).length > 0
@@ -22,7 +21,6 @@ export function RightColumn({ data, terminalLines, terminalRef, onClearTerminal 
     <div className="flex flex-col gap-5 overflow-x-hidden">
       <TerminalCard
         lines={terminalLines}
-        terminalRef={terminalRef}
         onClear={onClearTerminal}
       />
 
