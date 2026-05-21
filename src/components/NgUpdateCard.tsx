@@ -1,14 +1,17 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import type { MigrationData, StepDetail } from '../types'
 import { FileModal } from './FileModal'
+import { StepFileList } from './StepFileList'
 import { cn } from '@/lib/utils'
 
 interface Props {
   data: MigrationData
+  query: string
 }
 
-export function NgUpdateCard({ data }: Props) {
+export function NgUpdateCard({ data, query = '' }: Props) {
   const [modal, setModal] = useState<{ title: string; files: StepDetail[] } | null>(null)
+  const [expandedStep, setExpandedStep] = useState<string | null>(null)
 
   const totalVersions = data.sourceVersion
     ? data.targetVersion - data.sourceVersion
@@ -16,6 +19,17 @@ export function NgUpdateCard({ data }: Props) {
 
   const doneVersions = data.ngUpdateSteps.length
   const pct = totalVersions > 0 ? Math.round((doneVersions / totalVersions) * 100) : 0
+  const q = query.toLowerCase()
+
+  const visibleSteps = data.ngUpdateSteps.filter(step => {
+    if (!query.trim()) return true
+    const files = data.details[`ngUpdate_${step.version}`] ?? []
+    return files.some(f => f.path.toLowerCase().includes(q))
+  })
+
+  function toggleStep(key: string) {
+    setExpandedStep(prev => prev === key ? null : key)
+  }
 
   return (
     <>
@@ -48,47 +62,77 @@ export function NgUpdateCard({ data }: Props) {
           <div className="text-[0.72rem] text-[#7070A0] mt-[0.4rem]">{pct}% complete</div>
         </div>
 
-        <table className="w-full border-collapse">
-          <tbody>
-            {data.ngUpdateSteps.map((step) => {
-              const files = data.details[`ngUpdate_${step.version}`] ?? []
-              return (
-                <tr key={step.version} className="border-b border-[#2A2A45]">
-                  <td className={cn('w-[2.2rem] text-center px-2 pl-4 py-2 text-base', step.ok ? 'text-green' : 'text-amber')}>
+        {query.trim() && visibleSteps.length === 0 && (
+          <div className="px-4 py-3 text-[#4A4A70] text-[0.78rem]">
+            No ng update steps matched "{query}".
+          </div>
+        )}
+
+        <div className="flex flex-col">
+          {visibleSteps.map((step) => {
+            const key = `v${step.version}`
+            const allFiles = data.details[`ngUpdate_${step.version}`] ?? []
+            const matchFiles = query.trim()
+              ? allFiles.filter(f => f.path.toLowerCase().includes(q))
+              : allFiles
+            const isOpen = expandedStep === key
+            const hasFiles = allFiles.length > 0
+
+            return (
+              <Fragment key={step.version}>
+                <div
+                  onClick={() => hasFiles && toggleStep(key)}
+                  className={cn(
+                    'flex items-center gap-2 px-4 py-[0.45rem] border-b border-[#2A2A45] transition-colors',
+                    hasFiles ? 'cursor-pointer' : '',
+                    isOpen ? 'bg-blue/4' : hasFiles ? 'hover:bg-white/3' : '',
+                  )}
+                >
+                  <span className="shrink-0 text-[0.58rem] text-[#3A3A60] w-2.5 text-center">
+                    {hasFiles ? (isOpen ? '▼' : '▶') : ''}
+                  </span>
+                  <span className={cn('text-base w-5 text-center shrink-0', step.ok ? 'text-green' : 'text-amber')}>
                     {step.ok ? '✓' : '⚠'}
-                  </td>
-                  <td className={cn('px-2 py-2 text-[0.855rem]', step.ok ? 'text-green' : 'text-amber')}>
+                  </span>
+                  <span className={cn('flex-1 text-[0.855rem]', step.ok ? 'text-green' : 'text-amber')}>
                     Angular {step.version}
-                  </td>
-                  <td className="px-4 py-2 text-right pr-4">
-                    {files.length > 0 ? (
+                  </span>
+                  <span onClick={e => e.stopPropagation()}>
+                    {hasFiles ? (
                       <button
-                        onClick={() => setModal({ title: `Angular ${step.version}`, files })}
+                        onClick={() => setModal({ title: `Angular ${step.version}`, files: allFiles })}
+                        title="Open in modal"
                         className="border border-blue/20 rounded-[5px] text-blue text-[0.72rem] cursor-pointer px-2 py-0.5 whitespace-nowrap hover:border-blue hover:bg-blue/7 transition-colors"
                       >
-                        {files.length} file{files.length !== 1 ? 's' : ''}
+                        {query.trim() ? `${matchFiles.length} / ${allFiles.length}` : `${allFiles.length}`} file{allFiles.length !== 1 ? 's' : ''}
                       </button>
                     ) : !step.ok ? (
                       <span className="text-amber text-[0.75rem]">warnings</span>
                     ) : null}
-                  </td>
-                </tr>
-              )
-            })}
-            {data.sourceVersion && Array.from({
-              length: Math.max(0, totalVersions - doneVersions)
-            }, (_, i) => {
-              const v = (data.sourceVersion ?? 11) + doneVersions + i + 1
-              return (
-                <tr key={`pending-${v}`} className="border-b border-[#2A2A45] opacity-38">
-                  <td className="w-[2.2rem] text-center px-2 pl-4 py-2">·</td>
-                  <td className="px-2 py-2 text-[0.855rem]">Angular {v}</td>
-                  <td />
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+                  </span>
+                </div>
+                {isOpen && (
+                  <div className="border-b border-[#2A2A45] bg-[#07070F] overflow-hidden">
+                    <StepFileList files={matchFiles} destPath={data.destPath} query={query} />
+                  </div>
+                )}
+              </Fragment>
+            )
+          })}
+
+          {!query.trim() && data.sourceVersion && Array.from({
+            length: Math.max(0, totalVersions - doneVersions)
+          }, (_, i) => {
+            const v = (data.sourceVersion ?? 11) + doneVersions + i + 1
+            return (
+              <div key={`pending-${v}`} className="flex items-center gap-2 px-4 py-[0.45rem] border-b border-[#2A2A45] opacity-38">
+                <span className="shrink-0 w-2.5" />
+                <span className="w-5 text-center shrink-0 text-[#3A3A60]">·</span>
+                <span className="flex-1 text-[0.855rem]">Angular {v}</span>
+              </div>
+            )
+          })}
+        </div>
       </div>
     </>
   )

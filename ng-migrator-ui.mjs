@@ -12,6 +12,7 @@
 import { createServer } from 'http';
 import { readFileSync, existsSync, statSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
+import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { spawn, spawnSync } from 'child_process';
 
@@ -26,24 +27,18 @@ let migrationProcess = null;
 let terminalLines = [];
 const sseClients = new Set();
 
-// Diff cache: key = "${path}::${h0}::${h1}", populated from MIGRATION-DIFFS.json
-// Keyed by dest path to support multiple loaded migrations.
-const diffCacheByDest = new Map();
+// SQLite diff DBs: keyed by dest path to support multiple loaded migrations.
+const diffDbByDest = new Map();
 
-function loadDiffCache(destPath) {
-  if (!destPath || diffCacheByDest.has(destPath)) return;
-  const locations = [
-    join(destPath, '.ng-migrator', 'MIGRATION-DIFFS.json'),
-    join(destPath, 'MIGRATION-DIFFS.json'),
-  ];
-  for (const p of locations) {
-    if (existsSync(p)) {
-      try {
-        diffCacheByDest.set(destPath, JSON.parse(readFileSync(p, 'utf8')));
-        return;
-      } catch { /* ignore parse errors */ }
-    }
-  }
+function openDiffDb(destPath) {
+  if (diffDbByDest.has(destPath)) return diffDbByDest.get(destPath);
+  const dbPath = join(destPath, '.ng-migrator', 'diffs.db');
+  if (!existsSync(dbPath)) return null;
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    diffDbByDest.set(destPath, db);
+    return db;
+  } catch { return null; }
 }
 
 // Default migration data when idle
@@ -214,7 +209,6 @@ const server = createServer(async (req, res) => {
           ...fresh,
           status: migrationProcess ? 'running' : (fresh.status || 'done'),
         };
-        loadDiffCache(currentMigrationData.destPath);
       }
     }
     res.writeHead(200, {
@@ -383,15 +377,14 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Missing parameters' }));
       return;
     }
-    const cacheKey = `${filePath}::${h0}::${h1}`;
-    const cached = diffCacheByDest.get(dest)?.[cacheKey];
-    const diffText = cached !== undefined
-      ? cached
-      : spawnSync('git', ['diff', h0, h1, '--', filePath], { cwd: dest, encoding: 'utf8' }).stdout || '';
-    // Populate in-memory cache for subsequent requests this session
-    if (cached === undefined && dest) {
-      if (!diffCacheByDest.has(dest)) diffCacheByDest.set(dest, {});
-      diffCacheByDest.get(dest)[cacheKey] = diffText;
+    const db = openDiffDb(dest);
+    let diffText;
+    if (db) {
+      const row = db.prepare('SELECT diff FROM diffs WHERE path = ? AND h0 = ? AND h1 = ?').get(filePath, h0, h1);
+      if (row !== undefined) diffText = row.diff;
+    }
+    if (diffText === undefined) {
+      diffText = spawnSync('git', ['diff', h0, h1, '--', filePath], { cwd: dest, encoding: 'utf8' }).stdout || '';
     }
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -410,7 +403,6 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'MIGRATION-DATA.json not found at this path' }));
       return;
     }
-    if (loaded.destPath) loadDiffCache(loaded.destPath);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(loaded));
     return;

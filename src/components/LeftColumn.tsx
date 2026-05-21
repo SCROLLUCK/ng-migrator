@@ -1,7 +1,6 @@
 import { useState, useCallback } from 'react'
 import type { MigrationData } from '../types'
 import { ConfigCard } from './ConfigCard'
-import { NgUpdateCard } from './NgUpdateCard'
 
 interface Props {
   data: MigrationData
@@ -22,18 +21,13 @@ export function LeftColumn({ data, onDataChange, onLoadMigration }: Props) {
   }, [])
 
   return (
-    <>
-      <ConfigCard
-        data={data}
-        isRunning={isRunning || data.status === 'running'}
-        onStart={() => setIsRunning(true)}
-        onStop={handleStop}
-        onDataChange={onDataChange}
-        onLoadMigration={onLoadMigration}
-      />
-      {(data.status !== 'idle' || data.ngUpdateSteps.length > 0) && (
-        <NgUpdateCard data={data} />
-      )}
-    </>
+    <ConfigCard
+      data={data}
+      isRunning={isRunning || data.status === 'running'}
+      onStart={() => setIsRunning(true)}
+      onStop={handleStop}
+      onDataChange={onDataChange}
+      onLoadMigration={onLoadMigration}
+    />
   )
 }

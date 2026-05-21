@@ -14,6 +14,7 @@
     "ui": "node ng-migrator-ui.mjs"
   },
   "dependencies": {
+    "better-sqlite3": "^12.10.0",
     "ts-morph": "^28.0.0"
   },
   "devDependencies": {

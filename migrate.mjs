@@ -21,6 +21,7 @@ import {
 } from 'fs';
 import { join, resolve, dirname, basename, relative } from 'path';
 import { fileURLToPath } from 'url';
+import Database from 'better-sqlite3';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -117,8 +118,8 @@ function formatRanges(lines) {
   return ranges.join(', ');
 }
 
-// Stores all computed diffs: key = "path::h0::h1", value = raw diff string
-const allDiffs = {};
+// SQLite DB for diff storage; opened after migratorDir is created
+let diffDb = null;
 
 function captureGitDiff(h0, h1) {
   if (!h0 || !h1 || h0 === h1) return [];
@@ -131,7 +132,7 @@ function captureGitDiff(h0, h1) {
     const path = parts[parts.length - 1];
     if (status === 'D') { result.push({ path, action: 'deleted', lines: [], h0, h1 }); continue; }
     const diff = capture(`git diff ${h0} ${h1} -- "${path}"`);
-    allDiffs[`${path}::${h0}::${h1}`] = diff || '';
+    diffDb?.prepare('INSERT OR REPLACE INTO diffs (path, h0, h1, diff) VALUES (?, ?, ?, ?)').run(path, h0, h1, diff || '');
     result.push({ path, action: status === 'A' ? 'created' : 'modified', lines: parseAddedLines(diff), h0, h1 });
   }
   return result;
@@ -796,6 +797,98 @@ function convertLazyModulesToRoutes() {
   return converted;
 }
 
+// ─── Converte .routing.module.ts restantes → .routes.ts ──────────────────────
+// Após convertLazyModulesToRoutes() (lazy) e prune-ng-modules, podem restar
+// routing modules com RouterModule.forChild() referenciados por componentes
+// standalone. Extrai o array de rotas, cria o .routes.ts e remove referências.
+function convertRemainingRoutingModules() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+  let converted = 0;
+
+  const routingFiles = [];
+  function collect(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { collect(full); continue; }
+      if (/\.routing\.module\.ts$/.test(entry) ||
+          (/routing/i.test(entry) && entry.endsWith('.module.ts'))) {
+        routingFiles.push(full);
+      }
+    }
+  }
+  collect(srcDir);
+
+  for (const routingPath of routingFiles) {
+    const src = readFileSync(routingPath, 'utf8');
+    if (!src.includes('RouterModule.forChild') && !src.includes('RouterModule.forRoot')) continue;
+
+    const routesBlock = extractBracketBlock(src, 'const routes: Routes =') ||
+                        extractBracketBlock(src, 'const routes =');
+    if (!routesBlock) continue;
+
+    // Component/service imports only (skip Angular infra)
+    const compImports = (src.match(/^import\s+.+;$/gm) ?? []).filter(l =>
+      !l.includes('@angular/router') && !l.includes('@angular/core') &&
+      !l.includes('NgModule'),
+    );
+
+    // Derive a camelCase export name: FeatRoutingModule → featRoutes
+    const moduleClassM = src.match(/export\s+class\s+(\w+)/);
+    const moduleClass = moduleClassM?.[1] ?? '';
+    const exportName = moduleClass
+      ? moduleClass.replace(/RoutingModule$/, 'Routes').replace(/Module$/, 'Routes')
+          .replace(/^(.)/, c => c.toLowerCase())
+      : 'featureRoutes';
+
+    const routesFileName = basename(routingPath)
+      .replace(/\.routing\.module\.ts$/, '.routes.ts')
+      .replace(/\.module\.ts$/, '.routes.ts');
+    const routesPath = join(dirname(routingPath), routesFileName);
+    if (existsSync(routesPath)) continue;
+
+    writeFileSync(routesPath, [
+      `import { Routes } from '@angular/router';`,
+      ...compImports,
+      ``,
+      `export const ${exportName}: Routes = ${routesBlock};`,
+      ``,
+    ].join('\n'));
+
+    // Remove references to the old routing module class from other files
+    if (moduleClass) {
+      function fixRefs(dir) {
+        for (const entry of readdirSync(dir)) {
+          if (SKIP_DIRS.has(entry)) continue;
+          const full = join(dir, entry);
+          if (statSync(full).isDirectory()) { fixRefs(full); continue; }
+          if (!entry.endsWith('.ts') || full === routingPath) continue;
+          let s = readFileSync(full, 'utf8');
+          if (!s.includes(moduleClass)) continue;
+          // Remove ES import line
+          s = s.replace(
+            new RegExp(`^import\\s+\\{[^}]*\\b${moduleClass}\\b[^}]*\\}\\s+from\\s+['"][^'"]+['"];?\\s*\\n?`, 'gm'),
+            '',
+          );
+          // Remove class name from imports: [] (trailing comma variants)
+          s = s.replace(new RegExp(`\\b${moduleClass}\\b,?\\s*`, 'g'), '');
+          const orig = readFileSync(full, 'utf8');
+          if (s !== orig) writeFileSync(full, s);
+        }
+      }
+      fixRefs(srcDir);
+    }
+
+    unlinkSync(routingPath);
+    console.log(`  ↳ ${basename(routingPath)} → ${routesFileName}  (export: ${exportName})`);
+    converted++;
+  }
+
+  if (converted > 0) console.log(`  ↳ ${converted} routing module(s) → routes`);
+  return converted;
+}
+
 // ─── Remove .module.ts não referenciados ─────────────────────────────────────
 // Em Angular 21 standalone, NgModules são obsoletos. Após todas as conversões,
 // qualquer .module.ts que não for importado por nenhum outro arquivo pode ser removido.
@@ -1056,6 +1149,141 @@ function convertOrphanedNonStandalone() {
   walk(srcDir);
   if (count > 0) console.log(`  ↳ ${count} componente(s) órfão(s) convertidos para standalone: true`);
   return count;
+}
+
+// ─── Limpa TODO(standalone-migration): comments ───────────────────────────────
+// O schematic prune-ng-modules insere esses comentários quando não consegue
+// remover uma referência automaticamente. Após as nossas correções eles são lixo.
+function cleanupStandaloneTodos() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+  let count = 0;
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts') && !entry.endsWith('.html')) continue;
+      const src = readFileSync(full, 'utf8');
+      if (!src.includes('TODO(standalone-migration)')) continue;
+      const updated = src.split('\n')
+        .filter(line => !/^\s*\/\/\s*TODO\(standalone-migration\)/.test(line))
+        .join('\n')
+        .replace(/\s*\/\*\s*TODO\(standalone-migration\)[^*]*\*\//g, '');
+      if (updated !== src) { writeFileSync(full, updated); count++; }
+    }
+  }
+  walk(srcDir);
+  if (count > 0) console.log(`  ↳ TODO(standalone-migration): removido de ${count} arquivo(s)`);
+  return count;
+}
+
+// ─── Detecta e corrige dependências circulares em imports standalone ──────────
+// A → imports [B], B → imports [A] causa ReferenceError em runtime.
+// Fix: no arquivo "B" (lexicograficamente maior), envolve a classe de A com forwardRef.
+function fixCircularStandaloneImports() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  // file → { classes: Set<string>, decoratorImportClasses: string[], esImportMap: Map<class, file> }
+  const fileInfo = new Map();
+
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
+      const src = readFileSync(full, 'utf8');
+      if (!src.includes('standalone: true')) continue;
+      if (!/@(?:Component|Directive|Pipe)\s*\(/.test(src)) continue;
+
+      // Classes exported from this file
+      const classes = new Set(
+        [...src.matchAll(/export\s+(?:abstract\s+)?class\s+([A-Z]\w*)/g)].map(m => m[1]),
+      );
+
+      // imports: [...] inside the decorator
+      const decM = src.match(/@(?:Component|Directive|Pipe)\s*\(\s*\{[\s\S]*?\bimports\s*:\s*\[([\s\S]*?)\]/);
+      const decoratorImportClasses = decM
+        ? [...decM[1].matchAll(/\b([A-Z]\w*)\b/g)].map(m => m[1])
+        : [];
+
+      // TypeScript import statements → class → resolved file path
+      const esImportMap = new Map();
+      for (const m of src.matchAll(/^import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/gm)) {
+        const importPath = m[2];
+        if (!importPath.startsWith('.')) continue;
+        let resolved = resolve(dirname(full), importPath);
+        if (!resolved.endsWith('.ts')) resolved += '.ts';
+        for (const rawCls of m[1].split(',')) {
+          const cls = rawCls.replace(/\s+as\s+\S+/, '').trim();
+          if (cls) esImportMap.set(cls, resolved);
+        }
+      }
+
+      if (classes.size > 0 && decoratorImportClasses.length > 0) {
+        fileInfo.set(full, { classes, decoratorImportClasses, esImportMap });
+      }
+    }
+  }
+  walk(srcDir);
+
+  let fixed = 0;
+  const handled = new Set();
+
+  for (const [fileA, infoA] of fileInfo) {
+    for (const cls of infoA.decoratorImportClasses) {
+      const fileB = infoA.esImportMap.get(cls);
+      if (!fileB || !fileInfo.has(fileB)) continue;
+      const infoB = fileInfo.get(fileB);
+
+      // Check if B also imports a class from A
+      const classesFromAInB = infoB.decoratorImportClasses.filter(
+        c => infoA.classes.has(c) && infoB.esImportMap.get(c) === fileA,
+      );
+      if (classesFromAInB.length === 0) continue;
+
+      const cycleKey = [fileA, fileB].sort().join('|');
+      if (handled.has(cycleKey)) continue;
+      handled.add(cycleKey);
+
+      // Break cycle in the lexicographically larger file (deterministic choice)
+      const [, fixFile] = [fileA, fileB].sort();
+      const fixInfo = fixFile === fileA ? infoA : infoB;
+      const classesToWrap = fixFile === fileA ? classesFromAInB : [cls];
+
+      let src = readFileSync(fixFile, 'utf8');
+      let changed = false;
+
+      for (const c of classesToWrap) {
+        // Only wrap if not already wrapped
+        if (src.includes(`forwardRef(() => ${c})`)) continue;
+        src = src.replace(
+          new RegExp(`(\\bimports\\s*:\\s*\\[[^\\]]*?)\\b${c}\\b`, 's'),
+          (_, prefix) => `${prefix}forwardRef(() => ${c})`,
+        );
+        changed = true;
+        console.log(`  ↳ ${basename(fixFile)}: forwardRef(() => ${c}) — dependência circular`);
+      }
+
+      if (!changed) continue;
+
+      // Ensure forwardRef is imported from @angular/core
+      if (!src.includes('forwardRef')) {
+        src = src.replace(
+          /^(import\s+\{)([^}]+)(\}\s+from\s+['"]@angular\/core['"])/m,
+          (_, open, names, close) => `${open}${names.trimEnd()}, forwardRef${close}`,
+        );
+      }
+
+      writeFileSync(fixFile, src);
+      fixed++;
+    }
+  }
+
+  if (fixed > 0) console.log(`  ↳ ${fixed} dependência(s) circular(es) corrigida(s) com forwardRef`);
+  return fixed;
 }
 
 // ─── Shared helpers: template import detection (NgModule + standalone) ──────────
@@ -1657,6 +1885,59 @@ function fixSubjectVoid() {
 
 // ─── SCSS @import → @use ─────────────────────────────────────────────────────
 
+// Remove M2 typography variable blocks (mat.define-typography-config / mat-typography-config)
+// that are invalid in Material 17+ (M3). Strips the full multi-line variable assignment and
+// cleans up @include usages that referenced the removed variable.
+function removeM2TypographyBlocks(src) {
+  // Match: $varName: mat-typography-config(... or mat.define-typography-config(... (multi-line, nested parens)
+  const varNames = new Set();
+  let out = src.replace(
+    /(\$[\w-]+)\s*:\s*(?:mat-typography-config|mat\.define-typography-config)\s*\(/g,
+    (match, varName) => { varNames.add(varName); return match; },
+  );
+
+  // For each found var, remove the full assignment block (handles nested parens)
+  for (const varName of varNames) {
+    const escapedVar = varName.replace('$', '\\$');
+    // Find the start of the assignment: $varName: mat*-typography-config(
+    const startRe = new RegExp(
+      '\\n?[ \\t]*' + escapedVar +
+      '\\s*:\\s*(?:mat-typography-config|mat\\.define-typography-config)\\s*\\(',
+    );
+    let m = startRe.exec(out);
+    if (!m) continue;
+    const blockStart = m.index;
+    // Walk forward, tracking paren depth to find the closing ');'
+    let depth = 0;
+    let i = m.index + m[0].length - 1; // position just before '('
+    while (i < out.length) {
+      if (out[i] === '(') depth++;
+      else if (out[i] === ')') { depth--; if (depth === 0) { i++; break; } }
+      i++;
+    }
+    // Consume optional trailing ';' and newline
+    while (i < out.length && (out[i] === ';' || out[i] === '\r')) i++;
+    if (out[i] === '\n') i++;
+    out = out.slice(0, blockStart) + out.slice(i);
+
+    // Remove @include mat.core($varName) → @include mat.core()
+    out = out.replace(
+      new RegExp('(@include\\s+mat\\.core\\s*\\()\\s*' + escapedVar + '\\s*(\\))', 'g'),
+      '$1$2',
+    );
+    // Remove @include mat.all-component-typographies($varName); lines
+    out = out.replace(
+      new RegExp(
+        '[ \\t]*@include\\s+mat\\.all-component-typographies\\s*\\(\\s*' +
+        escapedVar + '\\s*\\)\\s*;[ \\t]*\\n?', 'g',
+      ),
+      '',
+    );
+  }
+
+  return out;
+}
+
 function fixSassImports() {
   let count = 0;
   const srcDir = join(destPath, 'src');
@@ -1677,7 +1958,7 @@ function fixSassImports() {
       out = out.replace(/@import\s+(['"])(~?)([^'"]+)\1\s*;/g,
         (_, q, _tilde, path) => `@use ${q}${path}${q} as *;`);
 
-      // Material v1 SCSS API → v15+ API
+      // Material v1 SCSS API → v15/v17+ API
       // When old mat-* functions are present, switch @use '@angular/material' as * → as mat
       // and rename functions to their new names.
       if (out.includes('mat-typography-config(') || out.includes('mat-typography-level(') ||
@@ -1686,26 +1967,41 @@ function fixSassImports() {
         // Use explicit namespace so the new function names resolve correctly
         out = out.replace(/@use\s+(['"])@angular\/material\1\s+as\s+\*/g,
           `@use '@angular/material' as mat`);
-        // Rename function CALLS to Material v15 API — skip @function/@mixin declarations
-        // to avoid invalid syntax like `@function mat.define-light-theme(`
-        const matFnRenames = [
-          [/\bmat-typography-config\s*\(/g,  'mat.define-typography-config('],
-          [/\bmat-typography-level\s*\(/g,   'mat.define-typography-level('],
+
+        if (report.targetVersion >= 17) {
+          // M3 (v17+): mat.define-typography-config() and mat.define-typography-level() were
+          // removed entirely. Strip the whole variable block and clean up usages.
+          out = removeM2TypographyBlocks(out);
+        } else {
+          // M2 (v14–v16): rename to the v15 API equivalents
+          const matFnRenames = [
+            [/\bmat-typography-config\s*\(/g,  'mat.define-typography-config('],
+            [/\bmat-typography-level\s*\(/g,   'mat.define-typography-level('],
+          ];
+          out = out.split('\n').map(line => {
+            if (/^\s*@(function|mixin)\s/.test(line)) return line;
+            for (const [from, to] of matFnRenames) line = line.replace(from, to);
+            return line;
+          }).join('\n');
+          // $letter-spacing keyword arg not supported in define-typography-level — strip it
+          out = out.replace(/,\s*\$letter-spacing\s*:\s*[^,)]+/g, '');
+        }
+
+        // Common renames for all versions >= 15
+        const matFnRenamesCommon = [
           [/\bmat-palette\s*\(/g,            'mat.define-palette('],
           [/\bmat-light-theme\s*\(/g,        'mat.define-light-theme('],
           [/\bmat-dark-theme\s*\(/g,         'mat.define-dark-theme('],
         ];
         out = out.split('\n').map(line => {
           if (/^\s*@(function|mixin)\s/.test(line)) return line;
-          for (const [from, to] of matFnRenames) line = line.replace(from, to);
+          for (const [from, to] of matFnRenamesCommon) line = line.replace(from, to);
           return line;
         }).join('\n');
         out = out.replace(/@include\s+mat-core\s*\(\s*\)/g, '@include mat.core()');
         out = out.replace(/@include\s+angular-material-theme\s*\(/g, '@include mat.all-component-themes(');
         out = out.replace(/@include\s+angular-material-color\s*\(/g, '@include mat.all-component-colors(');
         out = out.replace(/@include\s+angular-material-typography\s*\(/g, '@include mat.all-component-typographies(');
-        // $letter-spacing keyword arg not supported in define-typography-level — strip it
-        out = out.replace(/,\s*\$letter-spacing\s*:\s*[^,)]+/g, '');
       }
 
       // Fix url("~src/...") → relative path from this file to src/
@@ -2083,6 +2379,95 @@ function createAppConfigAndRoutes() {
 // ─── throwError() → factory function (RxJS 7) ────────────────────────────────
 // RxJS 7 deprecou throwError(value) — exige throwError(() => value).
 // Objeto literal precisa de () => ({...}) para não ser interpretado como function body.
+
+// ─── Renomeia variáveis cujos nomes são palavras reservadas ──────────────────
+// O signals schematic pode gerar `const for = this.for()` — inválido em TS.
+// Encontra cada declaração `const|let|var <reserved> =` dentro de um bloco,
+// e renomeia o identificador para `<keyword>Value` em todo o bloco enclosing.
+function fixReservedKeywordVariables() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  // Reserved words that can realistically appear as Angular @Input names
+  const KEYWORDS = [
+    'for','class','new','in','of','if','else','switch','return','break','continue',
+    'delete','typeof','void','instanceof','throw','try','catch','finally','import',
+    'export','default','enum','extends','super','function','while','do','static',
+    'yield','async','await','abstract','from','as','interface','type','let','var',
+  ].join('|');
+  const declRe = new RegExp(`\\b(const|let|var)\\s+(${KEYWORDS})\\s*=`, 'g');
+
+  let count = 0;
+
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
+      const src = readFileSync(full, 'utf8');
+      declRe.lastIndex = 0;
+      if (!declRe.test(src)) { declRe.lastIndex = 0; continue; }
+      declRe.lastIndex = 0;
+
+      let out = src;
+      let fileChanged = false;
+
+      // Repeat until no more reserved declarations are found (handles multiple in same file)
+      for (let safety = 0; safety < 30; safety++) {
+        declRe.lastIndex = 0;
+        const m = declRe.exec(out);
+        if (!m) break;
+
+        const keyword = m[2];
+        const newName = keyword + 'Value';
+
+        // Walk backward from match to find the opening { of the enclosing block
+        let depth = 0, blockStart = -1;
+        for (let i = m.index - 1; i >= 0; i--) {
+          if (out[i] === '}') depth++;
+          else if (out[i] === '{') { if (depth === 0) { blockStart = i + 1; break; } depth--; }
+        }
+        const start = blockStart === -1 ? 0 : blockStart;
+
+        // Find the matching closing }
+        let end = out.length;
+        if (blockStart !== -1) {
+          depth = 1;
+          for (let i = blockStart; i < out.length && depth > 0; i++) {
+            if (out[i] === '{') depth++;
+            else if (out[i] === '}') { if (--depth === 0) { end = i + 1; break; } }
+          }
+        }
+
+        const block = out.slice(start, end);
+
+        // Replace \bkeyword\b within the block:
+        // - NOT preceded by '.' — preserves this.keyword / obj.keyword
+        // - NOT followed by \s*( — preserves for(...) / for...of / for...in loops
+        const newBlock = block.replace(
+          new RegExp('(?<!\\.)\\b' + keyword + '\\b(?!\\s*\\()', 'g'),
+          newName,
+        );
+
+        if (newBlock !== block) {
+          out = out.slice(0, start) + newBlock + out.slice(end);
+          fileChanged = true;
+          count++;
+          console.log(`  ↳ ${basename(full)}: '${keyword}' → '${newName}' (palavra reservada)`);
+        } else {
+          break;
+        }
+      }
+
+      if (fileChanged) writeFileSync(full, out);
+    }
+  }
+
+  walk(srcDir);
+  if (count > 0) console.log(`  ↳ ${count} variável(eis) com nome reservado renomeada(s)`);
+  return count;
+}
 
 // ─── Fix TypeScript/RxJS compatibility issues ────────────────────────────────
 function fixTsCompat() {
@@ -2500,7 +2885,6 @@ function runModernizationMigrations() {
     const h = capture('git rev-parse HEAD');
     report.details[key] = captureGitDiff(prevHash, h);
     prevHash = h;
-    writeReport(true);
     writeMigrationData();
   }
 
@@ -2536,6 +2920,9 @@ function runModernizationMigrations() {
   if (!skipSteps.has('signals')) {
     console.log(`\n  🔄 signals  (@Input/@Output/@ViewChild → signal APIs)...`);
     run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
+    // The schematic may generate `const for = this.for()` when an Input is named after a
+    // reserved keyword. Rename those variables before they cause 50+ compile errors.
+    fixReservedKeywordVariables();
     report.modernize.signals = true;
     commitStep('signals', 'signals');
   }
@@ -2574,6 +2961,8 @@ function runModernizationMigrations() {
 
     console.log(`\n  🔄 standalone  (prune-ng-modules)...`);
     run('npx ng generate @angular/core:standalone-migration --mode prune-ng-modules --defaults', { ignoreError: true });
+    // Remove TODO(standalone-migration): comments left by the schematic
+    cleanupStandaloneTodos();
     // Componentes que ficaram com standalone: false mas não pertencem a nenhum
     // NgModule sobrevivente são órfãos — convertê-los para standalone: true.
     convertOrphanedNonStandalone();
@@ -2595,6 +2984,8 @@ function runModernizationMigrations() {
     // Their NgModules need the Material/CDK/pipe modules that templates reference.
     console.log(`\n  🔄 standalone  (fix remaining NgModule imports for standalone:false components)...`);
     fixNgModuleImports();
+    console.log(`\n  🔄 standalone  (fix circular imports with forwardRef)...`);
+    fixCircularStandaloneImports();
     commitStep('standaloneFixed', 'standalone: true patch + imports');
   }
 
@@ -2635,6 +3026,10 @@ function runModernizationMigrations() {
   if (!skipSteps.has('lazyRoutes')) {
     console.log(`\n  🔄 lazy routes  (NgModule → routes file)...`);
     report.modernize.lazyRoutesConverted = convertLazyModulesToRoutes();
+    if (report.modernize.standalone) {
+      console.log(`\n  🔄 routing modules  (restantes → .routes.ts)...`);
+      convertRemainingRoutingModules();
+    }
     commitStep('lazyRoutes', 'lazy routes');
   }
 
@@ -2685,6 +3080,15 @@ function runModernizationMigrations() {
   if (!skipSteps.has('modules')) {
     console.log(`\n  🔄 módulos  (removendo .module.ts obsoletos)...`);
     report.modernize.modulesRemoved = removeUnusedModules();
+    // Only relevant when standalone migration ran: some components had standalone: false but
+    // belonged to modules removed only in this step. Promote orphans and add missing imports.
+    if (report.modernize.standalone) {
+      const newlyConverted = convertOrphanedNonStandalone();
+      if (newlyConverted > 0) {
+        console.log(`\n  🔄 standalone  (fix imports for ${newlyConverted} component(s) promoted after module removal)...`);
+        fixStandaloneImports();
+      }
+    }
     commitStep('modules', 'remove unused modules');
   }
 
@@ -2735,281 +3139,12 @@ function runModernizationMigrations() {
       prevHash = h;
       report.modernize.lintFixed = 1;
     }
-    writeReport(true);
     writeMigrationData();
   }
 
 }
 
-// ─── Status HTML (auto-refresh a cada 4s) — Angular design ──────────────────
-
-function writeStatusHtml() {
-  if (!existsSync(destPath)) return;
-
-  const now = new Date().toLocaleTimeString('pt-BR');
-  const totalVersions = opts.to - (report.sourceVersion || 11);
-  const doneVersions  = report.ngUpdateSteps.length;
-  const pct = totalVersions > 0 ? Math.round((doneVersions / totalVersions) * 100) : 0;
-  const m   = report.modernize;
-
-  const fileList = (key) => {
-    const files = report.details[key];
-    if (!files?.length) return '';
-    const items = files.map(({ path, action, lines: ls }) => {
-      const badge = action === 'created' ? '<span class="tag new">new</span> '
-                  : action === 'deleted' ? '<span class="tag del">del</span> ' : '';
-      const firstLine = ls?.[0] ?? 1;
-      const absPath   = join(destPath, path).replace(/\\/g, '/');
-      const vscodeUrl = `vscode://file/${absPath}:${firstLine}`;
-      const lineStr   = ls?.length ? ` <span class="ln">:${formatRanges(ls)}</span>` : '';
-      return `<li>${badge}<a href="${vscodeUrl}" title="Abrir no VS Code"><code>${path}</code></a>${lineStr}</li>`;
-    }).join('');
-    const n = files.length;
-    return `<details><summary>${n} file${n !== 1 ? 's' : ''} ▾</summary><ul>${items}</ul></details>`;
-  };
-
-  const row = (label, done, key) => {
-    if (done === false) return '';   // skip not-yet-started rows while ng update still runs
-    const icon = done === null ? '<span class="spin">◌</span>' : done ? '✓' : '–';
-    const cls  = done === null ? 'row-pending' : done ? 'row-done' : 'row-skip';
-    const det  = key ? fileList(key) : '';
-    return `<tr class="${cls}">
-      <td class="ic">${icon}</td>
-      <td>${label}</td>
-      <td class="det">${det}</td>
-    </tr>`;
-  };
-
-  const html = `<!DOCTYPE html>
-<html lang="pt">
-<head>
-  <meta charset="utf-8">
-  <title>ng-migrator — Migration Status</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    :root{
-      --red:#DD0031;--red-dk:#C3002F;
-      --bg:#0F0F1A;--surf:#16162A;--surf2:#1E1E35;
-      --bdr:#2A2A45;--text:#E8E8F0;--muted:#7070A0;
-      --green:#4CAF50;--amber:#FF9800;--blue:#5CB8F5;
-    }
-    body{font-family:'Roboto',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-    a{color:var(--blue)}
-
-    /* ── Header ── */
-    header{
-      background:linear-gradient(135deg,var(--red-dk) 0%,var(--red) 60%,#E91E63 100%);
-      padding:.9rem 2rem;display:flex;align-items:center;gap:1rem;
-      box-shadow:0 2px 12px rgba(0,0,0,.5);
-    }
-    .logo-shield{width:28px;height:31px;flex-shrink:0}
-    .logo-text{font-size:1.15rem;font-weight:700;color:#fff;letter-spacing:-.3px}
-    .logo-sub{font-size:.78rem;color:rgba(255,255,255,.65);margin-top:1px}
-    .ts{margin-left:auto;font-size:.72rem;color:rgba(255,255,255,.55);white-space:nowrap}
-
-    /* ── Main layout — two-column dashboard ── */
-    main{
-      max-width:1600px;margin:0 auto;padding:1.5rem 2rem;
-      display:grid;
-      grid-template-columns:360px 1fr;
-      grid-template-rows:auto 1fr;
-      gap:1.25rem;
-      align-items:start;
-    }
-    .col-left{grid-column:1;display:flex;flex-direction:column;gap:1.25rem;position:sticky;top:1.5rem;max-height:calc(100vh - 3rem);overflow-y:auto}
-    .col-right{grid-column:2}
-
-    /* ── Cards ── */
-    .card{background:var(--surf);border:1px solid var(--bdr);border-radius:10px;overflow:hidden}
-    .card-head{
-      background:var(--surf2);border-bottom:1px solid var(--bdr);
-      padding:.55rem 1rem;display:flex;align-items:center;gap:.6rem;
-    }
-    .card-title{font-size:.72rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
-    .card-badge{
-      margin-left:auto;background:rgba(221,0,49,.18);color:var(--red);
-      border:1px solid rgba(221,0,49,.3);border-radius:4px;
-      font-size:.68rem;font-weight:600;padding:1px 7px;
-    }
-
-    /* ── Progress bar ── */
-    .prog-wrap{padding:.75rem 1rem;border-bottom:1px solid var(--bdr)}
-    .prog-track{background:var(--bdr);border-radius:99px;height:8px;overflow:hidden}
-    .prog-fill{background:linear-gradient(90deg,var(--red),#E91E63);height:100%;border-radius:99px;transition:width .5s ease}
-    .prog-label{font-size:.72rem;color:var(--muted);margin-top:.4rem}
-
-    /* ── Table ── */
-    table{width:100%;border-collapse:collapse}
-    tr{border-bottom:1px solid var(--bdr)}
-    tr:last-child{border-bottom:none}
-    td{padding:.5rem 1rem;font-size:.855rem;vertical-align:middle}
-    td.ic{width:2.2rem;text-align:center;font-size:1rem;padding-right:0}
-    td.det{color:var(--muted);font-size:.8rem;min-width:160px}
-
-    .row-done td:nth-child(2){color:var(--green)}
-    .row-done .ic{color:var(--green)}
-    .row-pending td:nth-child(2){color:var(--amber)}
-    .row-pending .ic{color:var(--amber)}
-    .row-skip td{opacity:.38}
-
-    @keyframes pulse{0%,100%{opacity:.3}50%{opacity:.8}}
-    .spin{animation:pulse 1.4s ease-in-out infinite;display:inline-block}
-
-    /* ── File details ── */
-    details{display:inline-block}
-    details summary{cursor:pointer;color:var(--blue);font-size:.78rem;list-style:none;user-select:none}
-    details summary::-webkit-details-marker{display:none}
-    details[open] summary{margin-bottom:.3rem}
-    details ul{list-style:none;margin-left:.2rem;padding:0}
-    details li{font-size:.73rem;color:var(--muted);padding:.15rem 0;font-family:'Roboto Mono',monospace;display:flex;align-items:baseline;gap:.3rem}
-    details li a{color:inherit;text-decoration:none}details li a:hover code{color:var(--blue)}
-    details code{color:#B0B0D0;background:#0A0A18;padding:1px 5px;border-radius:3px;font-size:.72rem;font-family:inherit}
-    .ln{color:#4A4A70;font-size:.68rem}
-    .tag{font-size:.65rem;font-weight:700;padding:0 4px;border-radius:3px;line-height:1.5}
-    .tag.new{background:rgba(76,175,80,.15);color:var(--green);border:1px solid rgba(76,175,80,.3)}
-    .tag.del{background:rgba(239,83,80,.15);color:#EF5350;border:1px solid rgba(239,83,80,.3)}
-  </style>
-</head>
-<body>
-
-<header>
-  <svg class="logo-shield" viewBox="0 0 250 300" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <polygon points="125,5 245,50 224,238 125,295 26,238 5,50"
-      fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.6)" stroke-width="10"/>
-    <path d="M125 52 L182 200 H163 L150 163 H100 L87 200 H68 Z M125 88 L145 150 H105 Z"
-      fill="white"/>
-  </svg>
-  <div>
-    <div class="logo-text">ng-migrator</div>
-    <div class="logo-sub">Angular ${report.sourceVersion ?? '?'} → ${report.targetVersion}</div>
-  </div>
-  <div class="ts">⟳ ${now}</div>
-</header>
-
-<main>
-
-  <div class="col-left">
-    <!-- ng update card -->
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">ng update</span>
-        <span class="card-badge">${doneVersions} / ${totalVersions} versions</span>
-      </div>
-      <div class="prog-wrap">
-        <div class="prog-track"><div class="prog-fill" style="width:${pct}%"></div></div>
-        <div class="prog-label">${pct}% complete</div>
-      </div>
-      <table>
-        ${report.ngUpdateSteps.map(s => `
-        <tr class="${s.ok ? 'row-done' : 'row-pending'}">
-          <td class="ic">${s.ok ? '✓' : '⚠'}</td>
-          <td>Angular ${s.version}</td>
-          <td class="det">${fileList(`ngUpdate_${s.version}`) || (s.ok ? '' : '<span style="color:var(--amber)">warnings</span>')}</td>
-        </tr>`).join('')}
-        ${Array.from({ length: Math.max(0, totalVersions - doneVersions) }, (_, i) => {
-          const v = (report.sourceVersion ?? 11) + doneVersions + i + 1;
-          return `<tr class="row-skip"><td class="ic">·</td><td>Angular ${v}</td><td class="det"></td></tr>`;
-        }).join('')}
-      </table>
-    </div>
-
-    <!-- Source info card -->
-    <div class="card">
-      <div class="card-head"><span class="card-title">Project</span></div>
-      <div style="padding:.65rem 1rem;font-size:.78rem;color:var(--muted);line-height:1.7;word-break:break-all">
-        <div><span style="color:var(--text)">Source</span> &nbsp;Angular ${report.sourceVersion ?? '?'}</div>
-        <div><span style="color:var(--text)">Target</span> &nbsp;Angular ${report.targetVersion}</div>
-        <div style="margin-top:.4rem;font-size:.71rem">${report.destPath}</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="col-right">
-    ${opts.modernize ? `
-    <!-- Modernization card -->
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">Modernization</span>
-        <span style="margin-left:auto;font-size:.72rem;color:var(--muted)">${
-          Object.keys(report.details).filter(k => !k.startsWith('ngUpdate_')).length
-        } steps completed</span>
-      </div>
-      <table>
-        ${m.flexLayoutMigrated !== undefined ? row('@angular/flex-layout → Tailwind CSS', m.flexLayoutMigrated ? true : null, 'flexLayout') : ''}
-        ${row('inject() — constructor DI → inject()',             m.inject          ? true : (doneVersions >= totalVersions ? null : false), 'inject')}
-        ${row('Signals — @Input / @Output / @ViewChild → signal APIs', m.signals   ? true : (m.inject ? null : false),                       'signals')}
-        ${row('UntypedForm* → typed forms',                        m.untypedFormsFixed > 0 ? true : (m.signals ? null : false),              'untypedForms')}
-        ${row('throwError() → factory function (RxJS 7)',          m.throwErrorFixed > 0 ? true : (m.signals ? null : false),                'throwError')}
-        ${row('Standalone — convert → prune → bootstrap',          m.standalone      ? true : (m.signals ? null : false),                    'standalone')}
-        ${row('standalone: true patches in pipes / directives',    m.standaloneFixed > 0 ? true : (m.standalone ? null : false),            'standaloneFixed')}
-        ${row('Control flow — @if / @for / @switch',               m.controlFlow     ? true : (m.standalone ? null : false),                 'controlFlow')}
-        ${row('[ngClass] → [class]',                               m.ngClassToClass  ? true : (m.controlFlow ? null : false),                'ngClassToClass')}
-        ${row('[ngStyle] → [style]',                               m.ngStyleToStyle  ? true : (m.ngClassToClass ? null : false),             'ngStyleToStyle')}
-        ${row('app.config.ts + app.routes.ts',                     m.appConfig       ? true : (m.ngStyleToStyle ? null : false),             'appConfig')}
-        ${row('Lazy NgModules → routes files',                     m.lazyRoutesConverted > 0 ? true : (m.appConfig !== undefined ? null : false), 'lazyRoutes')}
-        ${row('Builder → esbuild / Vite',                          m.builder         ? true : (m.appConfig !== undefined ? null : false),    'builder')}
-        ${row('polyfills.ts → zone.js inline in angular.json',     m.polyfillsInlined ? true : (m.builder ? null : false),                  'polyfills')}
-        ${row('tsconfig — ES2022 / moduleResolution: bundler',     m.tsconfigModernized ? true : (m.builder ? null : false),                'tsconfig')}
-        ${row('Path aliases — @app / @core / @shared / @features', m.pathAliases     ? true : (m.tsconfigModernized !== undefined ? null : false), 'pathAliases')}
-        ${row('ESLint via @angular/eslint',                        m.eslintAdded     ? true : (m.pathAliases ? null : false),                'eslint')}
-        ${row('SCSS @import → @use as *',                         m.sassImports > 0 ? true : (m.eslintAdded !== undefined ? null : false),  'sass')}
-        ${row('Unused .module.ts files removed',                  m.modulesRemoved > 0 ? true : (m.sassImports !== undefined ? null : false), 'modules')}
-        ${row('styleUrls: [] → styleUrl (Angular 19)',            m.styleUrlFixed > 0 ? true : (m.modulesRemoved !== undefined ? null : false), 'styleUrl')}
-        ${row('Self-closing tags',                                m.selfClosingTags ? true : (m.styleUrlFixed !== undefined ? null : false), 'selfClosing')}
-        ${row('Cleanup unused component imports',                 m.cleanupImports  ? true : (m.selfClosingTags ? null : false),             'cleanupImports')}
-      </table>
-    </div>` : ''}
-  </div>
-
-</main>
-
-<script>
-(function(){
-  // Polling via fetch — não faz reload da página, preserva estado dos <details>
-  setInterval(async () => {
-    try {
-      // Salva quais details estão abertos pelo texto do label da linha
-      const openKeys = new Set(
-        [...document.querySelectorAll('details[open]')].map(el => {
-          const label = el.closest('tr')?.querySelector('td:nth-child(2)')?.textContent?.trim();
-          return label ?? el.previousElementSibling?.textContent?.trim();
-        }).filter(Boolean)
-      );
-
-      const res = await fetch(location.href + '?_t=' + Date.now());
-      if (!res.ok) return;
-      const html = await res.text();
-      const doc  = new DOMParser().parseFromString(html, 'text/html');
-
-      // Atualiza main sem tocar no estado dos details
-      const newMain = doc.querySelector('main');
-      const curMain = document.querySelector('main');
-      if (newMain && curMain) curMain.innerHTML = newMain.innerHTML;
-
-      // Atualiza timestamp no header
-      const newTs = doc.querySelector('.ts');
-      const curTs = document.querySelector('.ts');
-      if (newTs && curTs) curTs.textContent = newTs.textContent;
-
-      // Restaura details que estavam abertos
-      document.querySelectorAll('details').forEach(el => {
-        const label = el.closest('tr')?.querySelector('td:nth-child(2)')?.textContent?.trim();
-        if (label && openKeys.has(label)) el.open = true;
-      });
-    } catch(_) {}
-  }, 4000);
-})();
-</script>
-</body>
-</html>`;
-
-  writeFileSync(join(migratorDir, 'MIGRATION-STATUS.html'), html);
-}
-
-// ─── Relatório de migração ────────────────────────────────────────────────────
-
-function writeReport(skipDiff = false) {
-  if (skipDiff) writeStatusHtml();   // atualiza o HTML em tempo real
+function writeReport() {
   const check = (v) => v ? '✅' : '—';
   const lines = [];
 
@@ -3181,7 +3316,7 @@ function writeReport(skipDiff = false) {
   lines.push(``);
 
   // Files changed (git diff --stat between initial snapshot and HEAD) — only on final write
-  if (!skipDiff && report.initialCommit) {
+  if (report.initialCommit) {
     const stat = capture(`git diff --stat ${report.initialCommit} HEAD -- ':(exclude)package-lock.json'`);
     if (stat) {
       lines.push(`## Files changed`);
@@ -3205,11 +3340,7 @@ function writeReport(skipDiff = false) {
 
   const reportPath = join(migratorDir, 'MIGRATION-REPORT.md');
   writeFileSync(reportPath, lines.join('\n'));
-  if (!skipDiff) {
-    writeStatusHtml();
-    console.log(`\n  📄 Relatório final gravado em: ${reportPath}`);
-    console.log(`  🌐 Status HTML: ${join(migratorDir, 'MIGRATION-STATUS.html')}`);
-  }
+  console.log(`\n  📄 Relatório final gravado em: ${reportPath}`);
 }
 
 // ─── Grava dados de migração como JSON (lido pelo servidor UI) ───────────────
@@ -3219,8 +3350,6 @@ function writeMigrationData() {
   try {
     const dataPath = join(migratorDir, 'MIGRATION-DATA.json');
     writeFileSync(dataPath, JSON.stringify(report, null, 2) + '\n');
-    const diffsPath = join(migratorDir, 'MIGRATION-DIFFS.json');
-    writeFileSync(diffsPath, JSON.stringify(allDiffs) + '\n');
   } catch {
     // non-fatal — UI polling will just show stale data
   }
@@ -3251,12 +3380,18 @@ function extraPackages(v) {
 // Não filtramos por namespace — pacotes de terceiros (@angular-builders/jest, etc.)
 // também podem ser resolvidos assim. Se a versão @v não existir no npm, o ng update
 // falha de qualquer jeito e caímos no --force. Sem risco extra.
+// Packages whose versions are managed by syncVersions or by dedicated modernization steps.
+// Including them in ng update would trigger their migration schematics (e.g. ng lint --fix
+// from @angular-eslint/schematics), polluting the ng update commit with unrelated changes.
+const SYNC_MANAGED_PREFIXES = ['@angular-eslint/', '@typescript-eslint/'];
+
 function extractConflictPackages(output, v, alreadyIncluded) {
   const re = /Package "(@[\w/-]+)" has an incompatible peer dependency/g;
   const extra = [];
   let m;
   while ((m = re.exec(output)) !== null) {
     const pkg = m[1];
+    if (SYNC_MANAGED_PREFIXES.some(p => pkg.startsWith(p))) continue;
     const versioned = `${pkg}@${v}`;
     if (!alreadyIncluded.includes(versioned)) extra.push(versioned);
   }
@@ -3289,6 +3424,8 @@ copyDir(sourcePath, destPath);
 // Pasta para arquivos gerados pelo migrador (relatórios, dados, patch)
 const migratorDir = join(destPath, '.ng-migrator');
 mkdirSync(migratorDir, { recursive: true });
+diffDb = new Database(join(migratorDir, 'diffs.db'));
+diffDb.exec('CREATE TABLE IF NOT EXISTS diffs (path TEXT, h0 TEXT, h1 TEXT, diff TEXT, PRIMARY KEY (path, h0, h1))');
 
 // Remove lockfiles antigos
 for (const f of ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']) {
@@ -3317,7 +3454,7 @@ report.initialCommit = capture('git rev-parse HEAD');
 // 4. Instala dependências da versão atual
 const detectedVersion = opts.from ?? getInstalledMajor('@angular/core');
 report.sourceVersion = detectedVersion || null;
-writeReport(true);  // primeiro snapshot — abre o arquivo no destino
+writeMigrationData();  // primeiro snapshot
 writeMigrationData();
 console.log(`\n📦 Versão detectada: Angular ${detectedVersion || '?'}`);
 console.log('📦 Instalando dependências...');
@@ -3384,7 +3521,6 @@ for (let v = startVersion; v <= opts.to; v++) {
 
   steps.push({ version: v, ok });
   report.ngUpdateSteps.push({ version: v, ok });
-  writeReport(true);
   writeMigrationData();
 }
 

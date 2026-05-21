@@ -53,7 +53,7 @@ export function highlightPath(path: string, query: string) {
 
 export function UnifiedDiff({ lines }: { lines: DiffLine[] }) {
   return (
-    <table className="border-collapse w-full">
+    <table className="border-collapse min-w-full">
       <tbody>
         {lines.map((line, i) => {
           if (line.type === 'file-header') return null
@@ -91,7 +91,7 @@ export function UnifiedDiff({ lines }: { lines: DiffLine[] }) {
 export function PlainCode({ text }: { text: string }) {
   const lines = text.split('\n')
   return (
-    <table className="border-collapse w-full">
+    <table className="border-collapse min-w-full">
       <tbody>
         {lines.map((line, i) => (
           <tr key={i}>
