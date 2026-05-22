@@ -92,6 +92,7 @@ export const TMPL_ELEM = {
   'ng-progress':             { sym: 'NgProgressModule',           pkg: '@ngx-progressbar/core' },
   'ngx-ui-loader':           { sym: 'NgxUiLoaderModule',          pkg: 'ngx-ui-loader' },
   'ngx-spinner':             { sym: 'NgxSpinnerModule',           pkg: 'ngx-spinner' },
+  'webcam':                  { sym: 'WebcamModule',               pkg: 'ngx-webcam' },
 };
 
 export const TMPL_ATTR = {
@@ -127,7 +128,7 @@ export const TMPL_ATTR = {
 };
 
 export const TMPL_PIPE = {
-  'translate':    { sym: 'TranslatePipe',    pkg: '@ngx-translate/core' },
+  'translate':    { sym: 'TranslateModule',   pkg: '@ngx-translate/core' },
   'async':        { sym: 'AsyncPipe',        pkg: '@angular/common' },
   'date':         { sym: 'DatePipe',         pkg: '@angular/common' },
   'currency':     { sym: 'CurrencyPipe',     pkg: '@angular/common' },
@@ -539,11 +540,12 @@ export function copyModuleImportsToComponents() {
         if (!compFile) continue;
         let compSrc = readFileSync(compFile, 'utf8');
         if (!compSrc.includes('@Component(')) continue;
-        if (!compSrc.includes('standalone: true') && !compSrc.includes('standalone:true')) continue;
+        // Process ALL declared components — including those not yet standalone.
+        // Components converted later (convertOrphanedNonStandalone) would otherwise
+        // miss their module's imports since the module is already pruned by then.
 
         const arrInfo = tmplGetDecoratorImportsArray(compSrc, COMPONENT_RE);
-        if (!arrInfo) continue;
-        const existing = arrInfo.existing;
+        const existing = arrInfo?.existing ?? new Set();
 
         const toAdd = [...allExternals]
           .filter(([sym]) => !existing.has(sym))
