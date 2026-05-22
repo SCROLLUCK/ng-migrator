@@ -245,9 +245,11 @@ export function runModernizationMigrations() {
         run('npx ng generate @angular/core:standalone-migration --mode prune-ng-modules --defaults', { ignoreError: true });
         cleanupStandaloneTodos();
         const secondPassConverted = convertOrphanedNonStandalone();
+        invalidateProjectIndex(); // freshly-converted components need a rebuilt index
         if (secondPassConverted > 0) fixStandaloneImports();
-        fixMissingStandalone();
+        fixMissingStandalone(); // handles standalone: false + no imports (Angular 19 case)
         removeImportsFromNonStandalone();
+        fixStandaloneImports(); // populate imports for components just promoted by fixMissingStandalone
       }
     }
     commitStep('modules', 'remove unused modules');

@@ -666,13 +666,16 @@ export function fixMissingStandalone() {
           if (decRegion.includes('standalone:')) {
             const isExplicitlyFalse = /standalone\s*:\s*false/.test(decRegion);
             if (isExplicitlyFalse) {
-              if (decRegion.includes('imports:')) {
-                const fixedRegion = decRegion.replace(/standalone\s*:\s*false/, 'standalone: true');
-                const regionStart = compIdx;
-                const regionEnd = compIdx + decRegion.length;
-                result = result.slice(0, regionStart) + fixedRegion + result.slice(regionEnd);
-                shift += fixedRegion.length - decRegion.length;
+              // Always convert false → true; add imports: [] if not present
+              // (Angular 19 ng update adds standalone: false to ALL components — this handles them)
+              let fixedRegion = decRegion.replace(/standalone\s*:\s*false/, 'standalone: true');
+              if (!decRegion.includes('imports:')) {
+                fixedRegion = fixedRegion.slice(0, openBrace + 1) + '\n  imports: [],' + fixedRegion.slice(openBrace + 1);
               }
+              const regionStart = compIdx;
+              const regionEnd = compIdx + decRegion.length;
+              result = result.slice(0, regionStart) + fixedRegion + result.slice(regionEnd);
+              shift += fixedRegion.length - decRegion.length;
             } else if (!decRegion.includes('imports:')) {
               const insertAt = compIdx + openBrace + 1;
               const extra = '\n  imports: [],';
@@ -811,12 +814,30 @@ export function convertOrphanedNonStandalone() {
       const classNames = [...src.matchAll(/export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g)].map(m => m[1]);
       if (classNames.some(cls => declaredInModule.has(cls))) continue;
 
-      const updated = src.replace(/\bstandalone\s*:\s*false/g, 'standalone: true');
-      if (updated !== src) {
-        writeFileSync(full, updated);
-        count++;
-        console.log(`  ↳ ${basename(full)}: standalone: false → true (órfão)`);
+      let updated = src.replace(/\bstandalone\s*:\s*false/g, 'standalone: true');
+      if (updated === src) continue;
+      // Ensure each @Component that became standalone: true also has imports: []
+      const COMP_RE2 = /@Component\s*\(/g;
+      let m2; let r2 = updated; let sh2 = 0;
+      while ((m2 = COMP_RE2.exec(updated)) !== null) {
+        const ds = m2.index + sh2;
+        let depth2 = 0, de = -1;
+        for (let i = r2.indexOf('(', ds); i < r2.length; i++) {
+          if (r2[i] === '(') depth2++; else if (r2[i] === ')') { if (--depth2 === 0) { de = i; break; } }
+        }
+        if (de === -1) continue;
+        const db = r2.slice(ds, de + 1);
+        if (!db.includes('standalone: true') || db.includes('imports:')) continue;
+        const ob = r2.indexOf('{', ds);
+        if (ob === -1 || ob > de) continue;
+        const ins = '\n  imports: [],';
+        r2 = r2.slice(0, ob + 1) + ins + r2.slice(ob + 1);
+        sh2 += ins.length;
       }
+      updated = r2;
+      writeFileSync(full, updated);
+      count++;
+      console.log(`  ↳ ${basename(full)}: standalone: false → true (órfão)`);
     }
   }
   walk(srcDir);
