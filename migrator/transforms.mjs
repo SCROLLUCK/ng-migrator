@@ -369,18 +369,23 @@ export function fixSassImports() {
         (_, q, _tilde, path) => `@use ${q}${path}${q} as *;`);
 
       // Material v1 SCSS API → v15/v17+ API
-      if (out.includes('mat-typography-config(') || out.includes('mat-typography-level(') ||
+      const hasMat1Api = out.includes('mat-typography-config(') || out.includes('mat-typography-level(') ||
           out.includes('mat-palette(') || out.includes('mat-light-theme(') ||
-          out.includes('mat-dark-theme(') || out.includes('mat-core()')) {
+          out.includes('mat-dark-theme(') || out.includes('mat-core()') ||
+          out.includes('mat-base-typography(') || /@include\s+mat-/.test(out);
+      if (hasMat1Api) {
         out = out.replace(/@use\s+(['"])@angular\/material\1\s+as\s+\*/g,
           `@use '@angular/material' as mat`);
 
         if (report.targetVersion >= 17) {
           out = removeM2TypographyBlocks(out);
+          // mat-base-typography is M2-only: remove the call entirely for v17+
+          out = out.replace(/[ \t]*@include\s+mat-base-typography\s*\([^)]*\)\s*;\n?/g, '');
         } else {
           const matFnRenames = [
             [/\bmat-typography-config\s*\(/g,  'mat.define-typography-config('],
             [/\bmat-typography-level\s*\(/g,   'mat.define-typography-level('],
+            [/\bmat-base-typography\s*\(/g,    'mat.typography-hierarchy('],
           ];
           out = out.split('\n').map(line => {
             if (/^\s*@(function|mixin)\s/.test(line)) return line;
@@ -391,19 +396,44 @@ export function fixSassImports() {
         }
 
         const matFnRenamesCommon = [
-          [/\bmat-palette\s*\(/g,            'mat.define-palette('],
-          [/\bmat-light-theme\s*\(/g,        'mat.define-light-theme('],
-          [/\bmat-dark-theme\s*\(/g,         'mat.define-dark-theme('],
+          [/\bmat-palette\s*\(/g,                  'mat.define-palette('],
+          [/\bmat-light-theme\s*\(/g,              'mat.define-light-theme('],
+          [/\bmat-dark-theme\s*\(/g,               'mat.define-dark-theme('],
+          [/\bmat-color\s*\(/g,                    'mat.get-color-from-palette('],
+          [/\bmat-contrast\s*\(/g,                 'mat.get-contrast-color-from-palette('],
+          [/\bmat-get-color-config\s*\(/g,         'mat.get-color-config('],
+          [/\bmat-get-typography-config\s*\(/g,    'mat.get-typography-config('],
+          [/\bmat-font-size\s*\(/g,                'mat.font-size('],
+          [/\bmat-font-family\s*\(/g,              'mat.font-family('],
+          [/\bmat-font-weight\s*\(/g,              'mat.font-weight('],
+          [/\bmat-line-height\s*\(/g,              'mat.line-height('],
+          [/\bmat-letter-spacing\s*\(/g,           'mat.letter-spacing('],
         ];
         out = out.split('\n').map(line => {
           if (/^\s*@(function|mixin)\s/.test(line)) return line;
           for (const [from, to] of matFnRenamesCommon) line = line.replace(from, to);
           return line;
         }).join('\n');
-        out = out.replace(/@include\s+mat-core\s*\(\s*\)/g, '@include mat.core()');
+        // mat-core() / mat-core($arg) → mat.core()  (arg was typography config, now deprecated)
+        out = out.replace(/@include\s+mat-core\s*\([^)]*\)/g, '@include mat.core()');
+        // mat.core($arg) with leftover arg → remove the arg too
+        out = out.replace(/@include\s+mat\.core\s*\(\s*\$[\w-]+\s*\)/g, '@include mat.core()');
         out = out.replace(/@include\s+angular-material-theme\s*\(/g, '@include mat.all-component-themes(');
         out = out.replace(/@include\s+angular-material-color\s*\(/g, '@include mat.all-component-colors(');
         out = out.replace(/@include\s+angular-material-typography\s*\(/g, '@include mat.all-component-typographies(');
+        // Component-specific typography mixins: mat-{comp}-typography → mat.{comp}-typography
+        out = out.replace(/@include\s+mat-([a-z][a-z-]*)-typography\s*\(/g, '@include mat.$1-typography(');
+
+        // $mat-{color} palette variable renames → mat.$color-palette
+        // (safety net — ng update @material@15 schematic handles standard files)
+        const MAT_PALETTES = [
+          'red','pink','purple','deep-purple','indigo','blue','light-blue','cyan','teal',
+          'green','light-green','lime','yellow','amber','orange','deep-orange','brown',
+          'grey','gray','blue-grey','blue-gray',
+        ];
+        for (const c of MAT_PALETTES) {
+          out = out.replace(new RegExp(`\\$mat-${c}\\b`, 'g'), `mat.$${c}-palette`);
+        }
       }
 
       // Fix url("~src/...") → relative path from this file to src/
@@ -414,19 +444,56 @@ export function fixSassImports() {
       }
 
       // Fix deprecated Sass slash division: $x / $y → math.div($x, $y)
-      const divRe = /(\$[\w-]+|\d+(?:\.\d+)?)(\s*\/\s*)(\$[\w-]+|\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw)?)/g;
+      // Skip CSS color alpha syntax like rgb(0 0 0 / .05) — both sides are unitless numbers
+      const divRe = /(\$[\w-]+|\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw|s|ms)?)(\s*\/\s*)(\$[\w-]+|\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw|s|ms)?)/g;
       if (divRe.test(out) && !out.includes("'sass:math'") && !out.includes('"sass:math"')) {
-        out = out.replace(divRe, (_, a, __, b) => `math.div(${a}, ${b})`);
-        out = `@use 'sass:math' as math;\n${out}`;
+        let didReplace = false;
+        out = out.replace(divRe, (match, a, op, b) => {
+          const isSassVar = a.startsWith('$') || b.startsWith('$');
+          const hasUnit = /[a-z%]$/i.test(a) || /[a-z%]$/i.test(b);
+          if (!isSassVar && !hasUnit) return match; // CSS color alpha (e.g. rgb(0 0 0 / .05))
+          didReplace = true;
+          return `math.div(${a}, ${b})`;
+        });
+        if (didReplace) out = `@use 'sass:math' as math;\n${out}`;
       }
 
-      // Fix deprecated darken()/lighten() → color.adjust()
-      const hasDarken  = /\bdarken\s*\(/.test(out);
-      const hasLighten = /\blighten\s*\(/.test(out);
-      if ((hasDarken || hasLighten) && !out.includes("'sass:color'") && !out.includes('"sass:color"')) {
-        if (hasDarken)  out = out.replace(/\bdarken\s*\(([^,]+),\s*([^)]+)\)/g,  'color.adjust($1, $lightness: -$2)');
-        if (hasLighten) out = out.replace(/\blighten\s*\(([^,]+),\s*([^)]+)\)/g, 'color.adjust($1, $lightness: $2)');
-        out = `@use 'sass:color' as color;\n${out}`;
+      // Fix deprecated Sass color functions → color.* (Dart Sass 2.0)
+      {
+        const hasDarken       = /\bdarken\s*\(/.test(out);
+        const hasLighten      = /\blighten\s*\(/.test(out);
+        const hasAdjustHue    = /\badjust-hue\s*\(/.test(out);
+        const hasSaturate     = /\bsaturate\s*\(/.test(out);
+        const hasDesaturate   = /\bdesaturate\s*\(/.test(out);
+        const hasOpacify      = /\b(?:opacify|fade-in)\s*\(/.test(out);
+        const hasTransparent  = /\b(?:transparentize|fade-out)\s*\(/.test(out);
+        const hasMix          = /\bmix\s*\(/.test(out);
+        const needsColorNs    = hasDarken || hasLighten || hasAdjustHue || hasSaturate ||
+                                hasDesaturate || hasOpacify || hasTransparent || hasMix;
+        if (needsColorNs && !out.includes("'sass:color'") && !out.includes('"sass:color"')) {
+          if (hasDarken)     out = out.replace(/\bdarken\s*\(([^,]+),\s*([^)]+)\)/g,       'color.adjust($1, $lightness: -$2)');
+          if (hasLighten)    out = out.replace(/\blighten\s*\(([^,]+),\s*([^)]+)\)/g,      'color.adjust($1, $lightness: $2)');
+          if (hasAdjustHue)  out = out.replace(/\badjust-hue\s*\(([^,]+),\s*([^)]+)\)/g,  'color.adjust($1, $hue: $2)');
+          // saturate()/desaturate() only when called as Sass fn (2 args), not CSS filter (1 arg)
+          if (hasSaturate)   out = out.replace(/\bsaturate\s*\(([^,]+),\s*([^)]+)\)/g,    'color.adjust($1, $saturation: $2)');
+          if (hasDesaturate) out = out.replace(/\bdesaturate\s*\(([^,]+),\s*([^)]+)\)/g,  'color.adjust($1, $saturation: -$2)');
+          if (hasOpacify)    out = out.replace(/\b(?:opacify|fade-in)\s*\(([^,]+),\s*([^)]+)\)/g,       'color.adjust($1, $alpha: $2)');
+          if (hasTransparent) out = out.replace(/\b(?:transparentize|fade-out)\s*\(([^,]+),\s*([^)]+)\)/g, 'color.adjust($1, $alpha: -$2)');
+          if (hasMix)        out = out.replace(/\bmix\s*\(/g, 'color.mix(');
+          out = `@use 'sass:color' as color;\n${out}`;
+        }
+      }
+
+      // Deduplicate @use rules with the same path (duplicate @import → duplicate @use = error)
+      if (out.includes('@use ')) {
+        const seenPaths = new Set();
+        out = out.split('\n').filter(line => {
+          const m = line.match(/^\s*@use\s+(['"])([^'"]+)\1/);
+          if (!m) return true;
+          if (seenPaths.has(m[2])) return false;
+          seenPaths.add(m[2]);
+          return true;
+        }).join('\n');
       }
 
       // Reorder: @use and @forward rules must come before any other CSS rules in SCSS

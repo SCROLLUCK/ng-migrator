@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { useTranslation } from '../lib/i18n'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -111,10 +112,11 @@ export function PlainCode({ text }: { text: string }) {
 // ─── DiffPanel ────────────────────────────────────────────────────────────────
 
 export function DiffPanel({ state, onTabChange }: { state: ExpandedState; onTabChange: (t: TabType) => void }) {
+  const { t } = useTranslation()
   const TABS: { key: TabType; label: string }[] = [
-    { key: 'diff',   label: 'Diff' },
-    { key: 'before', label: 'Before' },
-    { key: 'after',  label: 'After' },
+    { key: 'diff',   label: t('diff') },
+    { key: 'before', label: t('before') },
+    { key: 'after',  label: t('after') },
   ]
   const { lines, loading, tab } = state
   const hasContent = lines && hasMeaningfulContent(lines)
@@ -136,15 +138,15 @@ export function DiffPanel({ state, onTabChange }: { state: ExpandedState; onTabC
           </button>
         ))}
         {(tab === 'before' || tab === 'after') && (
-          <span className="self-center ml-auto mr-3 text-[0.63rem] text-[#3A3A60]">excerpt</span>
+          <span className="self-center ml-auto mr-3 text-[0.63rem] text-[#3A3A60]">{t('excerpt')}</span>
         )}
       </div>
       <div className="max-h-[520px] overflow-y-auto overflow-x-auto">
         {loading && (
-          <div className="text-[#4A4A70] px-4 py-3 text-[0.75rem] font-mono">Loading…</div>
+          <div className="text-[#4A4A70] px-4 py-3 text-[0.75rem] font-mono">{t('loading')}</div>
         )}
         {!loading && !hasContent && (
-          <div className="text-[#4A4A70] px-4 py-3 text-[0.75rem]">No diff available.</div>
+          <div className="text-[#4A4A70] px-4 py-3 text-[0.75rem]">{t('noDiffAvailable')}</div>
         )}
         {!loading && hasContent && (
           tab === 'diff'   ? <UnifiedDiff lines={lines!} /> :

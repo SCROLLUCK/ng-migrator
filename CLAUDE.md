@@ -41,22 +41,42 @@ Nunca use `style={{}}` inline nos componentes React. Exceção: valores verdadei
 
 ## Arquitetura
 
-Projeto single-file: toda a lógica está em `migrate.mjs`. Sem build step, sem testes automatizados. Sem dependências de produção.
+O entry point é `migrate.mjs` (~200 linhas — só o pipeline principal). Toda a lógica fica nos módulos em `migrator/`:
 
-### Estratégia: ng update incremental
+| Arquivo | Responsabilidade |
+|---|---|
+| `migrator/context.mjs` | CLI args, `sourcePath`, `destPath`, `report`, `SKIP_DIRS`, `diffDb` / `setDiffDb`, carrega `ng-migrator.config.json` e carrega/rastreia `currentAngularVersion` |
+| `migrator/utils.mjs` | `run`, `capture`, `copyDir`, `readJson`, `writeJson`, `runUntilStable`, `checkDocker`, `detectVersionManager`, `wrapCommand` (Docker isolation), diff helpers |
+| `migrator/packages.mjs` | `getPkg`, `hasPackage`, `getMajor`, `getInstalledMajor` |
+| `migrator/preflight.mjs` | `preflight`, `cleanupLegacyFiles`, `fixTsconfigLocations`, `fixKarmaConf` |
+| `migrator/ng-update.mjs` | `syncVersions`, `verifyTsconfigPaths`, `fixLegacyMaterial`, `extraPackages`, `extractConflictPackages` |
+| `migrator/standalone.mjs` | Mapas TMPL_ELEM/ATTR/PIPE, `tmplDetectNeeded` (AST + fallback regex), `buildInternalProjectIndex`, todas as funções standalone |
+| `migrator/modules.mjs` | `convertLazyModulesToRoutes`, `convertRemainingRoutingModules`, `removeUnusedModules` |
+| `migrator/transforms.mjs` | `fixUntypedForms`, `fixSassImports`, `fixStyleUrls`, `modernizeTsconfig`, `addEslint`, etc. |
+| `migrator/app-config.mjs` | `createAppConfigAndRoutes`, `extractImportProvidersFromModules` |
+| `migrator/flex-layout.mjs` | `migrateFlexLayoutToTailwind` |
+| `migrator/report.mjs` | `writeReport`, `writeMigrationData` |
+| `migrator/orchestrate.mjs` | `runModernizationMigrations` (com `commitStep` local) |
 
-O migrador **não faz transformações de AST diretamente**. Em vez disso, orquestra o `ng update` oficial do Angular CLI em cada major version, aproveitando os schematics testados pela equipe do Angular para cada passo.
+Sem build step, sem testes automatizados.
+
+### Estratégia: ng update incremental + AST
+
+O migrador **orquestra o `ng update` oficial** do Angular CLI em cada major version. Para análise de templates e imports standalone, usa:
+- **`@angular/compiler` `parseTemplate`** — AST real do template (evita falsos positivos do regex)
+- **`ts-morph`** — índice de componentes standalone internos do projeto (`buildInternalProjectIndex`) para que `fixStandaloneImports` adicione imports relativos corretos
 
 ### Pipeline
 
+0. **Docker Preflight Check**: Executa `checkDocker()` para validar se o Docker está ativo. Se não, interrompe a execução com erro.
 1. **Copia** o projeto para pasta irmã com sufixo `-ng{target}` (ou `--dest`)
 2. Remove lockfiles antigos (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`)
 3. **`preflight()`** — remove `ngcc` dos scripts, remove `codelyzer`/`tslint`/`protractor`/`karma-coverage-istanbul-reporter`; bumpa `@types/jasmine`, `jasmine-core`, `@types/node`, `ts-node`
 4. **`cleanupLegacyFiles()`** — remove `tslint.json`, projeto e2e do `angular.json`, chama `fixKarmaConf()`
 5. Se source >= v15: `fixLegacyMaterial()` imediatamente
 6. **`git init`** + commit inicial — `ng update` exige repositório git
-7. **`npm install`** das dependências da versão atual
-8. Loop `startVersion → targetVersion`:
+7. **`npm install`** das dependências da versão atual (executado via `wrapCommand` com a versão de Node adequada para a versão inicial do Angular)
+8. Loop `startVersion → targetVersion` (cada iteração executa comandos de Node/npm isolados via container Docker para a respectiva versão do Angular, monitorada via `currentAngularVersion`):
    - Antes do v17: `fixLegacyMaterial()` (converte `MatLegacy*` → `Mat*`)
    - `npx ng update @angular/core@v @angular/cli@v [material@v] --allow-dirty --force`
    - `syncVersions(v)` — força `@angular/*` atrasados para `^v.0.0`, rxjs 6→7, zone.js
@@ -86,6 +106,16 @@ O migrador **não faz transformações de AST diretamente**. Em vez disso, orque
    20. `self-closing-tag` schematic
    21. `cleanup-unused-imports` schematic
 10. **`writeReport()`** — relatório final com git diff --stat, MIGRATION.patch e seção "File changes per step"
+
+### Isolamento de Ambiente com Docker
+
+Para evitar incompatibilidades de pacotes/Node.js locais e prevenir a modificação acidental do ambiente host do usuário, o `ng-migrator` implementa isolamento de execução:
+
+1. **Preflight**: Verifica a execução do Docker com `docker ps`. Aborta em caso de indisponibilidade de forma amigável.
+2. **Encapsulamento de Comandos**: A função `wrapCommand` analisa comandos executados (como `npm install`, `npx ng ...`) e os executa através de `docker run --rm --name ng-migrator-runner node:<versao> <comando>`.
+3. **Mapeamento de Usuário e Permissões**: Informa `--user $(id -u):$(id -g)` na inicialização do container para manter a propriedade dos arquivos gerados com o usuário host (evitando arquivos gerados com permissões de `root`).
+4. **Cache de Instalação**: Monta o cache do npm do host (`~/.npm`) no container em `/tmp/.npm` para acelerar instalações de pacotes.
+5. **Configuração Flexível (`ng-migrator.config.json`)**: Permite que o usuário defina a estratégia (`nodeVersionManager`: `"docker" | "nvm" | "fnm" | "n" | "asdf" | "none" | "auto"`), mapeie versões do Angular para Node (`nodeVersions`) ou utilize comandos customizados (`customManagerCommand`).
 
 ### Rastreamento de mudanças em tempo real
 

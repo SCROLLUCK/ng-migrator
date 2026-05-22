@@ -146,7 +146,7 @@ export function migrateFlexLayoutToTailwind() {
 
   // Instala Tailwind CSS v3 (pinned: v4 uses a different config format incompatible with this setup)
   console.log('  ↳ Instalando Tailwind CSS v3...');
-  run('npm install -D "tailwindcss@^3" postcss autoprefixer', { ignoreError: true });
+  run('npm install -D "tailwindcss@^3" postcss autoprefixer --legacy-peer-deps --no-audit --no-fund', { ignoreError: true });
 
   // Detect if project uses ESM ("type": "module" in package.json)
   let projectIsEsm = false;

@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, statSync, readFileSync, appendFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { destPath, report, skipSteps, SKIP_DIRS } from './context.mjs';
 import { capture, run, runUntilStable, captureGitDiff } from './utils.mjs';
@@ -9,7 +9,7 @@ import {
   fixNgModuleImports, copyModuleImportsToComponents, fixStandaloneImports,
   fixMissingStandalone, removeImportsFromNonStandalone, cleanupStandaloneTodos,
   convertOrphanedNonStandalone, collectStandaloneFalseCount, fixCircularStandaloneImports,
-  invalidateProjectIndex, autoFixBuildErrors,
+  invalidateProjectIndex, autoFixBuildErrors, fixStandaloneInModuleDeclarations,
 } from './standalone.mjs';
 import { convertLazyModulesToRoutes, convertRemainingRoutingModules, removeUnusedModules } from './modules.mjs';
 import {
@@ -19,6 +19,7 @@ import {
 } from './transforms.mjs';
 import { createAppConfigAndRoutes } from './app-config.mjs';
 import { migrateFlexLayoutToTailwind } from './flex-layout.mjs';
+import { buildCheck } from './build-check.mjs';
 
 export function runModernizationMigrations() {
   let prevHash = capture('git rev-parse HEAD');
@@ -58,6 +59,7 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 @angular/flex-layout → Tailwind CSS...`);
     report.modernize.flexLayoutMigrated = migrateFlexLayoutToTailwind();
     commitStep('flexLayout', '@angular/flex-layout → Tailwind');
+    buildCheck('flexLayout');
   }
 
   // 1. inject(): constructor DI → inject()
@@ -66,6 +68,7 @@ export function runModernizationMigrations() {
     run('npx ng generate @angular/core:inject-migration --defaults', { ignoreError: true });
     report.modernize.inject = true;
     commitStep('inject', 'inject()');
+    buildCheck('inject');
   }
 
   // 2. signals: @Input/@Output/@ViewChild → signal APIs
@@ -74,6 +77,7 @@ export function runModernizationMigrations() {
     run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
     report.modernize.signals = true;
     commitStep('signals', 'signals');
+    buildCheck('signals');
   }
 
   // 2b-extra. Renomeia variáveis geradas com nomes de palavras reservadas (ex: `const for = ...`)
@@ -81,12 +85,14 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 reserved keywords  (renomeia variáveis com nomes reservados)...`);
     report.modernize.reservedKeywordsFixed = fixReservedKeywordVariables();
     if (report.modernize.reservedKeywordsFixed > 0) commitStep('reservedKeywords', 'reserved keyword variables');
+    buildCheck('reservedKeywords');
   }
 
   // 2b. UntypedForm* → typed forms (ponte de migração v14, obsoleta no v21)
   if (!skipSteps.has('untypedForms')) {
     report.modernize.untypedFormsFixed = fixUntypedForms();
     commitStep('untypedForms', 'untyped forms');
+    buildCheck('untypedForms');
   }
 
   // 2c. throwError() → factory function (RxJS 7) + fixes RxJS/TS compat
@@ -97,6 +103,7 @@ export function runModernizationMigrations() {
     fixMomentImport();
     fixTsCompat();
     commitStep('throwError', 'throwError factory + RxJS/TS fixes');
+    buildCheck('throwError');
   }
 
   // 3. standalone migration (3 passos obrigatórios em sequência)
@@ -120,6 +127,7 @@ export function runModernizationMigrations() {
     report.modernize.standalone = true;
     invalidateProjectIndex(); // invalidate cache: new standalone components were just created
     commitStep('standalone', 'standalone migration');
+    buildCheck('standalone');
   }
 
   // 3b. Garante standalone: true em pipes/directives que o schematic ignorou
@@ -127,6 +135,8 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 standalone  (fix missing standalone: true in pipes/directives)...`);
     report.modernize.standaloneFixed = fixMissingStandalone();
     removeImportsFromNonStandalone();
+    console.log(`\n  🔄 standalone  (move standalone components from NgModule declarations → imports)...`);
+    fixStandaloneInModuleDeclarations();
     console.log(`\n  🔄 standalone  (add missing Material/Angular imports)...`);
     report.modernize.standaloneFixed += fixStandaloneImports();
     console.log(`\n  🔄 standalone  (fix remaining NgModule imports for standalone:false components)...`);
@@ -134,6 +144,7 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 standalone  (fix circular imports with forwardRef)...`);
     fixCircularStandaloneImports();
     commitStep('standaloneFixed', 'standalone: true patch + imports');
+    buildCheck('standaloneFixed');
   }
 
   // 3c. control-flow: *ngIf/*ngFor/*ngSwitch → @if/@for/@switch
@@ -144,6 +155,7 @@ export function runModernizationMigrations() {
     );
     report.modernize.controlFlow = true;
     commitStep('controlFlow', 'control-flow');
+    buildCheck('controlFlow');
   }
 
   // 3d. [ngClass] → [class] bindings
@@ -152,6 +164,7 @@ export function runModernizationMigrations() {
     run('npx ng generate @angular/core:ngclass-to-class', { ignoreError: true });
     report.modernize.ngClassToClass = true;
     commitStep('ngClassToClass', 'ngClass → class');
+    buildCheck('ngClassToClass');
   }
 
   // 3e. [ngStyle] → [style] bindings
@@ -160,6 +173,7 @@ export function runModernizationMigrations() {
     run('npx ng generate @angular/core:ngstyle-to-style --best-effort-mode', { ignoreError: true });
     report.modernize.ngStyleToStyle = true;
     commitStep('ngStyleToStyle', 'ngStyle → style');
+    buildCheck('ngStyleToStyle');
   }
 
   // 4. app.config.ts + app.routes.ts
@@ -167,6 +181,7 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 app.config.ts + app.routes.ts...`);
     createAppConfigAndRoutes();
     commitStep('appConfig', 'app.config.ts + app.routes.ts');
+    buildCheck('appConfig');
   }
 
   // 4b. Lazy NgModule → routes file (resolve NG0200)
@@ -178,6 +193,7 @@ export function runModernizationMigrations() {
       convertRemainingRoutingModules();
     }
     commitStep('lazyRoutes', 'lazy routes');
+    buildCheck('lazyRoutes');
   }
 
   // 5. Vite/esbuild builder
@@ -185,6 +201,7 @@ export function runModernizationMigrations() {
     migrateToApplicationBuilder();
     report.modernize.builder = true;
     commitStep('builder', 'application builder');
+    buildCheck('builder');
   }
 
   // 5b. polyfills.ts → inline zone.js em angular.json
@@ -192,6 +209,7 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 polyfills  (inline zone.js em angular.json)...`);
     report.modernize.polyfillsInlined = inlinePolyfills();
     commitStep('polyfills', 'polyfills inline');
+    buildCheck('polyfills');
   }
 
   // 6. Moderniza tsconfig (ES2022 / bundler / useDefineForClassFields)
@@ -199,6 +217,7 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 tsconfig  (ES2022, moduleResolution→bundler)...`);
     report.modernize.tsconfigModernized = modernizeTsconfig();
     commitStep('tsconfig', 'tsconfig ES2022/bundler');
+    buildCheck('tsconfig');
   }
 
   // 6b. Path aliases
@@ -207,6 +226,7 @@ export function runModernizationMigrations() {
     addTsconfigPathAliases();
     report.modernize.pathAliases = true;
     commitStep('pathAliases', 'tsconfig path aliases');
+    buildCheck('pathAliases');
   }
 
   // 6c. ESLint
@@ -214,6 +234,7 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 ESLint  (@angular/eslint)...`);
     report.modernize.eslintAdded = addEslint();
     commitStep('eslint', 'ESLint');
+    buildCheck('eslint');
   }
 
   // 7. SCSS @import → @use as *
@@ -221,6 +242,7 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 SCSS  (@import → @use as *)...`);
     report.modernize.sassImports = fixSassImports();
     commitStep('sass', 'SCSS @use');
+    buildCheck('sass');
   }
 
   // 8. Remove .module.ts que não são mais referenciados
@@ -253,6 +275,7 @@ export function runModernizationMigrations() {
       }
     }
     commitStep('modules', 'remove unused modules');
+    buildCheck('modules');
   }
 
   // 9. styleUrls → styleUrl (Angular 19+)
@@ -260,6 +283,7 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 styleUrls → styleUrl...`);
     report.modernize.styleUrlFixed = fixStyleUrls();
     commitStep('styleUrl', 'styleUrls → styleUrl');
+    buildCheck('styleUrl');
   }
 
   // 10. self-closing tags
@@ -268,6 +292,7 @@ export function runModernizationMigrations() {
     run('npx ng generate @angular/core:self-closing-tag', { ignoreError: true });
     report.modernize.selfClosingTags = true;
     commitStep('selfClosing', 'self-closing tags');
+    buildCheck('selfClosing');
   }
 
   // 11. cleanup unused imports (deve rodar por último, após todas as migrações de template)
@@ -284,6 +309,7 @@ export function runModernizationMigrations() {
     }
     report.modernize.cleanupImports = true;
     commitStep('cleanupImports', 'cleanup unused imports');
+    buildCheck('cleanupImports');
   }
 
   // Build error fix loop — compilador Angular como oráculo para imports desconhecidos

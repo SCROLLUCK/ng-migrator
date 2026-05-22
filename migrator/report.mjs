@@ -1,13 +1,19 @@
 import { writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { destPath, report, opts, migratorDir } from './context.mjs';
 import { capture, formatRanges } from './utils.mjs';
 
 export function writeMigrationData() {
   if (!existsSync(destPath)) return;
   try {
+    const dataContent = JSON.stringify(report, null, 2) + '\n';
     const dataPath = join(migratorDir, 'MIGRATION-DATA.json');
-    writeFileSync(dataPath, JSON.stringify(report, null, 2) + '\n');
+    writeFileSync(dataPath, dataContent);
+
+    if (opts.splitVersions) {
+      const parentDataPath = join(dirname(destPath), 'MIGRATION-DATA.json');
+      writeFileSync(parentDataPath, dataContent);
+    }
   } catch {
     // non-fatal — UI polling will just show stale data
   }

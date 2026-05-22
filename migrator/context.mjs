@@ -18,19 +18,47 @@ const args = process.argv.slice(2);
 const sourceArg = args.find(a => !a.startsWith('--')) ?? '.';
 
 export const opts = {
-  to:       parseInt(args.includes('--to')   ? args[args.indexOf('--to')   + 1] : '21'),
-  from:     args.includes('--from') ? parseInt(args[args.indexOf('--from') + 1]) : null,
-  dest:     args.includes('--dest') ? resolve(args[args.indexOf('--dest')  + 1]) : null,
-  dryRun:   args.includes('--dry-run'),
-  modernize: !args.includes('--no-modernize'),
+  to:            parseInt(args.includes('--to')   ? args[args.indexOf('--to')   + 1] : '21'),
+  from:          args.includes('--from') ? parseInt(args[args.indexOf('--from') + 1]) : null,
+  dest:          args.includes('--dest') ? resolve(args[args.indexOf('--dest')  + 1]) : null,
+  dryRun:        args.includes('--dry-run'),
+  modernize:     !args.includes('--no-modernize'),
+  splitVersions: args.includes('--split-versions'),
 };
 
 // Steps to skip (passed via env var from ng-migrator-ui or --skip-steps CLI)
 export const skipSteps = new Set((process.env.NG_MIGRATOR_SKIP_STEPS ?? '').split(',').filter(Boolean));
 
 export const sourcePath = resolve(sourceArg);
-export const destPath   = opts.dest ?? `${sourcePath}-ng${opts.to}`;
-export const migratorDir = join(destPath, '.ng-migrator');
+
+// Dynamically detect source version from source project's package.json
+let detectedVersion = 11;
+try {
+  const pkgPath = join(sourcePath, 'package.json');
+  if (existsSync(pkgPath)) {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    const v = pkg.dependencies?.['@angular/core'] ?? pkg.devDependencies?.['@angular/core'] ?? '';
+    const m = v.match(/(\d+)/);
+    if (m) detectedVersion = parseInt(m[1], 10);
+  }
+} catch (e) {}
+
+export let destPath = '';
+if (opts.splitVersions) {
+  const parentDir = join(dirname(sourcePath), `${basename(sourcePath)}-ng-versions`);
+  const startVer = opts.from ?? detectedVersion;
+  destPath = join(parentDir, `ng${startVer}`);
+} else {
+  destPath = opts.dest ?? `${sourcePath}-ng${opts.to}`;
+}
+
+export let migratorDir = join(destPath, '.ng-migrator');
+
+export function setDestPath(newPath) {
+  destPath = resolve(newPath);
+  migratorDir = join(destPath, '.ng-migrator');
+  report.destPath = destPath;
+}
 
 // Accumulated during the pipeline; written to MIGRATION-REPORT.md at the end.
 export const report = {
@@ -83,3 +111,55 @@ export const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.angular', 'c
 // value when setDiffDb() is called.
 export let diffDb = null;
 export function setDiffDb(db) { diffDb = db; }
+
+// ─── Configuração e Contexto Dinâmico de Versões Node ────────────────────────
+export let currentAngularVersion = null;
+export function setCurrentAngularVersion(v) {
+  currentAngularVersion = v;
+}
+
+export const config = {
+  nodeVersionManager: 'docker', // Default to docker
+  nodeVersions: {
+    '11': '14',
+    '12': '14',
+    '13': '16',
+    '14': '16',
+    '15': '18',
+    '16': '18',
+    '17': '20',
+    '18': '20',
+    '19': '22',
+    '20': '22',
+    '21': '22',
+  },
+  customManagerCommand: '',
+};
+
+// Check for custom config in current dir or source directory
+const configPaths = [
+  join(process.cwd(), 'ng-migrator.config.json'),
+  join(sourcePath, 'ng-migrator.config.json')
+];
+
+for (const p of configPaths) {
+  if (existsSync(p)) {
+    try {
+      const userConfig = JSON.parse(readFileSync(p, 'utf8'));
+      if (userConfig.nodeVersionManager) {
+        config.nodeVersionManager = userConfig.nodeVersionManager;
+      }
+      if (userConfig.nodeVersions) {
+        config.nodeVersions = { ...config.nodeVersions, ...userConfig.nodeVersions };
+      }
+      if (userConfig.customManagerCommand) {
+        config.customManagerCommand = userConfig.customManagerCommand;
+      }
+      console.log(`\n⚙  Configuração carregada de: ${p}`);
+      break;
+    } catch (e) {
+      console.error(`Erro ao ler arquivo de configuração em ${p}:`, e);
+    }
+  }
+}
+

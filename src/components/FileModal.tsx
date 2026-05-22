@@ -2,15 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { StepDetail } from '../types'
 import { StepFileList } from './StepFileList'
+import { useTranslation } from '../lib/i18n'
 
 interface Props {
   title: string
   files: StepDetail[]
   destPath: string
   onClose: () => void
+  errorsByFile?: Record<string, number | string[]>
 }
 
-export function FileModal({ title, files, destPath, onClose }: Props) {
+export function FileModal({ title, files, destPath, onClose, errorsByFile }: Props) {
+  const { t } = useTranslation()
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -36,15 +39,15 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
         className="bg-surface border border-[#2A2A45] rounded-[12px] w-[80vw] h-[90vh] flex flex-col shadow-[0_24px_64px_rgba(0,0,0,0.6)]"
       >
         <div className="bg-surface2 border-b border-[#2A2A45] rounded-t-[12px] px-4 py-3 flex items-center gap-3 shrink-0">
-          <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">Files changed</span>
+          <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">{t('filesChanged')}</span>
           <span className="text-[0.82rem] text-text font-semibold">{title}</span>
           <span className="bg-blue/12 text-blue border border-blue/25 rounded px-2 py-px text-[0.68rem] font-semibold shrink-0">
-            {matchCount}{query ? ` / ${files.length}` : ''} file{files.length !== 1 ? 's' : ''}
+            {query ? `${matchCount} / ` : ''}{t('filesCount', { count: files.length })}
           </span>
           <button
             onClick={onClose}
             className="ml-auto bg-transparent border border-[#2A2A45] rounded-[6px] text-[#7070A0] cursor-pointer px-2 py-0.5 text-[0.85rem] leading-none shrink-0 hover:text-text hover:border-[#3A3A65] transition-colors"
-            title="Close (Esc)"
+            title={t('closeEsc')}
           >
             ✕
           </button>
@@ -54,7 +57,7 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
           <input
             ref={inputRef}
             type="text"
-            placeholder="Filter by filename…"
+            placeholder={t('filterByFilename')}
             value={query}
             onChange={e => setQuery(e.target.value)}
             className="w-full bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] text-text px-[0.65rem] py-[0.4rem] text-[0.82rem] outline-none font-mono box-border focus:border-blue transition-colors"
@@ -62,7 +65,7 @@ export function FileModal({ title, files, destPath, onClose }: Props) {
         </div>
 
         <div className="overflow-y-auto overflow-x-hidden flex flex-col">
-          <StepFileList files={files} destPath={destPath} query={query} />
+          <StepFileList files={files} destPath={destPath} query={query} errorsByFile={errorsByFile} />
         </div>
       </div>
     </div>,

@@ -2,12 +2,12 @@ import { join } from 'path';
 import { destPath } from './context.mjs';
 import { readJson } from './utils.mjs';
 
-export function getPkg() {
-  return readJson(join(destPath, 'package.json'));
+export function getPkg(dir = destPath) {
+  return readJson(join(dir, 'package.json'));
 }
 
-export function hasPackage(name) {
-  const pkg = getPkg();
+export function hasPackage(name, dir = destPath) {
+  const pkg = getPkg(dir);
   return !!(pkg.dependencies?.[name] ?? pkg.devDependencies?.[name]);
 }
 
@@ -16,8 +16,8 @@ export function getMajor(versionStr = '') {
   return m ? parseInt(m[1]) : 0;
 }
 
-export function getInstalledMajor(name) {
-  const pkg = getPkg();
+export function getInstalledMajor(name, dir = destPath) {
+  const pkg = getPkg(dir);
   const v = pkg.dependencies?.[name] ?? pkg.devDependencies?.[name] ?? '';
   return getMajor(v);
 }

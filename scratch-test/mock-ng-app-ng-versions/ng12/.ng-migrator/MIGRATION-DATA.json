@@ -1,0 +1,49 @@
+{
+  "date": "2026-05-22",
+  "sourceVersion": 11,
+  "targetVersion": 13,
+  "sourcePath": "/home/lucas/REPOS/ng-migrator/scratch-test/mock-ng-app",
+  "destPath": "/home/lucas/REPOS/ng-migrator/scratch-test/mock-ng-app-ng-versions/ng11",
+  "initialCommit": "d7f65baa3b0e4f7638e5d557636428849f13975d",
+  "ngUpdateSteps": [],
+  "materialLegacyFixed": 0,
+  "modernize": {
+    "inject": false,
+    "signals": false,
+    "reservedKeywordsFixed": 0,
+    "untypedFormsFixed": 0,
+    "throwErrorFixed": 0,
+    "polyfillsInlined": false,
+    "styleUrlFixed": 0,
+    "controlFlow": false,
+    "ngClassToClass": false,
+    "ngStyleToStyle": false,
+    "selfClosingTags": false,
+    "cleanupImports": false,
+    "standalone": false,
+    "standaloneFixed": 0,
+    "appConfig": false,
+    "appRoutes": false,
+    "lazyRoutesConverted": 0,
+    "mainSimplified": false,
+    "builder": false,
+    "pathAliases": false,
+    "tsconfigModernized": false,
+    "eslintAdded": false,
+    "lintFixed": 0,
+    "sassImports": 0,
+    "modulesRemoved": 0,
+    "flexLayoutMigrated": null
+  },
+  "filesCreated": [],
+  "notes": [],
+  "details": {},
+  "buildChecks": {
+    "ngUpdate_11": {
+      "total": 0,
+      "new": [],
+      "fixed": [],
+      "errorsByFile": {}
+    }
+  }
+}

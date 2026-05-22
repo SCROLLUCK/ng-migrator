@@ -11,7 +11,7 @@
 
 import { createServer } from 'http';
 import { readFileSync, existsSync, statSync, rmSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, basename } from 'path';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { spawn, spawnSync } from 'child_process';
@@ -82,6 +82,8 @@ const defaultMigrationData = {
 };
 
 let currentMigrationData = { ...defaultMigrationData };
+let activeSplitVersions = false;
+let parentVersionsDir = '';
 
 // ─── ng serve after migration ─────────────────────────────────────────────────
 
@@ -154,6 +156,9 @@ function startServe(cwd) {
 
 function broadcast(line) {
   terminalLines.push(line);
+  if (terminalLines.length > 2000) {
+    terminalLines.shift();
+  }
   const payload = `data: ${JSON.stringify(line)}\n\n`;
   for (const res of sseClients) {
     try {
@@ -239,7 +244,8 @@ const server = createServer(async (req, res) => {
   if (path === '/api/status' && req.method === 'GET') {
     // Try to refresh from MIGRATION-DATA.json if migration is running
     if (currentMigrationData.destPath) {
-      const fresh = readMigrationData(currentMigrationData.destPath);
+      const pollPath = activeSplitVersions ? parentVersionsDir : currentMigrationData.destPath;
+      const fresh = readMigrationData(pollPath);
       if (fresh) {
         currentMigrationData = {
           ...fresh,
@@ -297,7 +303,7 @@ const server = createServer(async (req, res) => {
     }
 
     const body = await parseBody(req);
-    const { source, to, from, dest, modernize, steps, cleanDest, runAfter } = body;
+    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions } = body;
 
     if (!source) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -317,9 +323,19 @@ const server = createServer(async (req, res) => {
     if (from) args.push('--from', String(from));
     if (dest) args.push('--dest', dest);
     if (modernize === false) args.push('--no-modernize');
+    if (splitVersions) args.push('--split-versions');
 
-    // Determine destPath for data polling
-    const destPath = dest || `${source}-ng${to || 21}`;
+    activeSplitVersions = !!splitVersions;
+    if (activeSplitVersions) {
+      parentVersionsDir = join(dirname(source), `${basename(source)}-ng-versions`);
+    } else {
+      parentVersionsDir = '';
+    }
+
+    // Determine destPath for data polling / deletion
+    const destPath = activeSplitVersions
+      ? parentVersionsDir
+      : (dest || `${source}-ng${to || 21}`);
 
     // Delete destination folder if requested
     if (cleanDest && existsSync(destPath)) {
@@ -384,22 +400,27 @@ const server = createServer(async (req, res) => {
       migrationProcess = null;
 
       // Final data read
-      const fresh = readMigrationData(destPath);
+      const pollPath = activeSplitVersions ? parentVersionsDir : destPath;
+      const fresh = readMigrationData(pollPath);
       if (fresh) {
         currentMigrationData = { ...fresh, status: code === 0 ? 'done' : 'error' };
       } else {
         currentMigrationData.status = code === 0 ? 'done' : 'error';
       }
 
+      const serveDestPath = activeSplitVersions
+        ? join(parentVersionsDir, `ng${to || 21}`)
+        : destPath;
+
       if (code === 0 && runAfter) {
-        startServe(destPath);
+        startServe(serveDestPath);
       } else {
         broadcastDone(code);
       }
     });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, dest: destPath }));
+    res.end(JSON.stringify({ ok: true, dest: activeSplitVersions ? join(parentVersionsDir, `ng${to || 21}`) : destPath }));
     return;
   }
 

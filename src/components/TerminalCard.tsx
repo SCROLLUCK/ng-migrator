@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '../lib/i18n'
 
 interface Props {
   lines: string[]
@@ -7,6 +8,7 @@ interface Props {
 }
 
 export function TerminalCard({ lines, onClear }: Props) {
+  const { t } = useTranslation()
   const [collapsed, setCollapsed] = useState(false)
   const [pendingLines, setPendingLines] = useState(0)
   const [showBtn, setShowBtn] = useState(false)
@@ -57,30 +59,30 @@ export function TerminalCard({ lines, onClear }: Props) {
   }
 
   const btnLabel = pendingLines > 0
-    ? `${pendingLines} new line${pendingLines !== 1 ? 's' : ''}`
-    : 'Scroll to bottom'
+    ? t('terminalNewLines', { count: pendingLines })
+    : t('scrollToBottom')
 
   return (
     <div className="bg-surface border border-[#2A2A45] rounded-[10px] overflow-hidden">
       <div className="bg-surface2 border-b border-[#2A2A45] px-4 py-[0.55rem] flex items-center gap-[0.6rem]">
         <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">
-          Terminal
+          {t('terminalTitle')}
         </span>
         <span className="text-[0.68rem] text-[#7070A0] ml-1">
-          {lines.length} line{lines.length !== 1 ? 's' : ''}
+          {t('terminalLines', { count: lines.length })}
         </span>
         <div className="ml-auto flex gap-2">
           <button
             onClick={onClear}
             className="bg-white/5 border border-[#2A2A45] rounded text-[#7070A0] text-[0.68rem] px-2 py-0.5 cursor-pointer hover:text-text hover:border-[#3A3A65] transition-colors"
           >
-            Clear
+            {t('clear')}
           </button>
           <button
             onClick={() => setCollapsed((c) => !c)}
             className="bg-white/5 border border-[#2A2A45] rounded text-[#7070A0] text-[0.68rem] px-2 py-0.5 cursor-pointer hover:text-text hover:border-[#3A3A65] transition-colors"
           >
-            {collapsed ? 'Expand' : 'Collapse'}
+            {collapsed ? t('expand') : t('collapse')}
           </button>
         </div>
       </div>
@@ -93,7 +95,7 @@ export function TerminalCard({ lines, onClear }: Props) {
             className="bg-[#0A0A0A] font-mono text-[0.78rem] leading-[1.55] px-4 py-3 max-h-[40vh] overflow-y-auto text-[#D0D0E0]"
           >
             {lines.length === 0 ? (
-              <span className="text-[#3A3A60]">Waiting for output...</span>
+              <span className="text-[#3A3A60]">{t('waitingOutput')}</span>
             ) : (
               lines.map((line, i) => (
                 <div key={i} className="whitespace-pre-wrap break-all">

@@ -6,6 +6,13 @@ export interface StepDetail {
   h1?: string;
 }
 
+export interface BuildCheck {
+  total: number;
+  new: string[];
+  fixed: string[];
+  errorsByFile?: Record<string, number | string[]>;
+}
+
 export interface MigrationData {
   status: 'idle' | 'running' | 'done' | 'error' | 'serving';
   sourceVersion: number | null;
@@ -43,6 +50,7 @@ export interface MigrationData {
     cleanupImports: boolean;
   };
   details: Record<string, StepDetail[]>;
+  buildChecks?: Record<string, BuildCheck>;
   notes: string[];
   filesCreated: string[];
 }

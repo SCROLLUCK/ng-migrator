@@ -3,6 +3,7 @@ import type { MigrationData } from '../types'
 import { TerminalCard } from './TerminalCard'
 import { ModernizationCard } from './ModernizationCard'
 import { NgUpdateCard } from './NgUpdateCard'
+import { useTranslation } from '../lib/i18n'
 
 interface Props {
   data: MigrationData
@@ -11,6 +12,7 @@ interface Props {
 }
 
 export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
+  const { t } = useTranslation()
   const [query, setQuery] = useState('')
 
   const hasDetails = Object.keys(data.details).length > 0
@@ -31,7 +33,7 @@ export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
           </svg>
           <input
             type="text"
-            placeholder="Filter steps by filename…"
+            placeholder={t('filterByFilename')}
             value={query}
             onChange={e => setQuery(e.target.value)}
             className="flex-1 bg-transparent outline-none text-[0.82rem] text-text placeholder:text-[#3A3A60] font-mono"

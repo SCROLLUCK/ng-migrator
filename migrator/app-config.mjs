@@ -1,5 +1,5 @@
 import {
-  readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync,
+  readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, statSync,
 } from 'fs';
 import { join } from 'path';
 import { destPath, report } from './context.mjs';
@@ -14,7 +14,81 @@ export function extractImportProvidersFromModules(content) {
     if (content[i] === '(') depth++;
     else if (content[i] === ')') { if (depth === 0) { end = i; break; } depth--; }
   }
-  return content.slice(start, end).split(',').map(m => m.trim()).filter(Boolean);
+  return splitTopLevel(content.slice(start, end));
+}
+
+// Split a comma-separated string respecting nested parentheses/brackets/braces.
+function splitTopLevel(str) {
+  const parts = [];
+  let depth = 0, start = 0;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (c === '(' || c === '{' || c === '[') depth++;
+    else if (c === ')' || c === '}' || c === ']') depth--;
+    else if (c === ',' && depth === 0) {
+      const part = str.slice(start, i).trim();
+      if (part) parts.push(part);
+      start = i + 1;
+    }
+  }
+  const last = str.slice(start).trim();
+  if (last) parts.push(last);
+  return parts;
+}
+
+// Removes bootstrap-level modules from root app.component.ts imports array.
+// These modules are provided by bootstrapApplication / app.config.ts and must NOT
+// be in a standalone component's imports (causes double-init of animation system etc.)
+function fixRootComponentBootstrapImports(appDir) {
+  const BOOTSTRAP_MODS = new Set([
+    'BrowserModule', 'BrowserAnimationsModule', 'NoopAnimationsModule',
+    'HttpClientModule', 'HttpClientJsonpModule',
+  ]);
+  const compPath = join(appDir, 'app.component.ts');
+  if (!existsSync(compPath)) return;
+  let src = readFileSync(compPath, 'utf8');
+  if (!src.includes('standalone: true')) return;
+
+  // Find the imports: [...] array in @Component
+  const compIdx = src.indexOf('@Component(');
+  if (compIdx === -1) return;
+  let depth = 0, compEnd = -1;
+  for (let i = src.indexOf('(', compIdx); i < src.length; i++) {
+    if (src[i] === '(') depth++;
+    else if (src[i] === ')') { if (--depth === 0) { compEnd = i; break; } }
+  }
+  if (compEnd === -1) return;
+  const body = src.slice(compIdx, compEnd + 1);
+  const impM = body.match(/\bimports\s*:\s*\[/);
+  if (!impM) return;
+  const arrBase = compIdx + impM.index + impM[0].length - 1;
+  let bd = 0, arrEnd = -1;
+  for (let i = arrBase; i < src.length; i++) {
+    if (src[i] === '[') bd++;
+    else if (src[i] === ']') { if (--bd === 0) { arrEnd = i; break; } }
+  }
+  if (arrEnd === -1) return;
+  const arrContent = src.slice(arrBase + 1, arrEnd);
+  const filtered = arrContent.split(',').map(s => s.trim()).filter(s => s && !BOOTSTRAP_MODS.has(s));
+  if (filtered.length === arrContent.split(',').map(s => s.trim()).filter(Boolean).length) return;
+
+  const removed = arrContent.split(',').map(s => s.trim()).filter(s => s && BOOTSTRAP_MODS.has(s));
+  const newArr = filtered.length ? `\n    ${filtered.join(',\n    ')}\n` : '';
+  src = src.slice(0, arrBase + 1) + newArr + src.slice(arrEnd);
+
+  // Remove orphaned ES import statements
+  for (const sym of removed) {
+    const re = new RegExp(`\\nimport\\s*\\{[^}]*\\b${sym}\\b[^}]*\\}\\s*from\\s*['"][^'"]+['"];`);
+    const before = src;
+    src = src.replace(re, '');
+    if (src === before) {
+      // Multi-symbol import — just remove this symbol from the braces
+      src = src.replace(new RegExp(`\\b${sym}\\b\\s*,?\\s*`), '').replace(/,\s*\}/g, ' }').replace(/\{\s*,\s*/g, '{ ');
+    }
+  }
+
+  writeFileSync(compPath, src);
+  console.log(`  ↳ app.component.ts: removidos ${removed.join(', ')} (bootstrap-level)`);
 }
 
 export function createAppConfigAndRoutes() {
@@ -41,20 +115,64 @@ export function createAppConfigAndRoutes() {
     });
     if (deduped.length !== cfgLines.length) { cfg = deduped.join('\n'); cfgChanged = true; }
 
-    // Find symbols used in importProvidersFrom(...) that have no import statement.
-    const ipfMatch = cfg.match(/importProvidersFrom\s*\(([^)]+)\)/s);
-    if (ipfMatch) {
-      const candidatePaths = [
-        mainPath,
-        join(appDir, 'app.module.ts'),
-        join(appDir, 'app-routing.module.ts'),
-      ];
-      // Also include any *.module.ts directly under src/app/
-      try {
-        for (const f of readdirSync(appDir)) {
-          if (f.endsWith('.module.ts')) candidatePaths.push(join(appDir, f));
+    // Strip bootstrap-only modules and standalone directives from importProvidersFrom().
+    // - BrowserModule: always provided by bootstrapApplication
+    // - BrowserAnimationsModule / NoopAnimationsModule: replaced by provideAnimations*
+    // - Standalone directives (RouterOutlet, RouterLink, etc.): invalid inside importProvidersFrom
+    {
+      const STANDALONE_DIRECTIVES = new Set([
+        'RouterOutlet', 'RouterLink', 'RouterLinkActive', 'RouterLinkWithHref',
+        'NgIf', 'NgFor', 'NgSwitch', 'NgSwitchCase', 'NgSwitchDefault',
+        'NgClass', 'NgStyle', 'NgTemplateOutlet', 'NgComponentOutlet',
+      ]);
+      const ALWAYS_REMOVE = new Set(['BrowserModule']);
+      const ipfAllMatch = cfg.match(/importProvidersFrom\s*\(([^)]*(?:\([^)]*\)[^)]*)*)\)/s);
+      if (ipfAllMatch) {
+        const hasAnimationsProvider = /provideAnimations(?:Async)?\s*\(/.test(cfg);
+        const syms = splitTopLevel(ipfAllMatch[1]);
+        // Extract just the leading identifier of each arg (e.g. "NgxMaskModule" from "NgxMaskModule.forRoot(...)")
+        const filtered = syms.filter(s => {
+          const id = s.match(/^([A-Z][A-Za-z0-9_]*)/)?.[1];
+          if (!id) return true;
+          if (ALWAYS_REMOVE.has(id)) return false;
+          if (STANDALONE_DIRECTIVES.has(id)) return false;
+          if (hasAnimationsProvider && (id === 'BrowserAnimationsModule' || id === 'NoopAnimationsModule')) return false;
+          return true;
+        });
+        if (filtered.length !== syms.length) {
+          const removed = syms.filter(s => !filtered.includes(s)).map(s => s.match(/^([A-Z][A-Za-z0-9_]*)/)?.[1] ?? s);
+          if (filtered.length === 0) {
+            cfg = cfg.replace(/,?\s*importProvidersFrom\s*\([^)]*(?:\([^)]*\)[^)]*)*\)/s, '');
+            if (!cfg.includes('importProvidersFrom(')) {
+              cfg = cfg.replace(/,\s*importProvidersFrom\b/, '').replace(/\bimportProvidersFrom,\s*/, '');
+            }
+          } else {
+            cfg = cfg.replace(ipfAllMatch[0], `importProvidersFrom(${filtered.join(', ')})`);
+          }
+          // NOTE: do NOT remove the ES import lines — they may import other used symbols.
+          // Unused imports are just warnings, not errors.
+          cfgChanged = true;
+          console.log(`  ↳ importProvidersFrom: removidos ${removed.join(', ')}`);
         }
-      } catch { /* ignore */ }
+      }
+    }
+
+    // Find symbols used in importProvidersFrom(...) that have no import statement.
+    const ipfMatch = cfg.match(/importProvidersFrom\s*\(([^)]*(?:\([^)]*\)[^)]*)*)\)/s);
+    if (ipfMatch) {
+      // Scan entire src/ tree for import statements (app.module.ts may have been deleted by the time we run)
+      const srcRoot = join(destPath, 'src');
+      const candidatePaths = [mainPath];
+      function scanCandidates(dir) {
+        try {
+          for (const f of readdirSync(dir)) {
+            const full = join(dir, f);
+            if (statSync(full).isDirectory()) { scanCandidates(full); continue; }
+            if (f.endsWith('.module.ts') || f.endsWith('.constant.ts') || f.endsWith('.constants.ts')) candidatePaths.push(full);
+          }
+        } catch { /* ignore */ }
+      }
+      scanCandidates(srcRoot);
       const candidateContent = candidatePaths
         .filter(p => existsSync(p))
         .map(p => readFileSync(p, 'utf8'))
@@ -97,6 +215,7 @@ export function createAppConfigAndRoutes() {
     }
 
     if (cfgChanged) { writeFileSync(configPath, cfg); console.log('  ↳ app.config.ts deduplicado/corrigido'); }
+    fixRootComponentBootstrapImports(appDir);
     return;
   }
 
@@ -164,20 +283,58 @@ export function createAppConfigAndRoutes() {
 
   if (unknownMods.length > 0) {
     configImports[0] = `import { ApplicationConfig, importProvidersFrom, provideZoneChangeDetection } from '@angular/core';`;
-    providers.push(`importProvidersFrom(${unknownMods.join(', ')})`);
-    for (const mod of unknownMods) {
-      const re = new RegExp(`import\\s*\\{[^}]*\\b${mod}\\b[^}]*\\}\\s*from\\s*['"][^'"]+['"]`);
+    // Strip standalone directives before writing
+    const STANDALONE_STRIP = new Set([
+      'RouterOutlet', 'RouterLink', 'RouterLinkActive', 'RouterLinkWithHref',
+      'NgIf', 'NgFor', 'NgSwitch', 'NgSwitchCase', 'NgSwitchDefault', 'NgClass', 'NgStyle',
+      'NgTemplateOutlet', 'NgComponentOutlet', 'BrowserModule', 'BrowserAnimationsModule',
+      'NoopAnimationsModule',
+    ]);
+    const filteredMods = unknownMods.filter(m => {
+      const id = m.match(/^([A-Z][A-Za-z0-9_]*)/)?.[1];
+      return id && !STANDALONE_STRIP.has(id);
+    });
+    providers.push(`importProvidersFrom(${filteredMods.join(', ')})`);
+
+    // Collect all uppercase identifiers used across the entire importProvidersFrom content
+    const ipfContent = filteredMods.join(', ');
+    const allSyms = new Set([...ipfContent.matchAll(/\b([A-Z][A-Za-z0-9_]*)\b/g)].map(m => m[1]));
+    const addedImports = new Set();
+    function addImportForSym(sym) {
+      if (addedImports.has(sym)) return;
+      if (configImports.some(l => new RegExp(`\\b${sym}\\b`).test(l))) return;
+      const re = new RegExp(`import\\s*\\{[^}]*\\b${sym}\\b[^}]*\\}\\s*from\\s*['"][^'"]+['"]`);
       const m = mainContent.match(re);
       if (m) {
-        // main.ts is at src/, app.config.ts is at src/app/ — adjust relative paths one level up
-        const adjusted = m[0].replace(/from\s*'\.\/app\//g, `from './`).replace(/from\s*"\.\/app\//g, `from "./`);
-        configImports.push(adjusted + ';');
+        const adjusted = m[0]
+          .replace(/from\s*'\.\/app\//g, `from './`)
+          .replace(/from\s*"\.\/app\//g, `from "./`);
+        const key = adjusted.match(/from\s*['"][^'"]+['"]/)?.[0] + adjusted.match(/\{[^}]+\}/)?.[0];
+        if (key && !addedImports.has(key)) {
+          configImports.push(adjusted + ';');
+          addedImports.add(key);
+          // Also mark all symbols in this import as handled
+          for (const s of (adjusted.match(/\{([^}]+)\}/)?.[1] ?? '').split(',').map(x => x.trim())) {
+            if (s) addedImports.add(s);
+          }
+        }
       }
     }
+    for (const sym of allSyms) addImportForSym(sym);
   }
 
+  // Deduplicate configImports (same symbol may be added multiple times)
+  const seenImpKeys = new Set();
+  const dedupedImports = configImports.filter(line => {
+    if (!/^\s*import\s+/.test(line)) return true;
+    const key = line.trim().replace(/"/g, "'");
+    if (seenImpKeys.has(key)) return false;
+    seenImpKeys.add(key);
+    return true;
+  });
+
   writeFileSync(configPath, [
-    ...configImports,
+    ...dedupedImports,
     ``,
     `export const appConfig: ApplicationConfig = {`,
     `  providers: [`,
@@ -211,4 +368,5 @@ export function createAppConfigAndRoutes() {
   ].join('\n'));
   console.log('  ↳ main.ts simplificado');
   report.modernize.mainSimplified = true;
+  fixRootComponentBootstrapImports(appDir);
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import type { MigrationData } from '../types'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '../lib/i18n'
 
 const STEP_LABELS: Record<string, string> = {
   flexLayout: '@angular/flex-layout → Tailwind CSS',
@@ -40,6 +41,7 @@ interface Props {
 }
 
 export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }: Props) {
+  const { t } = useTranslation()
   const [sourcePath, setSourcePath] = useState(() => localStorage.getItem('ng-migrator.sourcePath') ?? '')
   const [targetVersion, setTargetVersion] = useState(() => {
     const v = localStorage.getItem('ng-migrator.targetVersion')
@@ -48,11 +50,12 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   const [modernize, setModernize] = useState(() => localStorage.getItem('ng-migrator.modernize') !== 'false')
   const [cleanDest, setCleanDest] = useState(() => localStorage.getItem('ng-migrator.cleanDest') !== 'false')
   const [runAfter, setRunAfter] = useState(() => localStorage.getItem('ng-migrator.runAfter') === 'true')
+  const [splitVersions, setSplitVersions] = useState(() => localStorage.getItem('ng-migrator.splitVersions') === 'true')
   const [stepsOpen, setStepsOpen] = useState(false)
   const [selectedSteps, setSelectedSteps] = useState<Set<string>>(new Set(ALL_STEPS))
   const [error, setError] = useState<string | null>(null)
   const [browsing, setBrowsing] = useState(false)
-  const [loadPath, setLoadPath] = useState('')
+  const [loadPath, setLoadPath] = useState(() => localStorage.getItem('ng-migrator.loadPath') ?? '')
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loadBrowsing, setLoadBrowsing] = useState(false)
 
@@ -61,6 +64,8 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   useEffect(() => { localStorage.setItem('ng-migrator.modernize', String(modernize)) }, [modernize])
   useEffect(() => { localStorage.setItem('ng-migrator.cleanDest', String(cleanDest)) }, [cleanDest])
   useEffect(() => { localStorage.setItem('ng-migrator.runAfter', String(runAfter)) }, [runAfter])
+  useEffect(() => { localStorage.setItem('ng-migrator.splitVersions', String(splitVersions)) }, [splitVersions])
+  useEffect(() => { localStorage.setItem('ng-migrator.loadPath', loadPath) }, [loadPath])
 
   const handleBrowse = async () => {
     setBrowsing(true)
@@ -91,19 +96,19 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   const handleLoad = async () => {
     setLoadError(null)
     if (!loadPath.trim()) {
-      setLoadError('Enter the migrated project path.')
+      setLoadError(t('enterMigratedPath'))
       return
     }
     try {
       const res = await fetch(`/api/load-migration?path=${encodeURIComponent(loadPath.trim())}`)
       const json = await res.json()
       if (!res.ok) {
-        setLoadError(json.error || 'Could not load migration data.')
+        setLoadError(json.error || t('couldNotLoadMigration'))
         return
       }
       onLoadMigration(json)
     } catch {
-      setLoadError('Failed to connect to server.')
+      setLoadError(t('failedConnectServer'))
     }
   }
 
@@ -119,7 +124,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   const handleStart = async () => {
     setError(null)
     if (!sourcePath.trim()) {
-      setError('Please enter a source project path.')
+      setError(t('enterSourcePath'))
       return
     }
 
@@ -136,16 +141,17 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           steps: skippedSteps,
           cleanDest,
           runAfter,
+          splitVersions,
         }),
       })
       const json = await res.json()
       if (!res.ok) {
-        setError(json.error || 'Failed to start migration.')
+        setError(json.error || t('failedStartMigration'))
         return
       }
       onStart()
     } catch {
-      setError('Failed to connect to server.')
+      setError(t('failedConnectServer'))
     }
   }
 
@@ -158,11 +164,11 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
     <div className="bg-surface border border-[#2A2A45] rounded-[10px] overflow-hidden shrink-0">
       <div className="bg-surface2 border-b border-[#2A2A45] px-4 py-[0.55rem] flex items-center gap-[0.6rem]">
         <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">
-          Configuration
+          {t('configTitle')}
         </span>
         {data.sourcePath && (
           <span className="ml-auto bg-red/18 text-red border border-red/30 rounded px-1.75 py-px text-[0.68rem] font-semibold">
-            {data.status}
+            {t(data.status === 'running' ? 'statusRunning' : data.status === 'serving' ? 'statusServing' : data.status === 'done' ? 'statusDone' : data.status === 'error' ? 'statusError' : 'statusIdle')}
           </span>
         )}
       </div>
@@ -171,7 +177,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
         {/* Source path */}
         <div>
           <label className="text-[0.78rem] text-[#7070A0] block mb-1">
-            Source project path
+            {t('sourceProjectPath')}
           </label>
           <div className="flex gap-1.5">
             <input
@@ -185,7 +191,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
             <button
               onClick={handleBrowse}
               disabled={isRunning || browsing}
-              title="Selecionar pasta"
+              title={t('selectFolder')}
               className={cn(
                 'bg-surface2 border border-[#2A2A45] rounded-[6px] px-[0.65rem] text-base flex items-center shrink-0 transition-colors',
                 isRunning || browsing ? 'text-[#4A4A70] cursor-not-allowed' : 'text-[#7070A0] cursor-pointer hover:text-text',
@@ -199,7 +205,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
         {/* Target version */}
         <div>
           <label className="text-[0.78rem] text-[#7070A0] block mb-1">
-            Target version
+            {t('targetVersion')}
           </label>
           <select
             className={cn(
@@ -216,11 +222,42 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           </select>
         </div>
 
+        {/* Migration Strategy */}
+        <div>
+          <label className="text-[0.78rem] text-[#7070A0] block mb-1.5">
+            {t('migrationStrategy')}
+          </label>
+          <div className="flex flex-col gap-2 bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] p-2.5">
+            <label className={cn("flex items-center gap-2 text-[0.82rem] text-text", isRunning ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+              <input
+                type="radio"
+                name="migrationStrategy"
+                checked={!splitVersions}
+                onChange={() => setSplitVersions(false)}
+                disabled={isRunning}
+                className={cn('accent-red w-3.75 h-3.75', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
+              />
+              <span>{t('singleFolder')}</span>
+            </label>
+            <label className={cn("flex items-center gap-2 text-[0.82rem] text-text", isRunning ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+              <input
+                type="radio"
+                name="migrationStrategy"
+                checked={splitVersions}
+                onChange={() => setSplitVersions(true)}
+                disabled={isRunning}
+                className={cn('accent-red w-3.75 h-3.75', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
+              />
+              <span>{t('splitVersions')}</span>
+            </label>
+          </div>
+        </div>
+
         {/* Toggles */}
         {[
-          { id: 'modernize', label: 'Run modernization steps', checked: modernize, onChange: setModernize },
-          { id: 'cleanDest', label: 'Delete destination folder if it exists', checked: cleanDest, onChange: setCleanDest },
-          { id: 'runAfter', label: 'Install & serve after migration', checked: runAfter, onChange: setRunAfter },
+          { id: 'modernize', label: t('runModernization'), checked: modernize, onChange: setModernize },
+          { id: 'cleanDest', label: t('deleteDestFolder'), checked: cleanDest, onChange: setCleanDest },
+          { id: 'runAfter', label: t('installServe'), checked: runAfter, onChange: setRunAfter },
         ].map(({ id, label, checked, onChange }) => (
           <div key={id} className="flex items-center gap-2">
             <input
@@ -251,7 +288,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
                 isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-[#3A3A65] hover:text-text',
               )}
             >
-              <span>Modernization steps</span>
+              <span>{t('modernizationSteps')}</span>
               <span>{stepsOpen ? '▲' : '▾'}</span>
             </button>
             {stepsOpen && (
@@ -292,21 +329,21 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
             onClick={handleStart}
             className="w-full bg-linear-to-br from-[#2E7D32] to-green text-white border-none rounded-[6px] py-[0.6rem] text-[0.88rem] font-semibold cursor-pointer hover:opacity-90 transition-opacity"
           >
-            Start Migration
+            {t('startMigration')}
           </button>
         ) : (
           <button
             onClick={onStop}
             className="w-full bg-linear-to-br from-[#C62828] to-[#EF5350] text-white border-none rounded-[6px] py-[0.6rem] text-[0.88rem] font-semibold cursor-pointer hover:opacity-90 transition-opacity"
           >
-            Stop
+            {t('stop')}
           </button>
         )}
 
         {/* Destination path info */}
         {data.destPath && (
           <div className="text-[0.72rem] text-[#7070A0] break-all leading-normal">
-            <span className="text-text">Destination: </span>
+            <span className="text-text">{t('destination')}: </span>
             {data.destPath}
           </div>
         )}
@@ -315,7 +352,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
         {!isRunning && (
           <div className="border-t border-[#2A2A45] pt-3 flex flex-col gap-2">
             <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">
-              Carregar relatório
+              {t('loadReport')}
             </span>
             <div className="flex gap-1.5">
               <input
@@ -329,7 +366,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
               <button
                 onClick={handleLoadBrowse}
                 disabled={loadBrowsing}
-                title="Selecionar pasta"
+                title={t('selectFolder')}
                 className={cn(
                   'bg-surface2 border border-[#2A2A45] rounded-[6px] px-[0.65rem] text-base flex items-center shrink-0 transition-colors',
                   loadBrowsing ? 'text-[#4A4A70] cursor-not-allowed' : 'text-[#7070A0] cursor-pointer hover:text-text',
@@ -347,7 +384,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
               onClick={handleLoad}
               className="w-full bg-surface2 border border-[#2A2A45] text-[#B0B0D0] rounded-[6px] py-2 text-[0.82rem] font-semibold cursor-pointer hover:border-blue hover:text-blue transition-colors"
             >
-              Carregar
+              {t('load')}
             </button>
           </div>
         )}

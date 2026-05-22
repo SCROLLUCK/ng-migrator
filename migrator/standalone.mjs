@@ -89,11 +89,6 @@ export const TMPL_ELEM = {
   'mat-nested-tree-node':    { sym: 'MatTreeModule',              pkg: '@angular/material/tree' },
   'router-outlet':           { sym: 'RouterOutlet',               pkg: '@angular/router' },
   'cdk-virtual-scroll-viewport': { sym: 'ScrollingModule',        pkg: '@angular/cdk/scrolling' },
-  // Third-party
-  'ng-progress':             { sym: 'NgProgressModule',           pkg: '@ngx-progressbar/core' },
-  'ngx-ui-loader':           { sym: 'NgxUiLoaderModule',          pkg: 'ngx-ui-loader' },
-  'ngx-spinner':             { sym: 'NgxSpinnerModule',           pkg: 'ngx-spinner' },
-  'webcam':                  { sym: 'WebcamModule',               pkg: 'ngx-webcam' },
 };
 
 export const TMPL_ATTR = {
@@ -129,7 +124,6 @@ export const TMPL_ATTR = {
 };
 
 export const TMPL_PIPE = {
-  'translate':    { sym: 'TranslateModule',   pkg: '@ngx-translate/core' },
   'async':        { sym: 'AsyncPipe',        pkg: '@angular/common' },
   'date':         { sym: 'DatePipe',         pkg: '@angular/common' },
   'currency':     { sym: 'CurrencyPipe',     pkg: '@angular/common' },
@@ -160,9 +154,10 @@ let _dynamicNgRegistry = null;
 
 function buildDynamicNgRegistry() {
   if (_dynamicNgRegistry) return _dynamicNgRegistry;
-  const elements = new Map(); // selector → { sym, pkg }
-  const pipes = new Map();    // pipeName → { sym, pkg }
-  _dynamicNgRegistry = { elements, pipes };
+  const elements = new Map();   // selector → { sym, pkg }
+  const pipes = new Map();      // pipeName → { sym, pkg }
+  const attributes = new Map(); // attrName → { sym, pkg }
+  _dynamicNgRegistry = { elements, pipes, attributes };
 
   const nmDir = join(destPath, 'node_modules');
   const pkgJsonPath = join(destPath, 'package.json');
@@ -210,8 +205,13 @@ function buildDynamicNgRegistry() {
       const [, className, rawSelector, standaloneStr] = m;
       const sym = standaloneStr === 'true' ? className : (moduleExports.get(className) ?? className);
       for (const sel of rawSelector.split(',').map(s => s.trim()).filter(Boolean)) {
-        if (!sel.startsWith('[') && !sel.startsWith('.') && !elements.has(sel))
+        if (sel.startsWith('[')) {
+          // Attribute directive: [attrName] or [attrName]=[val]
+          const attr = sel.slice(1).split(/[\]=]/)[0].trim();
+          if (attr && !attributes.has(attr)) attributes.set(attr, { sym, pkg: pkgName });
+        } else if (!sel.startsWith('.') && !elements.has(sel)) {
           elements.set(sel, { sym, pkg: pkgName });
+        }
       }
     }
 
@@ -223,8 +223,8 @@ function buildDynamicNgRegistry() {
     }
   }
 
-  const total = elements.size + pipes.size;
-  if (total > 0) console.log(`  ↳ registry dinâmico: ${elements.size} elem + ${pipes.size} pipes de pacotes instalados`);
+  const total = elements.size + pipes.size + attributes.size;
+  if (total > 0) console.log(`  ↳ registry dinâmico: ${elements.size} elem + ${attributes.size} attr + ${pipes.size} pipes de pacotes instalados`);
   return _dynamicNgRegistry;
 }
 
@@ -272,7 +272,8 @@ export function tmplDetectNeeded(tpl, tsFilePath = 'template.html') {
     const elemRe = new RegExp(`<(${[...new Set(allElemKeys)].map(k => k.replace(/[-[\]]/g, '\\$&')).join('|')})[\\s\\/>]`, 'g');
     let m;
     while ((m = elemRe.exec(tpl)) !== null) resolveElem(m[1]);
-    for (const [attr] of Object.entries(TMPL_ATTR)) {
+    const allAttrKeys = [...Object.keys(TMPL_ATTR), ...dynReg.attributes.keys()];
+    for (const attr of [...new Set(allAttrKeys)]) {
       const esc = attr.replace(/[-[\]]/g, '\\$&');
       if (new RegExp(`(?:[\\s\\["])${esc}(?:[\\s=\\]">/])`).test(tpl)) resolveAttr(attr);
     }
@@ -397,7 +398,9 @@ export function tmplInjectImports(src, toAdd, decoratorRe) {
       else if (modified[i] === '}') { if (--bdepth === 0) { objEnd = i; break; } }
     }
     if (objEnd === -1) return modified;
-    modified = modified.slice(0, objEnd) + '\n  imports: [],\n' + modified.slice(objEnd);
+    const prefix = modified.slice(0, objEnd).trimEnd();
+    const comma = (prefix.endsWith(',') || prefix.endsWith('{')) ? '' : ',';
+    modified = prefix + comma + '\n  imports: [],\n' + modified.slice(objEnd);
     arr2 = tmplGetDecoratorImportsArray(modified, decoratorRe);
     if (!arr2) return modified;
   }
@@ -540,7 +543,21 @@ export function copyModuleImportsToComponents() {
       else if (src[i] === ']') { if (--bd === 0) { arrEnd = i; break; } }
     }
     if (arrEnd === -1) return [];
-    return src.slice(arrStart + 1, arrEnd).match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
+    // Extract only top-level identifiers — ignore symbols nested inside forRoot() / config objects
+    const content = src.slice(arrStart + 1, arrEnd);
+    const symbols = [];
+    let symDepth = 0, si = 0;
+    while (si < content.length) {
+      const c = content[si];
+      if (c === '(' || c === '{' || c === '[') { symDepth++; si++; continue; }
+      if (c === ')' || c === '}' || c === ']') { symDepth--; si++; continue; }
+      if (symDepth === 0 && /[A-Z]/.test(c)) {
+        const m = content.slice(si).match(/^[A-Z][A-Za-z0-9_]*/);
+        if (m) { symbols.push(m[0]); si += m[0].length; continue; }
+      }
+      si++;
+    }
+    return symbols;
   }
 
   // Build sym → pkg map from ES imports in any source string
@@ -619,8 +636,19 @@ export function copyModuleImportsToComponents() {
         const arrInfo = tmplGetDecoratorImportsArray(compSrc, COMPONENT_RE);
         const existing = arrInfo?.existing ?? new Set();
 
-        const toAdd = [...allExternals]
-          .filter(([sym]) => !existing.has(sym))
+        // Bootstrap-level modules and Angular core symbols that must NOT be in component imports
+      const BOOTSTRAP_ONLY = new Set([
+        'BrowserModule', 'BrowserAnimationsModule', 'NoopAnimationsModule',
+        'HttpClientModule', 'HttpClientJsonpModule',
+        // Angular core decorators/functions — never valid as component imports
+        'Component', 'Directive', 'Pipe', 'NgModule', 'Injectable',
+        'Input', 'Output', 'ViewChild', 'ViewChildren', 'ContentChild', 'ContentChildren',
+        'HostListener', 'HostBinding', 'EventEmitter', 'ChangeDetectionStrategy',
+        'ChangeDetectorRef', 'ElementRef', 'TemplateRef', 'ViewContainerRef',
+        'inject', 'input', 'output', 'viewChild', 'viewChildren', 'contentChild', 'model',
+      ]);
+      const toAdd = [...allExternals]
+          .filter(([sym]) => !existing.has(sym) && !BOOTSTRAP_ONLY.has(sym))
           .map(([sym, pkg]) => ({ sym, pkg }));
         if (!toAdd.length) continue;
 
@@ -820,6 +848,127 @@ export function removeImportsFromNonStandalone() {
   }
   walk(srcDir);
   if (count > 0) console.log(`  ↳ imports: [] removido de ${count} componente(s) standalone: false`);
+}
+
+// Move standalone components/pipes/directives from NgModule declarations → imports
+// Fixes NG6008: "Component X is standalone, and cannot be declared in an NgModule"
+export function fixStandaloneInModuleDeclarations() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  // Build class → file map
+  const classMap = new Map();
+  function buildClassMap(dir) {
+    for (const e of readdirSync(dir)) {
+      if (SKIP_DIRS.has(e)) continue;
+      const full = join(dir, e);
+      if (statSync(full).isDirectory()) { buildClassMap(full); continue; }
+      if (!e.endsWith('.ts') || e.endsWith('.spec.ts')) continue;
+      const src = readFileSync(full, 'utf8');
+      for (const m of src.matchAll(/export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g))
+        classMap.set(m[1], full);
+    }
+  }
+  buildClassMap(srcDir);
+
+  function isStandalone(className) {
+    const file = classMap.get(className);
+    if (!file || !existsSync(file)) return false;
+    const src = readFileSync(file, 'utf8');
+    return /standalone\s*:\s*true/.test(src);
+  }
+
+  const MODULE_RE = /@NgModule\s*\(/;
+  let count = 0;
+
+  function walk(dir) {
+    for (const e of readdirSync(dir)) {
+      if (SKIP_DIRS.has(e)) continue;
+      const full = join(dir, e);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!e.endsWith('.module.ts')) continue;
+
+      let src = readFileSync(full, 'utf8');
+      if (!src.includes('@NgModule')) continue;
+
+      const decInfo = tmplGetDecoratorImportsArray(src, MODULE_RE.source ? new RegExp(MODULE_RE.source) : MODULE_RE);
+
+      // Find the declarations array manually (tmplGetDecoratorImportsArray only handles 'imports')
+      const modIdx = src.search(MODULE_RE);
+      if (modIdx === -1) continue;
+      let depth = 0, modEnd = -1;
+      for (let i = src.indexOf('(', modIdx); i < src.length; i++) {
+        if (src[i] === '(') depth++;
+        else if (src[i] === ')') { if (--depth === 0) { modEnd = i; break; } }
+      }
+      if (modEnd === -1) continue;
+
+      const body = src.slice(modIdx, modEnd + 1);
+      const declM = body.match(/\bdeclarations\s*:\s*\[/);
+      if (!declM) continue;
+
+      const declArrStart = modIdx + declM.index + declM[0].length - 1;
+      let bd = 0, declArrEnd = -1;
+      for (let i = declArrStart; i < src.length; i++) {
+        if (src[i] === '[') bd++;
+        else if (src[i] === ']') { if (--bd === 0) { declArrEnd = i; break; } }
+      }
+      if (declArrEnd === -1) continue;
+
+      const declContent = src.slice(declArrStart + 1, declArrEnd);
+      const declared = declContent.match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
+      const toPromote = declared.filter(isStandalone);
+      if (!toPromote.length) continue;
+
+      // Remove each from declarations array
+      let modified = src;
+      let offset = 0;
+      for (const sym of toPromote) {
+        // Remove "  SymbolName,\n" or "SymbolName," or trailing comma form
+        const before = modified;
+        modified = modified.replace(
+          new RegExp(`(,\\s*\\n?[ \\t]*\\b${sym}\\b[ \\t]*(?=,|\\n|\\]))|(\\b${sym}\\b[ \\t]*,?[ \\t]*\\n?)`, 'g'),
+          (m, g1, g2, pos) => {
+            // Only remove inside declarations array region (approximate by checking position)
+            return m;
+          },
+        );
+        // Simpler targeted removal: find exact position in declarations block
+        const re = new RegExp(`(?:,\\s*)?\\b${sym}\\b\\s*,?\\s*\\n?`);
+        const declBlock = modified.slice(declArrStart, declArrEnd + 1);
+        const updated = declBlock.replace(re, '');
+        if (updated !== declBlock) {
+          modified = modified.slice(0, declArrStart) + updated + modified.slice(declArrEnd + 1);
+          declArrEnd += updated.length - declBlock.length; // update end position
+        }
+      }
+
+      // Add to imports array (reuse tmplInjectImports logic)
+      const esImports = new Map();
+      for (const m of modified.matchAll(/^import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/gm)) {
+        for (const sym of m[1].split(',').map(s => s.trim())) esImports.set(sym, m[2]);
+      }
+      const toAdd = toPromote
+        .filter(sym => {
+          const imp = tmplGetDecoratorImportsArray(modified, MODULE_RE);
+          return !imp?.existing.has(sym);
+        })
+        .map(sym => ({ sym, pkg: esImports.get(sym) ?? '.' }));
+
+      if (toAdd.length) {
+        modified = tmplInjectImports(modified, toAdd, MODULE_RE);
+      }
+
+      if (modified !== src) {
+        writeFileSync(full, modified);
+        count++;
+        console.log(`  ↳ ${e}: ${toPromote.join(', ')} moved from declarations → imports`);
+      }
+    }
+  }
+  walk(srcDir);
+  if (count > 0) console.log(`  ↳ fixStandaloneInModuleDeclarations: ${count} module(s) corrigido(s)`);
+  return count;
 }
 
 export function collectStandaloneFalseCount() {
@@ -1072,29 +1221,155 @@ export function autoFixBuildErrors() {
     return map;
   }
 
+  // Detect available build configuration (some projects don't have 'development')
+  function buildCmd() {
+    const probe = capture('npx ng build --configuration development 2>&1 | head -3');
+    if (probe && probe.includes("is not set in the workspace")) return 'npx ng build 2>&1';
+    return 'npx ng build --configuration development 2>&1';
+  }
+  const ngBuildCmd = buildCmd();
+
   let totalFixed = 0;
-  const MAX_PASSES = 4;
+  const MAX_PASSES = 6;
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
-    // ng build --configuration development é mais rápido que production
-    const out = capture('npx ng build --configuration development 2>&1');
+    const out = capture(ngBuildCmd);
     if (!out) break;
+    if (!out.includes('ERROR')) break;
 
-    // Coleta erros NG8001 (elemento desconhecido) e NG8004 (pipe desconhecido)
-    // Formato: ✘ [ERROR] NG8001: '<webcam>' ... → component.ts:N
+    // NG6008/NG6004: standalone component still in NgModule declarations → fix and re-build
+    if (out.includes('NG6008') || out.includes('NG6004')) {
+      const fixed = fixStandaloneInModuleDeclarations();
+      if (fixed > 0) { totalFixed += fixed; continue; }
+    }
+
+    // Coleta erros NG8001/NG8004 (import desconhecido) e NG2012 (import inválido)
     const errors = [];
-    const blocks = out.split(/(?=✘ \[ERROR\] NG800[124]:)/);
+    const blocks = out.split(/(?=✘ \[ERROR\] NG(?:800[14]|2012|6008|6004):)/);
     for (const block of blocks) {
       let name = null; let type = null;
       const ng8001 = block.match(/NG8001[^']*'<([^>]+)>'/);
       const ng8004 = block.match(/NG8004[^']*'([^']+)'/);
+      const ng2012 = block.match(/NG2012[^\n]*/);
       if (ng8001) { name = ng8001[1]; type = 'element'; }
       else if (ng8004) { name = ng8004[1]; type = 'pipe'; }
-      if (!name) continue;
-      // Extrai caminho do .ts do contexto do erro
-      const tsMatch = block.match(/\b(src\/[^\s:'"]+\.component\.ts)/);
+      else if (ng2012) { type = 'invalid-import'; }
+      if (!type) continue;
+      const tsMatch = block.match(/\b(src\/[^\s:'"]+\.(?:component|directive|pipe)\.ts)/);
       if (!tsMatch) continue;
-      errors.push({ name, type, compFile: join(destPath, tsMatch[1]) });
+      // For template errors (NG8001/NG8002), the error points to the .html file.
+      // Derive the .ts component file from the .html path if needed.
+      let resolvedTs = tsMatch?.[1];
+      if (!resolvedTs) {
+        const htmlMatch = block.match(/\b(src\/[^\s:'"]+\.component\.html)/);
+        if (htmlMatch) resolvedTs = htmlMatch[1].replace('.html', '.ts');
+      }
+      if (!resolvedTs) continue;
+
+      if (type === 'invalid-import') {
+        // Extract the invalid symbol from the indented source line: "    62 │     NgProgressModule,"
+        const symMatch = block.match(/│\s+([A-Z][A-Za-z0-9_]*)\s*[,\]]/);
+        if (!symMatch) continue;
+        errors.push({ name: symMatch[1], type: 'invalid-import', compFile: join(destPath, resolvedTs) });
+      } else {
+        errors.push({ name, type, compFile: join(destPath, resolvedTs) });
+      }
+    }
+
+    // TS2663: "Cannot find name 'X'. Did you mean instance member 'this.X'?" → add `this.`
+    if (out.includes('TS2663')) {
+      let fixed2663 = 0;
+      const ts2663Blocks = out.split(/(?=✘ \[ERROR\] TS2663:)/);
+      for (const block of ts2663Blocks) {
+        if (!block.includes('TS2663')) continue;
+        const fileMatch = block.match(/\b(src\/[^\s:'"]+\.ts)/);
+        const lineMatch = block.match(/\b(?:src\/[^\s:'"]+\.ts):(\d+):/);
+        const symMatch = block.match(/Cannot find name '(\w+)'/);
+        if (!fileMatch || !lineMatch || !symMatch) continue;
+        const filePath = join(destPath, fileMatch[1]);
+        const lineNo = parseInt(lineMatch[1], 10);
+        const sym = symMatch[1];
+        if (!existsSync(filePath)) continue;
+        const lines = readFileSync(filePath, 'utf8').split('\n');
+        const idx = lineNo - 1;
+        if (idx < 0 || idx >= lines.length) continue;
+        const oldLine = lines[idx];
+        // Replace bare `sym.` with `this.sym().` or `this.sym.` depending on context
+        // Use `this.sym()?.` for signal-style viewChild results, `this.sym.` otherwise
+        const newLine = oldLine.replace(new RegExp(`(?<!this\\.)\\b${sym}\\b\\.`, 'g'), `this.${sym}()!.`);
+        if (newLine !== oldLine) {
+          lines[idx] = newLine;
+          writeFileSync(filePath, lines.join('\n'));
+          fixed2663++;
+          console.log(`  ↳ ${basename(filePath)}:${lineNo}: '${sym}.' → 'this.${sym}()?.'' (TS2663)`);
+        }
+      }
+      if (fixed2663 > 0) { totalFixed += fixed2663; continue; }
+    }
+
+    // TS2345: Argument of type 'unknown' not assignable to 'void' — .emit(e) → .emit()
+    if (out.includes('TS2345') && out.includes("parameter of type 'void'")) {
+      let fixed2345 = 0;
+      const ts2345Blocks = out.split(/(?=✘ \[ERROR\] TS2345:)/);
+      for (const block of ts2345Blocks) {
+        if (!block.includes("parameter of type 'void'")) continue;
+        const fileMatch = block.match(/\b(src\/[^\s:'"]+\.ts)/);
+        const lineMatch = block.match(/\b(?:src\/[^\s:'"]+\.ts):(\d+):/);
+        if (!fileMatch || !lineMatch) continue;
+        const filePath = join(destPath, fileMatch[1]);
+        const lineNo = parseInt(lineMatch[1], 10);
+        if (!existsSync(filePath)) continue;
+        const lines = readFileSync(filePath, 'utf8').split('\n');
+        const idx = lineNo - 1;
+        if (idx < 0 || idx >= lines.length) continue;
+        const oldLine = lines[idx];
+        // Pattern: .emit(someArg) where emit output is void → .emit()
+        // Also fix the subscribe callback: (e => emit(e)) → (() => emit())
+        let newLine = oldLine.replace(/\.subscribe\(\s*\w+\s*=>\s*([^;]+\.emit)\([^)]+\)\s*\)/, '.subscribe(() => $1())');
+        if (newLine === oldLine) newLine = oldLine.replace(/\.emit\([^)]+\)/, '.emit()');
+        if (newLine !== oldLine) {
+          lines[idx] = newLine;
+          writeFileSync(filePath, lines.join('\n'));
+          fixed2345++;
+          console.log(`  ↳ ${basename(filePath)}:${lineNo}: .emit(arg) → .emit() (TS2345)`);
+        }
+      }
+      if (fixed2345 > 0) { totalFixed += fixed2345; continue; }
+    }
+
+    // TS2322: type assignment mismatch → add `as TypeName` cast
+    if (out.includes('TS2322')) {
+      let fixed2322 = 0;
+      const ts2322Blocks = out.split(/(?=✘ \[ERROR\] TS2322:)/);
+      for (const block of ts2322Blocks) {
+        if (!block.includes('TS2322')) continue;
+        const fileMatch = block.match(/\b(src\/[^\s:'"]+\.ts)/);
+        const lineMatch = block.match(/\b(?:src\/[^\s:'"]+\.ts):(\d+):/);
+        // Extract target type from error message
+        const typeMatch = block.match(/parameter of type '([^']+)'\s*\.\s*Type '([^']+)' is missing/);
+        if (!fileMatch || !lineMatch || !typeMatch) continue;
+        const targetType = typeMatch[1];
+        const filePath = join(destPath, fileMatch[1]);
+        const lineNo = parseInt(lineMatch[1], 10);
+        if (!existsSync(filePath)) continue;
+        const lines = readFileSync(filePath, 'utf8').split('\n');
+        const idx = lineNo - 1;
+        if (idx < 0 || idx >= lines.length) continue;
+        const oldLine = lines[idx];
+        // Add type cast to assignment: `this.x = expr;` → `this.x = expr as TargetType;`
+        const newLine = oldLine.replace(/(=\s*)([^;]+)(;)$/, (_, eq, val, semi) => {
+          const v = val.trim();
+          if (v.endsWith(`as ${targetType}`)) return _;
+          return `${eq}${v} as ${targetType}${semi}`;
+        });
+        if (newLine !== oldLine) {
+          lines[idx] = newLine;
+          writeFileSync(filePath, lines.join('\n'));
+          fixed2322++;
+          console.log(`  ↳ ${basename(filePath)}:${lineNo}: added 'as ${targetType}' cast (TS2322)`);
+        }
+      }
+      if (fixed2322 > 0) { totalFixed += fixed2322; continue; }
     }
 
     if (!errors.length) break; // sem erros relevantes → pronto
@@ -1105,8 +1380,42 @@ export function autoFixBuildErrors() {
 
     for (const { name, type, compFile } of errors) {
       if (!existsSync(compFile)) continue;
-      const src = readFileSync(compFile, 'utf8');
-      if (!src.includes('@Component(') || !src.includes('standalone: true')) continue;
+      let src = readFileSync(compFile, 'utf8');
+      if (!src.includes('@Component(')) continue;
+
+      // NG2012: invalid import — remove from imports array, then try to re-add correct symbol
+      if (type === 'invalid-import') {
+        const arrInfo = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
+        if (!arrInfo || !arrInfo.existing.has(name)) continue;
+        // Remove the symbol from the imports array (and its ES import if unused)
+        src = src.replace(new RegExp(`\\b${name}\\b,?\\s*\\n?`, 'g'), (m, offset) => {
+          // Only remove inside decorator region
+          if (offset >= arrInfo.start && offset <= arrInfo.end) return '';
+          return m;
+        });
+        // Clean up the ES import line if the symbol no longer appears in the decorator
+        const updatedArr = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
+        const stillInDec = updatedArr?.existing.has(name);
+        if (!stillInDec) {
+          src = src.replace(new RegExp(`^import\\s+\\{[^}]*\\b${name}\\b[^}]*\\}\\s+from\\s+['"][^'"]+['"];?\\n?`, 'm'), '');
+        }
+        writeFileSync(compFile, src);
+        passFixed++;
+        console.log(`  ↳ ${basename(compFile)}: removed invalid import '${name}' (NG2012)`);
+        continue;
+      }
+
+      if (!src.includes('standalone: true')) continue;
+
+      // Angular core symbols that must NEVER be added to component imports[]
+      const NEVER_IMPORT = new Set([
+        'Component', 'Directive', 'Pipe', 'NgModule', 'Injectable', 'Inject',
+        'Input', 'Output', 'ViewChild', 'ViewChildren', 'ContentChild', 'ContentChildren',
+        'HostListener', 'HostBinding', 'EventEmitter', 'ChangeDetectionStrategy',
+        'inject', 'input', 'output', 'viewChild', 'viewChildren', 'contentChild', 'model',
+        'OnInit', 'OnDestroy', 'AfterViewInit', 'AfterContentInit', 'DoCheck',
+        'ChangeDetectorRef', 'ElementRef', 'TemplateRef', 'ViewContainerRef', 'Injector',
+      ]);
 
       // Resolve o símbolo: registry dinâmico → imports ES do projeto
       let found = type === 'element' ? dynReg.elements.get(name) : dynReg.pipes.get(name);
@@ -1115,11 +1424,25 @@ export function autoFixBuildErrors() {
         // contenha o nome do elemento/pipe (heurística para WebcamModule ← webcam, etc.)
         const needle = name.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); // kebab → camel
         for (const [sym, pkg] of projectEsMap) {
-          if (sym.toLowerCase().includes(needle.toLowerCase()) || needle.toLowerCase().includes(sym.replace(/Module$|Component$|Pipe$/, '').toLowerCase())) {
+          if (NEVER_IMPORT.has(sym)) continue;
+          // Only consider symbols that are valid component imports
+          if (type === 'element') {
+            if (!sym.endsWith('Module') && !sym.endsWith('Component') && !sym.endsWith('Directive')) continue;
+          } else if (type === 'pipe') {
+            if (!sym.endsWith('Pipe') && !sym.endsWith('Module')) continue;
+          }
+          // Never add services or other non-importable symbols
+          if (sym.endsWith('Service') || sym.endsWith('Guard') || sym.endsWith('Resolver') ||
+              sym.endsWith('Interceptor') || sym.endsWith('Factory') || sym.endsWith('Strategy')) continue;
+          const base = sym.replace(/Module$|Component$|Pipe$|Directive$/, '');
+          if (!base) continue;
+          if (sym.toLowerCase().includes(needle.toLowerCase()) || needle.toLowerCase().includes(base.toLowerCase())) {
             found = { sym, pkg }; break;
           }
         }
       }
+
+      if (found && NEVER_IMPORT.has(found.sym)) found = null;
 
       if (!found) {
         console.log(`  ↳ ⚠  ${type} '${name}' não resolvido em ${basename(compFile)} — adicione manualmente`);

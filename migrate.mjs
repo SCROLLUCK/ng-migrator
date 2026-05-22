@@ -16,13 +16,16 @@
 
 import { spawnSync } from 'child_process';
 import { existsSync, unlinkSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, dirname, basename } from 'path';
 import Database from 'better-sqlite3';
 
 import {
-  sourcePath, destPath, opts, report, migratorDir, setDiffDb,
+  sourcePath, destPath, opts, report, migratorDir, setDiffDb, setCurrentAngularVersion, setDestPath,
 } from './migrator/context.mjs';
-import { copyDir, run, capture, captureGitDiff, npmInstall, runCapture } from './migrator/utils.mjs';
+import {
+  checkDocker, copyDir, run, capture, captureGitDiff, npmInstall, runCapture,
+  setupTempNpmrc, restoreNpmrc
+} from './migrator/utils.mjs';
 import { getInstalledMajor } from './migrator/packages.mjs';
 import { preflight, cleanupLegacyFiles } from './migrator/preflight.mjs';
 import {
@@ -31,6 +34,7 @@ import {
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
 import { writeReport, writeMigrationData } from './migrator/report.mjs';
+import { buildCheck } from './migrator/build-check.mjs';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PIPELINE PRINCIPAL
@@ -51,13 +55,29 @@ if (opts.dryRun) {
   process.exit(0);
 }
 
+// 1.5 Verifica se o Docker está em execução antes de começar
+checkDocker();
+
 // 1. Copia o projeto
 console.log('📁 Copiando projeto...');
 copyDir(sourcePath, destPath);
 
+// Configura o .npmrc temporário no destino
+setupTempNpmrc(destPath);
+
+// Garante a restauração do .npmrc ao sair do processo ou em caso de crash
+process.on('exit', () => restoreNpmrc());
+process.on('SIGINT', () => { restoreNpmrc(); process.exit(1); });
+process.on('SIGTERM', () => { restoreNpmrc(); process.exit(1); });
+process.on('uncaughtException', (err) => {
+  console.error('Erro não tratado durante a migração:', err);
+  restoreNpmrc();
+  process.exit(1);
+});
+
 // Pasta para arquivos gerados pelo migrador (relatórios, dados, patch)
 mkdirSync(migratorDir, { recursive: true });
-const diffDb = new Database(join(migratorDir, 'diffs.db'));
+let diffDb = new Database(join(migratorDir, 'diffs.db'));
 diffDb.exec('CREATE TABLE IF NOT EXISTS diffs (path TEXT, h0 TEXT, h1 TEXT, diff TEXT, PRIMARY KEY (path, h0, h1))');
 setDiffDb(diffDb);
 
@@ -91,11 +111,17 @@ report.sourceVersion = detectedVersion || null;
 writeMigrationData();  // primeiro snapshot
 writeMigrationData();
 console.log(`\n📦 Versão detectada: Angular ${detectedVersion || '?'}`);
+
+// Define o contexto de versão do Angular inicial para as execuções do Node
+setCurrentAngularVersion(detectedVersion || 11);
+
 console.log('📦 Instalando dependências...');
 if (npmInstall().status !== 0) {
   console.error('\n❌ npm install falhou. Verifique o package.json e tente novamente.');
   process.exit(1);
 }
+
+buildCheck(`ngUpdate_${detectedVersion || 11}`);
 
 // 5. ng update incremental
 const startVersion = (detectedVersion || 11) + 1;
@@ -103,6 +129,35 @@ const steps = [];
 let ngUpdatePrevHash = capture('git rev-parse HEAD');
 
 for (let v = startVersion; v <= opts.to; v++) {
+  if (opts.splitVersions) {
+    // 1. Restore the temp .npmrc in the previous directory
+    restoreNpmrc();
+
+    // 2. Close the current SQLite diff database connection
+    diffDb.close();
+
+    // 3. Determine new version folder path
+    const parentDir = join(dirname(sourcePath), `${basename(sourcePath)}-ng-versions`);
+    const newDest = join(parentDir, `ng${v}`);
+
+    // 4. Copy the previous version folder to the new one
+    console.log(`\n📁 Gerando pasta para nova versão: ng${v - 1} → ng${v}`);
+    copyDir(destPath, newDest);
+
+    // 5. Update destPath to the new folder
+    setDestPath(newDest);
+
+    // 6. Create the new migratorDir and reopen/reconnect the SQLite DB
+    mkdirSync(migratorDir, { recursive: true });
+    diffDb = new Database(join(migratorDir, 'diffs.db'));
+    diffDb.exec('CREATE TABLE IF NOT EXISTS diffs (path TEXT, h0 TEXT, h1 TEXT, diff TEXT, PRIMARY KEY (path, h0, h1))');
+    setDiffDb(diffDb);
+
+    // 7. Setup the temporary .npmrc in the new folder
+    setupTempNpmrc(destPath);
+  }
+
+  setCurrentAngularVersion(v);
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   console.log(` Angular ${v - 1} → ${v}`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
@@ -155,11 +210,13 @@ for (let v = startVersion; v <= opts.to; v++) {
 
   steps.push({ version: v, ok });
   report.ngUpdateSteps.push({ version: v, ok });
+  buildCheck(`ngUpdate_${v}`);
   writeMigrationData();
 }
 
 // 6. Modernização: inject() + signals + output()
 if (opts.modernize) {
+  setCurrentAngularVersion(opts.to);
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(' Modernização (inject / signals / output)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -185,6 +242,7 @@ console.log(`\n  Projeto migrado: ${destPath}`);
 
 writeReport();
 writeMigrationData();
+restoreNpmrc();
 
 console.log('\n Próximos passos:');
 console.log(` 1. cd ${destPath}`);
