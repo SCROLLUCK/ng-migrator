@@ -9,7 +9,7 @@ import {
   fixNgModuleImports, copyModuleImportsToComponents, fixStandaloneImports,
   fixMissingStandalone, removeImportsFromNonStandalone, cleanupStandaloneTodos,
   convertOrphanedNonStandalone, collectStandaloneFalseCount, fixCircularStandaloneImports,
-  invalidateProjectIndex,
+  invalidateProjectIndex, autoFixBuildErrors,
 } from './standalone.mjs';
 import { convertLazyModulesToRoutes, convertRemainingRoutingModules, removeUnusedModules } from './modules.mjs';
 import {
@@ -284,6 +284,14 @@ export function runModernizationMigrations() {
     }
     report.modernize.cleanupImports = true;
     commitStep('cleanupImports', 'cleanup unused imports');
+  }
+
+  // Build error fix loop — compilador Angular como oráculo para imports desconhecidos
+  // Resolve NG8001/NG8004 genérico: busca nos .d.ts instalados e nos imports ES do projeto
+  if (!skipSteps.has('cleanupImports')) {
+    console.log(`\n  🔄 build error fix  (resolução genérica de imports faltantes)...`);
+    const buildFixed = autoFixBuildErrors();
+    if (buildFixed > 0) commitStep('cleanupImports', 'build error import fixes');
   }
 
   // Lint fix único no final — não contamina diffs de steps individuais

@@ -5,6 +5,7 @@ import {
 } from 'fs';
 import { join, dirname, basename, relative, resolve } from 'path';
 import { destPath, SKIP_DIRS } from './context.mjs';
+import { capture } from './utils.mjs';
 
 // ─── Shared helpers: template import detection (NgModule + standalone) ──────────
 
@@ -152,6 +153,83 @@ export function tmplPkgInstalled(pkg) {
   return existsSync(p);
 }
 
+// ─── Registry dinâmico: escaneia .d.ts dos pacotes instalados ─────────────────
+// Extrai seletores (ɵɵComponentDeclaration) e pipes (ɵɵPipeDeclaration) de TODOS
+// os pacotes em package.json, sem depender de maps hardcoded.
+let _dynamicNgRegistry = null;
+
+function buildDynamicNgRegistry() {
+  if (_dynamicNgRegistry) return _dynamicNgRegistry;
+  const elements = new Map(); // selector → { sym, pkg }
+  const pipes = new Map();    // pipeName → { sym, pkg }
+  _dynamicNgRegistry = { elements, pipes };
+
+  const nmDir = join(destPath, 'node_modules');
+  const pkgJsonPath = join(destPath, 'package.json');
+  if (!existsSync(pkgJsonPath) || !existsSync(nmDir)) return _dynamicNgRegistry;
+
+  let allDeps;
+  try {
+    const p = JSON.parse(readFileSync(pkgJsonPath, 'utf8'));
+    allDeps = { ...(p.dependencies ?? {}), ...(p.devDependencies ?? {}) };
+  } catch { return _dynamicNgRegistry; }
+
+  for (const pkgName of Object.keys(allDeps)) {
+    // @angular/* já coberto pelos TMPL maps; @types/* não tem runtime
+    if (pkgName.startsWith('@types/') || pkgName.startsWith('@angular/') || pkgName.startsWith('@angular-devkit/')) continue;
+    const pkgParts = pkgName.startsWith('@') ? pkgName.split('/') : [pkgName];
+    const pkgDir = join(nmDir, ...pkgParts);
+    if (!existsSync(pkgDir)) continue;
+
+    // Localiza o .d.ts principal
+    let dts = '';
+    for (const cand of ['index.d.ts', 'public-api.d.ts']) {
+      const f = join(pkgDir, cand);
+      if (existsSync(f)) { try { dts = readFileSync(f, 'utf8'); } catch {} break; }
+    }
+    if (!dts) {
+      try {
+        const meta = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+        const t = meta.typings ?? meta.types ?? '';
+        if (t) { const f = join(pkgDir, t); if (existsSync(f)) try { dts = readFileSync(f, 'utf8'); } catch {} }
+      } catch {}
+    }
+    if (!dts || (!dts.includes('ɵcmp') && !dts.includes('ɵpipe'))) continue;
+
+    // Mapeia classe exportada → módulo que a exporta (para componentes não-standalone)
+    const moduleExports = new Map(); // ClassName → ModuleName
+    for (const m of dts.matchAll(/class\s+(\w+Module)\b[^\n]*\{[\s\S]*?ɵɵNgModuleDeclaration[\s\S]*?\}/g)) {
+      const modName = m[1];
+      for (const exp of m[0].matchAll(/typeof\s+(\w+)/g)) {
+        if (!moduleExports.has(exp[1])) moduleExports.set(exp[1], modName);
+      }
+    }
+
+    // Extrai seletores de componentes: ɵɵComponentDeclaration<ClassName, "selector", ..., true|false>
+    for (const m of dts.matchAll(/class\s+(\w+)\b[^{]*\{[^}]*ɵɵComponentDeclaration<\1\s*,\s*"([^"]+)"[^>]+(true|false)/gs)) {
+      const [, className, rawSelector, standaloneStr] = m;
+      const sym = standaloneStr === 'true' ? className : (moduleExports.get(className) ?? className);
+      for (const sel of rawSelector.split(',').map(s => s.trim()).filter(Boolean)) {
+        if (!sel.startsWith('[') && !sel.startsWith('.') && !elements.has(sel))
+          elements.set(sel, { sym, pkg: pkgName });
+      }
+    }
+
+    // Extrai nomes de pipes: ɵɵPipeDeclaration<ClassName, "name", true|false>
+    for (const m of dts.matchAll(/class\s+(\w+)\b[^{]*\{[^}]*ɵɵPipeDeclaration<\1\s*,\s*"([^"]+)"[^>]*(true|false)/gs)) {
+      const [, className, pipeName, standaloneStr] = m;
+      const sym = standaloneStr === 'true' ? className : (moduleExports.get(className) ?? className);
+      if (!pipes.has(pipeName)) pipes.set(pipeName, { sym, pkg: pkgName });
+    }
+  }
+
+  const total = elements.size + pipes.size;
+  if (total > 0) console.log(`  ↳ registry dinâmico: ${elements.size} elem + ${pipes.size} pipes de pacotes instalados`);
+  return _dynamicNgRegistry;
+}
+
+export function invalidateDynamicRegistry() { _dynamicNgRegistry = null; }
+
 export function tmplGetTemplate(tsFile, src) {
   const inlineM = src.match(/template\s*:\s*(`(?:[^`\\]|\\.|\n)*?`|'(?:[^'\\]|\\.)*?'|"(?:[^"\\]|\\.)*?")/s);
   if (inlineM) return inlineM[1].slice(1, -1);
@@ -165,56 +243,50 @@ export function tmplGetTemplate(tsFile, src) {
 
 export function tmplDetectNeeded(tpl, tsFilePath = 'template.html') {
   const needed = new Map();
+  const dynReg = buildDynamicNgRegistry();
 
-  // ── AST-based detection (elements + attribute bindings) ────────────────────
+  function resolveElem(name) {
+    const e = TMPL_ELEM[name] ?? dynReg.elements.get(name);
+    if (e && tmplPkgInstalled(e.pkg)) needed.set(e.sym, e.pkg);
+  }
+  function resolveAttr(name) {
+    const a = TMPL_ATTR[name] ?? dynReg.attributes?.get(name);
+    if (a && tmplPkgInstalled(a.pkg)) needed.set(a.sym, a.pkg);
+  }
+
+  // ── AST-based detection ────────────────────────────────────────────────────
   try {
     const ast = parseTemplate(tpl, tsFilePath, { preserveWhitespaces: false });
     function visitNode(node) {
       if (!node) return;
-      // Element names: <mat-card>, <router-outlet>, etc.
-      if (node.name) {
-        const e = TMPL_ELEM[node.name];
-        if (e && tmplPkgInstalled(e.pkg)) needed.set(e.sym, e.pkg);
-      }
-      // Attribute / input / output names: matInput, routerLink, matTooltip, etc.
-      const tokens = [
-        ...(node.attributes ?? []),
-        ...(node.inputs ?? []),
-        ...(node.outputs ?? []),
-        ...(node.references ?? []),
-      ];
-      for (const t of tokens) {
-        const a = TMPL_ATTR[t.name];
-        if (a && tmplPkgInstalled(a.pkg)) needed.set(a.sym, a.pkg);
+      if (node.name) resolveElem(node.name);
+      for (const t of [...(node.attributes ?? []), ...(node.inputs ?? []), ...(node.outputs ?? []), ...(node.references ?? [])]) {
+        resolveAttr(t.name);
       }
       if (node.children) for (const c of node.children) visitNode(c);
     }
     for (const node of ast.nodes) visitNode(node);
   } catch {
-    // Fallback: regex scan (handles malformed / partial templates)
-    const elemKeys = Object.keys(TMPL_ELEM).map(k => k.replace(/[-[\]]/g, '\\$&')).join('|');
-    const elemRe = new RegExp(`<(${elemKeys})[\\s\\/>]`, 'g');
+    // Fallback regex (malformed templates)
+    const allElemKeys = [...Object.keys(TMPL_ELEM), ...dynReg.elements.keys()];
+    const elemRe = new RegExp(`<(${[...new Set(allElemKeys)].map(k => k.replace(/[-[\]]/g, '\\$&')).join('|')})[\\s\\/>]`, 'g');
     let m;
-    while ((m = elemRe.exec(tpl)) !== null) {
-      const e = TMPL_ELEM[m[1]];
-      if (e && tmplPkgInstalled(e.pkg)) needed.set(e.sym, e.pkg);
-    }
-    for (const [attr, { sym, pkg }] of Object.entries(TMPL_ATTR)) {
-      if (!tmplPkgInstalled(pkg)) continue;
+    while ((m = elemRe.exec(tpl)) !== null) resolveElem(m[1]);
+    for (const [attr] of Object.entries(TMPL_ATTR)) {
       const esc = attr.replace(/[-[\]]/g, '\\$&');
-      if (new RegExp(`(?:[\\s\\["])${esc}(?:[\\s=\\]">/])`).test(tpl)) needed.set(sym, pkg);
+      if (new RegExp(`(?:[\\s\\["])${esc}(?:[\\s=\\]">/])`).test(tpl)) resolveAttr(attr);
     }
   }
 
-  // ── Pipe detection (regex — pipe expressions live inside {{ }} / ternaries) ─
+  // ── Pipe detection (regex) ─────────────────────────────────────────────────
   const pipeRe = /\|\s*([\w]+)/g;
   let pm;
   while ((pm = pipeRe.exec(tpl)) !== null) {
-    const p = TMPL_PIPE[pm[1]];
+    const p = TMPL_PIPE[pm[1]] ?? dynReg.pipes.get(pm[1]);
     if (p && tmplPkgInstalled(p.pkg)) needed.set(p.sym, p.pkg);
   }
 
-  // ── Form directives (regex — attributes on any element, including dynamic) ──
+  // ── Form directives ────────────────────────────────────────────────────────
   if (/\(\s*ngModel\s*\)|\bngModel\b/.test(tpl)) needed.set('FormsModule', '@angular/forms');
   if (/\[formControl\]|\bformControlName\b|\[formGroup\]|\bformGroupName\b|\bformArrayName\b/.test(tpl)) {
     needed.set('ReactiveFormsModule', '@angular/forms');
@@ -965,4 +1037,110 @@ export function fixCircularStandaloneImports() {
 
   if (fixed > 0) console.log(`  ↳ ${fixed} dependência(s) circular(es) corrigida(s) com forwardRef`);
   return fixed;
+}
+
+// ─── Build error loop: usa o compilador Angular como oráculo ─────────────────
+// Roda ng build, parseia NG8001/NG8002/NG8004, resolve o símbolo buscando nos
+// próprios .d.ts instalados e nas importações ES do projeto — sem hardcode.
+export function autoFixBuildErrors() {
+  const COMPONENT_RE = /@Component\s*\(/;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  // Constrói mapa de todos os imports ES já presentes no projeto: sym → pkg
+  // Assim, se WebcamModule já foi adicionado em algum arquivo pelo cascade de módulos,
+  // conseguimos encontrá-lo mesmo que o módulo original tenha sido removido.
+  function buildProjectEsMap() {
+    const map = new Map(); // sym → pkg
+    function walk(dir) {
+      for (const e of readdirSync(dir)) {
+        if (SKIP_DIRS.has(e)) continue;
+        const full = join(dir, e);
+        if (statSync(full).isDirectory()) { walk(full); continue; }
+        if (!e.endsWith('.ts') || e.endsWith('.spec.ts')) continue;
+        const src = readFileSync(full, 'utf8');
+        for (const m of src.matchAll(/^import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/gm)) {
+          const pkg = m[2];
+          if (pkg.startsWith('.')) continue;
+          for (const sym of m[1].split(',').map(s => s.replace(/\s+as\s+\w+/, '').trim()).filter(Boolean)) {
+            if (!map.has(sym)) map.set(sym, pkg);
+          }
+        }
+      }
+    }
+    walk(srcDir);
+    return map;
+  }
+
+  let totalFixed = 0;
+  const MAX_PASSES = 4;
+
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    // ng build --configuration development é mais rápido que production
+    const out = capture('npx ng build --configuration development 2>&1');
+    if (!out) break;
+
+    // Coleta erros NG8001 (elemento desconhecido) e NG8004 (pipe desconhecido)
+    // Formato: ✘ [ERROR] NG8001: '<webcam>' ... → component.ts:N
+    const errors = [];
+    const blocks = out.split(/(?=✘ \[ERROR\] NG800[124]:)/);
+    for (const block of blocks) {
+      let name = null; let type = null;
+      const ng8001 = block.match(/NG8001[^']*'<([^>]+)>'/);
+      const ng8004 = block.match(/NG8004[^']*'([^']+)'/);
+      if (ng8001) { name = ng8001[1]; type = 'element'; }
+      else if (ng8004) { name = ng8004[1]; type = 'pipe'; }
+      if (!name) continue;
+      // Extrai caminho do .ts do contexto do erro
+      const tsMatch = block.match(/\b(src\/[^\s:'"]+\.component\.ts)/);
+      if (!tsMatch) continue;
+      errors.push({ name, type, compFile: join(destPath, tsMatch[1]) });
+    }
+
+    if (!errors.length) break; // sem erros relevantes → pronto
+
+    const dynReg = buildDynamicNgRegistry();
+    const projectEsMap = buildProjectEsMap();
+    let passFixed = 0;
+
+    for (const { name, type, compFile } of errors) {
+      if (!existsSync(compFile)) continue;
+      const src = readFileSync(compFile, 'utf8');
+      if (!src.includes('@Component(') || !src.includes('standalone: true')) continue;
+
+      // Resolve o símbolo: registry dinâmico → imports ES do projeto
+      let found = type === 'element' ? dynReg.elements.get(name) : dynReg.pipes.get(name);
+      if (!found) {
+        // Procura no mapa de imports ES do projeto: qualquer símbolo cujo nome
+        // contenha o nome do elemento/pipe (heurística para WebcamModule ← webcam, etc.)
+        const needle = name.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); // kebab → camel
+        for (const [sym, pkg] of projectEsMap) {
+          if (sym.toLowerCase().includes(needle.toLowerCase()) || needle.toLowerCase().includes(sym.replace(/Module$|Component$|Pipe$/, '').toLowerCase())) {
+            found = { sym, pkg }; break;
+          }
+        }
+      }
+
+      if (!found) {
+        console.log(`  ↳ ⚠  ${type} '${name}' não resolvido em ${basename(compFile)} — adicione manualmente`);
+        continue;
+      }
+
+      const arrInfo = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
+      if (arrInfo?.existing.has(found.sym)) continue;
+
+      const modified = tmplInjectImports(src, [found], COMPONENT_RE);
+      if (modified !== src) {
+        writeFileSync(compFile, modified);
+        passFixed++;
+        console.log(`  ↳ ${basename(compFile)}: +${found.sym} (${type} '${name}' — build error fix)`);
+      }
+    }
+
+    totalFixed += passFixed;
+    if (passFixed === 0) break; // nenhuma correção nesse pass → não há progresso
+    console.log(`  ↳ build error fix pass ${pass + 1}: ${passFixed} correção(ões)`);
+  }
+
+  return totalFixed;
 }
