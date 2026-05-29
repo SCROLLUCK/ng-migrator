@@ -25,7 +25,7 @@ export function syncVersions(targetVersion) {
   ]);
 
   const ANGULAR_PKGS = [
-    '@angular/animations', '@angular/cdk', '@angular/cli',
+    '@angular/animations', '@angular/build', '@angular/cdk', '@angular/cli',
     '@angular/common', '@angular/compiler', '@angular/compiler-cli',
     '@angular/core', '@angular/forms', '@angular/language-service',
     '@angular/material', '@angular/material-moment-adapter',
@@ -58,17 +58,54 @@ export function syncVersions(targetVersion) {
 
   // TypeScript: ng update às vezes falha antes de atualizar o TS (ex: v12 com npm >6).
   // Garante versão mínima compatível para evitar conflito de peer deps no npm install.
-  const TS_FLOOR = { 12:'4.2',13:'4.4',14:'4.6',15:'4.8',16:'4.9',17:'5.2',18:'5.3',19:'5.5',20:'5.5',21:'5.8' };
-  const tsFloor = TS_FLOOR[targetVersion];
+  const TS_FLOOR  = { 12:'4.2',13:'4.4',14:'4.6',15:'4.8',16:'4.9',17:'5.2',18:'5.3',19:'5.5',20:'5.5',21:'5.8' };
+  const TS_TARGET = { 12:'~4.3.5',13:'~4.6.0',14:'~4.7.0',15:'~4.9.0',16:'~5.0.0',17:'~5.2.0',18:'~5.4.0',19:'~5.6.0',20:'~5.7.0',21:'~5.8.0' };
+  // For Angular v22+, fall back to the v21 floor/target until the maps are updated
+  const tsFloor  = TS_FLOOR[targetVersion]  ?? (targetVersion > 21 ? TS_FLOOR[21]  : null);
+  const tsTgt    = TS_TARGET[targetVersion] ?? (targetVersion > 21 ? TS_TARGET[21] : null);
   if (tsFloor && pkg.devDependencies?.typescript) {
     const curTs = pkg.devDependencies.typescript.replace(/[^0-9.]/g, '');
     const [curMaj, curMin] = curTs.split('.').map(Number);
     const [floorMaj, floorMin] = tsFloor.split('.').map(Number);
     const tooOld = curMaj < floorMaj || (curMaj === floorMaj && curMin < floorMin);
     if (tooOld) {
-      const TS_TARGET = { 12:'~4.3.5',13:'~4.6.0',14:'~4.7.0',15:'~4.9.0',16:'~5.0.0',17:'~5.2.0',18:'~5.4.0',19:'~5.6.0',20:'~5.7.0',21:'~5.8.0' };
-      pkg.devDependencies.typescript = TS_TARGET[targetVersion];
-      console.log(`  ↳ typescript: ${curTs} → ${TS_TARGET[targetVersion]} (forçado)`);
+      pkg.devDependencies.typescript = tsTgt;
+      console.log(`  ↳ typescript: ${curTs} → ${tsTgt} (forçado)`);
+      changed = true;
+    }
+  }
+
+  // @types/node: versão compatível com o TypeScript de cada passo da migração.
+  // @types/node@18.7+ usa `export type { type X }` (requer TS 4.5+).
+  // @types/node@20.4+ usa Symbol.dispose/asyncDispose (requer TS 5.2+).
+  // Upgrades progressivos via overrides conforme o TS evolui a cada ng update.
+  const nodeTypesTarget =
+    targetVersion <= 12 ? '^14.18.0'   // TS 4.1-4.3: pré-4.5 syntax
+    : targetVersion <= 16 ? '^16.18.0' // TS 4.4-4.9: seguro, sem Disposable
+    : null;                             // Angular 17+: remover override (TS 5.2+ suporta 20+)
+
+  if (nodeTypesTarget !== null) {
+    if (!pkg.overrides) pkg.overrides = {};
+    if (pkg.overrides['@types/node'] !== nodeTypesTarget) {
+      pkg.overrides['@types/node'] = nodeTypesTarget;
+      console.log(`  ↳ overrides["@types/node"] = ${nodeTypesTarget} (TS-compat para Angular ${targetVersion})`);
+      changed = true;
+    }
+    // Também fix direto em dependencies/devDependencies se presente em versão incompatível
+    for (const section of ['dependencies', 'devDependencies']) {
+      const cur = pkg[section]?.['@types/node'];
+      if (cur && getMajor(cur) > getMajor(nodeTypesTarget)) {
+        pkg[section]['@types/node'] = nodeTypesTarget;
+        console.log(`  ↳ @types/node: ${cur} → ${nodeTypesTarget} (TS-compat)`);
+        changed = true;
+      }
+    }
+  } else {
+    // Angular 17+: TS 5.2+ suporta @types/node@20+, remover qualquer override de @types/node
+    if (pkg.overrides?.['@types/node']) {
+      delete pkg.overrides['@types/node'];
+      if (Object.keys(pkg.overrides).length === 0) delete pkg.overrides;
+      console.log('  ↳ overrides["@types/node"] removido (TS 5.2+ disponível)');
       changed = true;
     }
   }
@@ -104,18 +141,23 @@ export function syncVersions(targetVersion) {
     }
   }
 
-  // rxjs: garante v7 a partir do Angular 14+
+  // rxjs: garante ~7.8.0 a partir do Angular 14+
+  // rxjs@7.4 não tem exports.types correto — moduleResolution:bundler requer 7.5+
   if (targetVersion >= 14 && pkg.dependencies?.rxjs) {
-    if (getMajor(pkg.dependencies.rxjs) < 7) {
+    const currentRxjs = pkg.dependencies.rxjs;
+    const major = getMajor(currentRxjs);
+    const minorMatch = currentRxjs.match(/\b7\.(\d+)/);
+    const minor = minorMatch ? parseInt(minorMatch[1]) : 0;
+    if (major < 7 || (major === 7 && minor < 5)) {
       pkg.dependencies.rxjs = '~7.8.0';
-      console.log(`  ↳ rxjs: 6 → 7 (forçado)`);
+      console.log(`  ↳ rxjs: ${currentRxjs} → ~7.8.0 (forçado)`);
       changed = true;
     }
   }
 
-  // zone.js: v0.14+ para Angular 17+, v0.15+ para Angular 21+
+  // zone.js: v0.14+ para Angular 17+, v0.16+ para Angular 21+
   if (pkg.dependencies?.['zone.js']) {
-    const target = targetVersion >= 21 ? '~0.15.0' : targetVersion >= 17 ? '~0.14.0' : null;
+    const target = targetVersion >= 21 ? '~0.16.0' : targetVersion >= 17 ? '~0.14.0' : null;
     if (target && getMajor(pkg.dependencies['zone.js']) < getMajor(target)) {
       pkg.dependencies['zone.js'] = target;
       console.log(`  ↳ zone.js → ${target} (forçado)`);
@@ -202,6 +244,45 @@ export function fixLegacyMaterial() {
   return count;
 }
 
+// Resolve o conflito EOVERRIDE de @types/node antes de rodar ng update.
+// npm 9+ (Node 18+) rejeita overrides cujo range é incompatível com o dep direto.
+// Deve ser chamado imediatamente antes de cada `ng update`, sem alterar pacotes Angular.
+export function resolveNodeTypesOverride(targetVersion) {
+  const pkgPath = join(destPath, 'package.json');
+  const pkg = readJson(pkgPath);
+  let changed = false;
+
+  const nodeTypesTarget =
+    targetVersion <= 12 ? '^14.18.0'
+    : targetVersion <= 16 ? '^16.18.0'
+    : null;
+
+  if (nodeTypesTarget !== null) {
+    // Alinha override com dep direto para evitar EOVERRIDE
+    if (!pkg.overrides) pkg.overrides = {};
+    if (pkg.overrides['@types/node'] !== nodeTypesTarget) {
+      pkg.overrides['@types/node'] = nodeTypesTarget;
+      changed = true;
+    }
+    for (const section of ['dependencies', 'devDependencies']) {
+      const cur = pkg[section]?.['@types/node'];
+      if (cur && getMajor(cur) !== getMajor(nodeTypesTarget)) {
+        pkg[section]['@types/node'] = nodeTypesTarget;
+        changed = true;
+      }
+    }
+  } else {
+    // v17+: remove qualquer override de @types/node para prevenir EOVERRIDE
+    if (pkg.overrides?.['@types/node']) {
+      delete pkg.overrides['@types/node'];
+      if (Object.keys(pkg.overrides).length === 0) delete pkg.overrides;
+      changed = true;
+    }
+  }
+
+  if (changed) writeJson(pkgPath, pkg);
+}
+
 // Pacotes do ecossistema Angular que seguem o mesmo versionamento major.
 const ANGULAR_ECOSYSTEM = [
   '@angular/material',
@@ -218,6 +299,81 @@ export function extraPackages(v) {
   if (v < 17 && hasPackage('@nguniversal/express-engine'))
     extra.push(`@nguniversal/express-engine@${v}`);
   return extra;
+}
+
+// ─── Detecção genérica de incompatibilidades de peer dependency ───────────────
+// Varre os pacotes instalados em node_modules e verifica se seus peerDependencies
+// de @angular/core são satisfeitos pela versão Angular alvo.
+// Sem listas hardcoded: funciona para qualquer projeto.
+
+function angularVersionInRange(angularMajor, peerRange) {
+  // Divide por || para ranges union: "^13.0.0 || ^14.0.0"
+  for (const segment of peerRange.split('||').map(s => s.trim())) {
+    const tokens = [...segment.matchAll(/([><=^~]*)(\d+)\.\d+/g)];
+    for (const t of tokens) {
+      const op = t[1].trim();
+      const major = parseInt(t[2]);
+      if (op === '^' || op === '~' || op === '' || op === '=') {
+        if (major === angularMajor) return true;
+      } else if (op === '>=' || op === '>') {
+        const threshold = op === '>' ? major + 1 : major;
+        if (angularMajor >= threshold) {
+          // Verifica se existe upper bound explícito menor que a versão alvo
+          const upper = segment.match(/<\s*(\d+)\.\d+/);
+          if (!upper || angularMajor < parseInt(upper[1])) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+export function patchThirdPartyVersions(angularMajor) {
+  const nmDir = join(destPath, 'node_modules');
+  const pkgJsonPath = join(destPath, 'package.json');
+  if (!existsSync(pkgJsonPath) || !existsSync(nmDir)) return;
+
+  const pkg = readJson(pkgJsonPath);
+  const allDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+
+  const incompatible = [];
+
+  for (const pkgName of Object.keys(allDeps)) {
+    // Pula pacotes gerenciados pelo pipeline (Angular, devkit, eslint)
+    if (pkgName.startsWith('@angular/') ||
+        pkgName.startsWith('@angular-devkit/') ||
+        pkgName.startsWith('@angular-eslint/') ||
+        pkgName.startsWith('@typescript-eslint/') ||
+        pkgName.startsWith('@types/')) continue;
+
+    const pkgParts = pkgName.startsWith('@') ? pkgName.split('/').slice(0, 2) : [pkgName];
+    const pkgDir = join(nmDir, ...pkgParts);
+    const metaPath = join(pkgDir, 'package.json');
+    if (!existsSync(metaPath)) continue;
+
+    try {
+      const meta = readJson(metaPath);
+      const angularPeer = meta.peerDependencies?.['@angular/core'];
+      if (!angularPeer) continue;
+      if (!angularVersionInRange(angularMajor, angularPeer)) {
+        incompatible.push({
+          name: pkgName,
+          installedVersion: meta.version,
+          peerRequires: angularPeer,
+        });
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (!incompatible.length) return;
+
+  console.log(`\n  ⚠️  Pacotes incompatíveis com Angular ${angularMajor} (peer dependency):`);
+  for (const { name, installedVersion, peerRequires } of incompatible) {
+    console.log(`  ↳ ${name}@${installedVersion}: requer @angular/core "${peerRequires}"`);
+    report.notes.push(
+      `[ATENÇÃO] ${name}@${installedVersion} requer @angular/core "${peerRequires}" — incompatível com Angular ${angularMajor}. Atualize este pacote manualmente.`,
+    );
+  }
 }
 
 // Extrai todos os pacotes que causaram peer dependency conflict no output do ng update

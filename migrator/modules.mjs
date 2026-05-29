@@ -18,6 +18,22 @@ export function convertLazyModulesToRoutes() {
       if (!src.includes('loadChildren')) continue;
 
       let modified = false;
+
+      // Normalizes any known .then() pattern to the canonical `m => m.SomeModule` form
+      // before the main replacement below runs.
+      // Pattern 1: .then(({ SomeModule }) => SomeModule)  — destructuring
+      src = src.replace(
+        /loadChildren\s*:\s*\(\s*\)\s*=>\s*import\(\s*(['"])([^'"]+\.module)\1\s*\)\s*\.then\s*\(\s*\(\s*\{\s*(\w+Module)\s*\}\s*\)\s*=>\s*\3\s*\)/g,
+        (_, q, importPath, moduleName) =>
+          `loadChildren: () => import(${q}${importPath}${q}).then(m => m.${moduleName})`,
+      );
+      // Pattern 2: .then(function(m) { return m.SomeModule; })  — function keyword
+      src = src.replace(
+        /loadChildren\s*:\s*\(\s*\)\s*=>\s*import\(\s*(['"])([^'"]+\.module)\1\s*\)\s*\.then\s*\(\s*function\s*\(\s*(\w+)\s*\)\s*\{\s*return\s+\3\.(\w+Module)\s*;\s*\}\s*\)/g,
+        (_, q, importPath, _v, moduleName) =>
+          `loadChildren: () => import(${q}${importPath}${q}).then(m => m.${moduleName})`,
+      );
+
       src = src.replace(
         /loadChildren\s*:\s*\(\s*\)\s*=>\s*import\(\s*['"]([^'"]+\.module)['"]\s*\)\s*\.then\s*\(\s*\(?\s*(\w+)\s*\)?\s*=>\s*\2\.(\w+Module)\s*\)/g,
         (match, importPath, _varName, moduleName) => {
@@ -195,13 +211,20 @@ export function removeUnusedModules() {
   let removed = 0;
   for (const modulePath of moduleFiles) {
     const base = basename(modulePath, '.ts'); // ex: 'vacancy.module'
-    const isReferenced = allTsFiles.some(({ path, content }) =>
-      path !== modulePath && (
-        content.includes(`/${base}'`) ||
-        content.includes(`/${base}"`) ||
-        content.includes(`/${base}\``)
-      )
-    );
+    const modSrc = readFileSync(modulePath, 'utf8');
+    // Extrai o nome da classe exportada (ex: VacancyModule) — necessário para detectar
+    // referências via barrel import ou path alias que não usam o path do arquivo diretamente
+    const classNameMatch = modSrc.match(/export\s+class\s+([A-Z][A-Za-z0-9_]*Module)\b/);
+    const className = classNameMatch?.[1];
+
+    const isReferenced = allTsFiles.some(({ path, content }) => {
+      if (path === modulePath) return false;
+      // Referência por path de arquivo
+      if (content.includes(`/${base}'`) || content.includes(`/${base}"`) || content.includes(`/${base}\``)) return true;
+      // Referência por nome de classe (cobre barrel imports e path aliases)
+      if (className && content.includes(className)) return true;
+      return false;
+    });
     if (!isReferenced) {
       unlinkSync(modulePath);
       console.log(`  ↳ ${basename(modulePath)} removido`);

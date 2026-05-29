@@ -5,7 +5,32 @@ import {
 } from 'fs';
 import { join, dirname, basename, relative, resolve } from 'path';
 import { destPath, SKIP_DIRS } from './context.mjs';
-import { capture } from './utils.mjs';
+import { capture, walkFiles } from './utils.mjs';
+
+// ─── Module-level shared helpers ─────────────────────────────────────────────
+
+// Builds a Map<className, absoluteFilePath> for all exported classes under dir.
+function buildClassMapInDir(dir) {
+  const map = new Map();
+  walkFiles(dir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    const re = /export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g;
+    let m;
+    while ((m = re.exec(src)) !== null) map.set(m[1], full);
+  });
+  return map;
+}
+
+// Builds a Map<symbol, importPath> from all ES named imports in a source string.
+function buildEsImportMap(src) {
+  const map = new Map();
+  for (const m of src.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+    for (const sym of m[1].split(',').map(s => s.replace(/\s+as\s+\w+/, '').trim())) {
+      if (sym) map.set(sym, m[2]);
+    }
+  }
+  return map;
+}
 
 // ─── Shared helpers: template import detection (NgModule + standalone) ──────────
 
@@ -264,6 +289,14 @@ export function tmplDetectNeeded(tpl, tsFilePath = 'template.html') {
         resolveAttr(t.name);
       }
       if (node.children) for (const c of node.children) visitNode(c);
+      // @if branches, @switch cases, @for empty block (Angular 17+ control flow)
+      if (node.branches) for (const b of node.branches) { if (b.children) for (const c of b.children) visitNode(c); }
+      if (node.cases) for (const c of node.cases) { if (c.children) for (const ch of c.children) visitNode(ch); }
+      if (node.empty?.children) for (const c of node.empty.children) visitNode(c);
+      // @defer blocks (Angular 17+): visit all sub-blocks so their components get imported
+      if (node.placeholder?.children) for (const c of node.placeholder.children) visitNode(c);
+      if (node.loading?.children) for (const c of node.loading.children) visitNode(c);
+      if (node.error?.children) for (const c of node.error.children) visitNode(c);
     }
     for (const node of ast.nodes) visitNode(node);
   } catch {
@@ -324,12 +357,13 @@ export function buildInternalProjectIndex() {
         if (!standaloneProp || !/\btrue\b/.test(standaloneProp.getText())) continue;
         const className = cls.getName();
         if (!className) continue;
+        const decoratorType = dec.getName(); // 'Component' | 'Directive' | 'Pipe'
         // Get selector (Component/Directive) or name (Pipe)
         const selectorProp = objLit.getProperty('selector') ?? objLit.getProperty('name');
         if (!selectorProp || !selectorProp.isKind(SyntaxKind.PropertyAssignment)) continue;
         const raw = selectorProp.getInitializer()?.getText().replace(/['"`]/g, '').trim() ?? '';
         for (const sel of raw.split(',').map(s => s.trim()).filter(Boolean)) {
-          index.set(sel, { symbol: className, filePath });
+          index.set(sel, { symbol: className, filePath, decoratorType });
         }
       }
     }
@@ -416,84 +450,62 @@ export function fixNgModuleImports() {
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return 0;
 
-  // Map exported class name → file path
-  const classMap = new Map();
-  function buildClassMap(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { buildClassMap(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
-      const src = readFileSync(full, 'utf8');
-      const re = /export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g;
-      let m;
-      while ((m = re.exec(src)) !== null) classMap.set(m[1], full);
-    }
-  }
-  buildClassMap(srcDir);
+  const classMap = buildClassMapInDir(srcDir);
 
   const MODULE_RE = /@NgModule\s*\(/;
   let total = 0;
 
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.module.ts')) continue;
+  walkFiles(srcDir, e => e.endsWith('.module.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    const modIdx = src.search(MODULE_RE);
+    if (modIdx === -1) return;
 
-      let src = readFileSync(full, 'utf8');
-      const modIdx = src.search(MODULE_RE);
-      if (modIdx === -1) continue;
-
-      // Find @NgModule decorator bounds
-      let depth = 0, modEnd = -1;
-      for (let i = src.indexOf('(', modIdx); i < src.length; i++) {
-        if (src[i] === '(') depth++;
-        else if (src[i] === ')') { if (--depth === 0) { modEnd = i; break; } }
-      }
-      if (modEnd === -1) continue;
-      const decBody = src.slice(modIdx, modEnd + 1);
-
-      // Collect declared class names
-      const declM = decBody.match(/\bdeclarations\s*:\s*\[/);
-      if (!declM) continue;
-      const declStart = modIdx + declM.index + declM[0].length - 1;
-      let bdepth = 0, declEnd = -1;
-      for (let i = declStart; i < src.length; i++) {
-        if (src[i] === '[') bdepth++;
-        else if (src[i] === ']') { if (--bdepth === 0) { declEnd = i; break; } }
-      }
-      if (declEnd === -1) continue;
-      const declared = src.slice(declStart + 1, declEnd).match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
-
-      // Detect imports needed by all declared components' templates
-      const needed = new Map();
-      for (const cls of declared) {
-        const compFile = classMap.get(cls);
-        if (!compFile) continue;
-        const compSrc = readFileSync(compFile, 'utf8');
-        const tpl = tmplGetTemplate(compFile, compSrc);
-        if (!tpl) continue;
-        for (const [sym, pkg] of tmplDetectNeeded(tpl)) needed.set(sym, pkg);
-      }
-      if (!needed.size) continue;
-
-      // Find existing imports: [] in module
-      const importsInfo = tmplGetDecoratorImportsArray(src, MODULE_RE);
-      const existing = importsInfo?.existing ?? new Set();
-      const toAdd = [...needed].filter(([sym]) => !existing.has(sym)).map(([sym, pkg]) => ({ sym, pkg }));
-      if (!toAdd.length) continue;
-
-      const modified = tmplInjectImports(src, toAdd, MODULE_RE);
-      if (modified !== src) {
-        writeFileSync(full, modified);
-        total++;
-        console.log(`  ↳ ${basename(full)}: +${toAdd.map(x => x.sym).join(', ')}`);
-      }
+    // Find @NgModule decorator bounds
+    let depth = 0, modEnd = -1;
+    for (let i = src.indexOf('(', modIdx); i < src.length; i++) {
+      if (src[i] === '(') depth++;
+      else if (src[i] === ')') { if (--depth === 0) { modEnd = i; break; } }
     }
-  }
-  walk(srcDir);
+    if (modEnd === -1) return;
+    const decBody = src.slice(modIdx, modEnd + 1);
+
+    // Collect declared class names
+    const declM = decBody.match(/\bdeclarations\s*:\s*\[/);
+    if (!declM) return;
+    const declStart = modIdx + declM.index + declM[0].length - 1;
+    let bdepth = 0, declEnd = -1;
+    for (let i = declStart; i < src.length; i++) {
+      if (src[i] === '[') bdepth++;
+      else if (src[i] === ']') { if (--bdepth === 0) { declEnd = i; break; } }
+    }
+    if (declEnd === -1) return;
+    const declared = src.slice(declStart + 1, declEnd).match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
+
+    // Detect imports needed by all declared components' templates
+    const needed = new Map();
+    for (const cls of declared) {
+      const compFile = classMap.get(cls);
+      if (!compFile) continue;
+      const compSrc = readFileSync(compFile, 'utf8');
+      const tpl = tmplGetTemplate(compFile, compSrc);
+      if (!tpl) continue;
+      for (const [sym, pkg] of tmplDetectNeeded(tpl)) needed.set(sym, pkg);
+    }
+    if (!needed.size) return;
+
+    // Find existing imports: [] in module
+    const importsInfo = tmplGetDecoratorImportsArray(src, MODULE_RE);
+    const existing = importsInfo?.existing ?? new Set();
+    const toAdd = [...needed].filter(([sym]) => !existing.has(sym)).map(([sym, pkg]) => ({ sym, pkg }));
+    if (!toAdd.length) return;
+
+    const modified = tmplInjectImports(src, toAdd, MODULE_RE);
+    if (modified !== src) {
+      writeFileSync(full, modified);
+      total++;
+      console.log(`  ↳ ${basename(full)}: +${toAdd.map(x => x.sym).join(', ')}`);
+    }
+  });
   if (total > 0) console.log(`  ↳ NgModule imports: ${total} module(s) corrigido(s)`);
   return total;
 }
@@ -504,21 +516,7 @@ export function copyModuleImportsToComponents() {
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return 0;
 
-  // Build class name → file path map
-  const classMap = new Map();
-  function buildClassMap(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { buildClassMap(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
-      const src = readFileSync(full, 'utf8');
-      const re = /export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g;
-      let m;
-      while ((m = re.exec(src)) !== null) classMap.set(m[1], full);
-    }
-  }
-  buildClassMap(srcDir);
+  const classMap = buildClassMapInDir(srcDir);
 
   const COMPONENT_RE = /@Component\s*\(/;
   const MODULE_RE = /@NgModule\s*\(/;
@@ -560,19 +558,10 @@ export function copyModuleImportsToComponents() {
     return symbols;
   }
 
-  // Build sym → pkg map from ES imports in any source string
-  function buildEsImportMap(src) {
-    const map = new Map();
-    for (const m of src.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g)) {
-      for (const sym of m[1].split(',').map(s => s.replace(/\s+as\s+\w+/, '').trim())) {
-        if (sym) map.set(sym, m[2]);
-      }
-    }
-    return map;
-  }
-
-  // Collect all external-package symbols exported (directly or transitively) by a local module class.
-  function collectModuleExports(className, depth, result, visited = new Set()) {
+  // Collect symbols exported (directly or transitively) by a local module class.
+  // `result`         → sym → external-package-name  (for external re-exports)
+  // `internalResult` → sym → absolute file path      (for internal component/pipe/directive exports)
+  function collectModuleExports(className, depth, result, internalResult, visited = new Set()) {
     if (depth > 8 || visited.has(className)) return;
     visited.add(className);
     const file = classMap.get(className);
@@ -586,14 +575,30 @@ export function copyModuleImportsToComponents() {
       if (!pkg.startsWith('.')) {
         result.set(exported, pkg); // external symbol re-exported — add it
       } else {
-        collectModuleExports(exported, depth + 1, result, visited); // recurse into local re-export
+        // Resolve to absolute path to decide: module (recurse) or component/pipe/directive (collect)
+        const absBase = resolve(dirname(file), pkg);
+        const absTs = existsSync(absBase + '.ts') ? absBase + '.ts' : absBase;
+        if (existsSync(absTs)) {
+          const expSrc = readFileSync(absTs, 'utf8');
+          if (expSrc.includes('@NgModule')) {
+            collectModuleExports(exported, depth + 1, result, internalResult, visited);
+          } else {
+            // Internal component/pipe/directive exported by this module
+            internalResult.set(exported, absTs);
+          }
+        } else {
+          // Can't resolve file — try recursing as module anyway
+          collectModuleExports(exported, depth + 1, result, internalResult, visited);
+        }
       }
     }
   }
 
-  // Resolve all external symbols a component declared in modSrc can access.
+  // Resolve all symbols a component declared in modSrc can access via its NgModule imports.
+  // Returns [externals: Map<sym, pkg>, internals: Map<sym, absFilePath>]
   function resolveTransitiveExternals(modSrc) {
     const result = new Map();
+    const internalResult = new Map();
     const esImports = buildEsImportMap(modSrc);
     for (const sym of extractDecoratorArray(modSrc, MODULE_RE, 'imports')) {
       const pkg = esImports.get(sym);
@@ -601,67 +606,76 @@ export function copyModuleImportsToComponents() {
       if (!pkg.startsWith('.')) {
         result.set(sym, pkg); // external symbol — include directly
       } else {
-        collectModuleExports(sym, 0, result); // local module — follow exports
+        collectModuleExports(sym, 0, result, internalResult); // local module — follow exports
       }
     }
-    return result;
+    return { externals: result, internals: internalResult };
   }
 
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.module.ts')) continue;
+  // Symbols that must never appear in a component's imports[] array
+  const BOOTSTRAP_ONLY = new Set([
+    'BrowserModule', 'BrowserAnimationsModule', 'NoopAnimationsModule',
+    'HttpClientModule', 'HttpClientJsonpModule',
+    'Component', 'Directive', 'Pipe', 'NgModule', 'Injectable',
+    'Input', 'Output', 'ViewChild', 'ViewChildren', 'ContentChild', 'ContentChildren',
+    'HostListener', 'HostBinding', 'EventEmitter', 'ChangeDetectionStrategy',
+    'ChangeDetectorRef', 'ElementRef', 'TemplateRef', 'ViewContainerRef',
+    'inject', 'input', 'output', 'viewChild', 'viewChildren', 'contentChild', 'model',
+  ]);
 
-      const modSrc = readFileSync(full, 'utf8');
-      if (!modSrc.includes('@NgModule')) continue;
+  walkFiles(srcDir, e => e.endsWith('.module.ts'), (full) => {
+    const modSrc = readFileSync(full, 'utf8');
+    if (!modSrc.includes('@NgModule')) return;
 
-      const declared = extractDecoratorArray(modSrc, MODULE_RE, 'declarations');
-      if (!declared.length) continue;
+    const declared = extractDecoratorArray(modSrc, MODULE_RE, 'declarations');
+    if (!declared.length) return;
 
-      // Resolve all externally-importable symbols reachable from this module
-      const allExternals = resolveTransitiveExternals(modSrc);
-      if (!allExternals.size) continue;
+    // All symbols reachable via this module's imports
+    const { externals: allExternals, internals: internalExports } = resolveTransitiveExternals(modSrc);
 
-      for (const cls of declared) {
-        const compFile = classMap.get(cls);
-        if (!compFile) continue;
-        let compSrc = readFileSync(compFile, 'utf8');
-        if (!compSrc.includes('@Component(')) continue;
-        // Process ALL declared components — including those not yet standalone.
-        // Components converted later (convertOrphanedNonStandalone) would otherwise
-        // miss their module's imports since the module is already pruned by then.
+    for (const cls of declared) {
+      const compFile = classMap.get(cls);
+      if (!compFile) continue;
+      let compSrc = readFileSync(compFile, 'utf8');
+      if (!compSrc.includes('@Component(')) continue;
 
-        const arrInfo = tmplGetDecoratorImportsArray(compSrc, COMPONENT_RE);
-        const existing = arrInfo?.existing ?? new Set();
+      const arrInfo = tmplGetDecoratorImportsArray(compSrc, COMPONENT_RE);
+      const existing = arrInfo?.existing ?? new Set();
 
-        // Bootstrap-level modules and Angular core symbols that must NOT be in component imports
-      const BOOTSTRAP_ONLY = new Set([
-        'BrowserModule', 'BrowserAnimationsModule', 'NoopAnimationsModule',
-        'HttpClientModule', 'HttpClientJsonpModule',
-        // Angular core decorators/functions — never valid as component imports
-        'Component', 'Directive', 'Pipe', 'NgModule', 'Injectable',
-        'Input', 'Output', 'ViewChild', 'ViewChildren', 'ContentChild', 'ContentChildren',
-        'HostListener', 'HostBinding', 'EventEmitter', 'ChangeDetectionStrategy',
-        'ChangeDetectorRef', 'ElementRef', 'TemplateRef', 'ViewContainerRef',
-        'inject', 'input', 'output', 'viewChild', 'viewChildren', 'contentChild', 'model',
-      ]);
+      // 1. External package symbols from module imports
       const toAdd = [...allExternals]
-          .filter(([sym]) => !existing.has(sym) && !BOOTSTRAP_ONLY.has(sym))
-          .map(([sym, pkg]) => ({ sym, pkg }));
-        if (!toAdd.length) continue;
+        .filter(([sym]) => !existing.has(sym) && !BOOTSTRAP_ONLY.has(sym))
+        .map(([sym, pkg]) => ({ sym, pkg }));
 
-        const modified = tmplInjectImports(compSrc, toAdd, COMPONENT_RE);
-        if (modified !== compSrc) {
-          writeFileSync(compFile, modified);
-          total++;
-          console.log(`  ↳ ${basename(compFile)}: +${toAdd.map(x => x.sym).join(', ')}`);
-        }
+      // 2. Internal symbols exported by locally-imported modules (e.g. SharedModule exports TranslatePipe)
+      for (const [sym, absFile] of internalExports) {
+        if (existing.has(sym) || toAdd.some(x => x.sym === sym)) continue;
+        if (BOOTSTRAP_ONLY.has(sym)) continue;
+        const rel = relative(dirname(compFile), absFile).replace(/\.ts$/, '');
+        toAdd.push({ sym, pkg: rel.startsWith('.') ? rel : `./${rel}` });
+      }
+
+      // 3. Co-declared symbols from the same module (other components, pipes, directives).
+      for (const otherCls of declared) {
+        if (otherCls === cls) continue;
+        if (existing.has(otherCls) || toAdd.some(x => x.sym === otherCls)) continue;
+        if (BOOTSTRAP_ONLY.has(otherCls)) continue;
+        const otherFile = classMap.get(otherCls);
+        if (!otherFile) continue;
+        const rel = relative(dirname(compFile), otherFile).replace(/\.ts$/, '');
+        toAdd.push({ sym: otherCls, pkg: rel.startsWith('.') ? rel : `./${rel}` });
+      }
+
+      if (!toAdd.length) continue;
+
+      const modified = tmplInjectImports(compSrc, toAdd, COMPONENT_RE);
+      if (modified !== compSrc) {
+        writeFileSync(compFile, modified);
+        total++;
+        console.log(`  ↳ ${basename(compFile)}: +${toAdd.map(x => x.sym).join(', ')}`);
       }
     }
-  }
-  walk(srcDir);
+  });
   if (total > 0) console.log(`  ↳ module imports copied to ${total} component(s)`);
   return total;
 }
@@ -675,45 +689,46 @@ export function fixStandaloneImports() {
   // Build the internal project index once (lazy) for detecting project-internal components
   const internalIndex = buildInternalProjectIndex();
 
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
-      let src = readFileSync(full, 'utf8');
-      if (!src.includes('@Component(') || !src.includes('standalone: true')) continue;
-      const tpl = tmplGetTemplate(full, src);
-      if (!tpl) continue;
-
-      const needed = tmplDetectNeeded(tpl, full);
-
-      // Detect project-internal standalone components referenced in the template
-      for (const [selector, { symbol, filePath: depFile }] of internalIndex) {
-        if (depFile === full) continue;
-        const escaped = selector.replace(/[-[\].*+?^${}()|\\]/g, '\\$&');
-        if (!new RegExp(`<${escaped}[\\s\\/>]`).test(tpl)) continue;
-        // Compute the relative import path (without .ts extension)
-        const rel = relative(dirname(full), depFile).replace(/\.ts$/, '');
-        const importPath = rel.startsWith('.') ? rel : `./${rel}`;
-        needed.set(symbol, importPath);
-      }
-
-      if (!needed.size) continue;
-      const arrInfo = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
-      const existing = arrInfo?.existing ?? new Set();
-      const toAdd = [...needed].filter(([sym]) => !existing.has(sym)).map(([sym, pkg]) => ({ sym, pkg }));
-      if (!toAdd.length) continue;
-      const modified = tmplInjectImports(src, toAdd, COMPONENT_RE);
-      if (modified !== src) {
-        writeFileSync(full, modified);
-        total++;
-        console.log(`  ↳ ${basename(full)}: +${toAdd.map(x => x.sym).join(', ')}`);
-      }
-    }
-  }
   const srcDir = join(destPath, 'src');
-  if (existsSync(srcDir)) walk(srcDir);
+  if (existsSync(srcDir)) walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    if (!src.includes('@Component(') || !src.includes('standalone: true')) return;
+    const tpl = tmplGetTemplate(full, src);
+    if (!tpl) return;
+
+    const needed = tmplDetectNeeded(tpl, full);
+
+    // Detect project-internal standalone components/directives/pipes referenced in the template
+    for (const [selector, { symbol, filePath: depFile, decoratorType }] of internalIndex) {
+      if (depFile === full) continue;
+      let matches = false;
+      if (decoratorType === 'Pipe') {
+        matches = new RegExp(`\\|\\s*${selector}\\b`).test(tpl);
+      } else if (selector.startsWith('[')) {
+        const attr = selector.slice(1).replace(/\]$/, '').replace(/[-[\].*+?^${}()|\\]/g, '\\$&');
+        matches = new RegExp(`[\\[\\s"]${attr}[\\]\\s=">/]`).test(tpl);
+      } else {
+        const escaped = selector.replace(/[-[\].*+?^${}()|\\]/g, '\\$&');
+        matches = new RegExp(`<${escaped}[\\s\\/>]`).test(tpl);
+      }
+      if (!matches) continue;
+      const rel = relative(dirname(full), depFile).replace(/\.ts$/, '');
+      const importPath = rel.startsWith('.') ? rel : `./${rel}`;
+      needed.set(symbol, importPath);
+    }
+
+    if (!needed.size) return;
+    const arrInfo = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
+    const existing = arrInfo?.existing ?? new Set();
+    const toAdd = [...needed].filter(([sym]) => !existing.has(sym)).map(([sym, pkg]) => ({ sym, pkg }));
+    if (!toAdd.length) return;
+    const modified = tmplInjectImports(src, toAdd, COMPONENT_RE);
+    if (modified !== src) {
+      writeFileSync(full, modified);
+      total++;
+      console.log(`  ↳ ${basename(full)}: +${toAdd.map(x => x.sym).join(', ')}`);
+    }
+  });
   if (total > 0) console.log(`  ↳ standalone imports: ${total} componente(s) corrigido(s)`);
   return total;
 }
@@ -722,16 +737,12 @@ export function fixStandaloneImports() {
 
 export function fixMissingStandalone() {
   let count = 0;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts')) continue;
-      let src = readFileSync(full, 'utf8');
+  const srcDir2 = join(destPath, 'src');
+  if (existsSync(srcDir2)) walkFiles(srcDir2, e => e.endsWith('.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
       const hasPipeOrDirective = src.includes('@Pipe(') || src.includes('@Directive(');
       const hasComponent = src.includes('@Component({');
-      if (!hasPipeOrDirective && !hasComponent) continue;
+      if (!hasPipeOrDirective && !hasComponent) return;
 
       let out = src;
 
@@ -794,11 +805,8 @@ export function fixMissingStandalone() {
         out = result;
       }
 
-      if (out !== src) { writeFileSync(full, out); count++; }
-    }
-  }
-  const srcDir = join(destPath, 'src');
-  if (existsSync(srcDir)) walk(srcDir);
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
   if (count > 0) console.log(`  ↳ standalone: true adicionado em ${count} arquivo(s)`);
   return count;
 }
@@ -807,46 +815,36 @@ export function removeImportsFromNonStandalone() {
   let count = 0;
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
-      const src = readFileSync(full, 'utf8');
-      if (!src.includes('standalone: false') && !src.includes('standalone:false')) continue;
-      if (!src.includes('@Component(')) continue;
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes('standalone: false') && !src.includes('standalone:false')) return;
+    if (!src.includes('@Component(')) return;
 
-      const classBoundaryRe = /^export\s+(?:abstract\s+)?class\s+/gm;
-      const boundaries = [];
-      let bm;
-      while ((bm = classBoundaryRe.exec(src)) !== null) boundaries.push(bm.index);
-      boundaries.push(src.length);
+    const classBoundaryRe = /^export\s+(?:abstract\s+)?class\s+/gm;
+    const boundaries = [];
+    let bm;
+    while ((bm = classBoundaryRe.exec(src)) !== null) boundaries.push(bm.index);
+    boundaries.push(src.length);
 
-      let result = src;
-      let shift = 0;
-      for (let bi = 0; bi < boundaries.length - 1; bi++) {
-        const classStart = boundaries[bi] + shift;
-        const before = result.slice(0, classStart);
-        const compIdx = before.lastIndexOf('@Component(');
-        if (compIdx === -1) continue;
-        const decRegion = result.slice(compIdx, classStart);
-        if (!/standalone\s*:\s*false/.test(decRegion)) continue;
-        if (!decRegion.includes('imports:')) continue;
+    let result = src;
+    let shift = 0;
+    for (let bi = 0; bi < boundaries.length - 1; bi++) {
+      const classStart = boundaries[bi] + shift;
+      const before = result.slice(0, classStart);
+      const compIdx = before.lastIndexOf('@Component(');
+      if (compIdx === -1) continue;
+      const decRegion = result.slice(compIdx, classStart);
+      if (!/standalone\s*:\s*false/.test(decRegion)) continue;
+      if (!decRegion.includes('imports:')) continue;
 
-        const cleaned = decRegion.replace(/\n[ \t]*imports\s*:\s*\[[^\]]*\]\s*,?/g, '');
-        if (cleaned === decRegion) continue;
-        result = result.slice(0, compIdx) + cleaned + result.slice(classStart);
-        shift += cleaned.length - decRegion.length;
-      }
-
-      if (result !== src) {
-        writeFileSync(full, result);
-        count++;
-      }
+      const cleaned = decRegion.replace(/\n[ \t]*imports\s*:\s*\[[^\]]*\]\s*,?/g, '');
+      if (cleaned === decRegion) continue;
+      result = result.slice(0, compIdx) + cleaned + result.slice(classStart);
+      shift += cleaned.length - decRegion.length;
     }
-  }
-  walk(srcDir);
+
+    if (result !== src) { writeFileSync(full, result); count++; }
+  });
   if (count > 0) console.log(`  ↳ imports: [] removido de ${count} componente(s) standalone: false`);
 }
 
@@ -856,20 +854,7 @@ export function fixStandaloneInModuleDeclarations() {
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return 0;
 
-  // Build class → file map
-  const classMap = new Map();
-  function buildClassMap(dir) {
-    for (const e of readdirSync(dir)) {
-      if (SKIP_DIRS.has(e)) continue;
-      const full = join(dir, e);
-      if (statSync(full).isDirectory()) { buildClassMap(full); continue; }
-      if (!e.endsWith('.ts') || e.endsWith('.spec.ts')) continue;
-      const src = readFileSync(full, 'utf8');
-      for (const m of src.matchAll(/export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g))
-        classMap.set(m[1], full);
-    }
-  }
-  buildClassMap(srcDir);
+  const classMap = buildClassMapInDir(srcDir);
 
   function isStandalone(className) {
     const file = classMap.get(className);
@@ -881,92 +866,65 @@ export function fixStandaloneInModuleDeclarations() {
   const MODULE_RE = /@NgModule\s*\(/;
   let count = 0;
 
-  function walk(dir) {
-    for (const e of readdirSync(dir)) {
-      if (SKIP_DIRS.has(e)) continue;
-      const full = join(dir, e);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!e.endsWith('.module.ts')) continue;
+  walkFiles(srcDir, e => e.endsWith('.module.ts'), (full, e) => {
+    let src = readFileSync(full, 'utf8');
+    if (!src.includes('@NgModule')) return;
 
-      let src = readFileSync(full, 'utf8');
-      if (!src.includes('@NgModule')) continue;
-
-      const decInfo = tmplGetDecoratorImportsArray(src, MODULE_RE.source ? new RegExp(MODULE_RE.source) : MODULE_RE);
-
-      // Find the declarations array manually (tmplGetDecoratorImportsArray only handles 'imports')
-      const modIdx = src.search(MODULE_RE);
-      if (modIdx === -1) continue;
-      let depth = 0, modEnd = -1;
-      for (let i = src.indexOf('(', modIdx); i < src.length; i++) {
-        if (src[i] === '(') depth++;
-        else if (src[i] === ')') { if (--depth === 0) { modEnd = i; break; } }
-      }
-      if (modEnd === -1) continue;
-
-      const body = src.slice(modIdx, modEnd + 1);
-      const declM = body.match(/\bdeclarations\s*:\s*\[/);
-      if (!declM) continue;
-
-      const declArrStart = modIdx + declM.index + declM[0].length - 1;
-      let bd = 0, declArrEnd = -1;
-      for (let i = declArrStart; i < src.length; i++) {
-        if (src[i] === '[') bd++;
-        else if (src[i] === ']') { if (--bd === 0) { declArrEnd = i; break; } }
-      }
-      if (declArrEnd === -1) continue;
-
-      const declContent = src.slice(declArrStart + 1, declArrEnd);
-      const declared = declContent.match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
-      const toPromote = declared.filter(isStandalone);
-      if (!toPromote.length) continue;
-
-      // Remove each from declarations array
-      let modified = src;
-      let offset = 0;
-      for (const sym of toPromote) {
-        // Remove "  SymbolName,\n" or "SymbolName," or trailing comma form
-        const before = modified;
-        modified = modified.replace(
-          new RegExp(`(,\\s*\\n?[ \\t]*\\b${sym}\\b[ \\t]*(?=,|\\n|\\]))|(\\b${sym}\\b[ \\t]*,?[ \\t]*\\n?)`, 'g'),
-          (m, g1, g2, pos) => {
-            // Only remove inside declarations array region (approximate by checking position)
-            return m;
-          },
-        );
-        // Simpler targeted removal: find exact position in declarations block
-        const re = new RegExp(`(?:,\\s*)?\\b${sym}\\b\\s*,?\\s*\\n?`);
-        const declBlock = modified.slice(declArrStart, declArrEnd + 1);
-        const updated = declBlock.replace(re, '');
-        if (updated !== declBlock) {
-          modified = modified.slice(0, declArrStart) + updated + modified.slice(declArrEnd + 1);
-          declArrEnd += updated.length - declBlock.length; // update end position
-        }
-      }
-
-      // Add to imports array (reuse tmplInjectImports logic)
-      const esImports = new Map();
-      for (const m of modified.matchAll(/^import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/gm)) {
-        for (const sym of m[1].split(',').map(s => s.trim())) esImports.set(sym, m[2]);
-      }
-      const toAdd = toPromote
-        .filter(sym => {
-          const imp = tmplGetDecoratorImportsArray(modified, MODULE_RE);
-          return !imp?.existing.has(sym);
-        })
-        .map(sym => ({ sym, pkg: esImports.get(sym) ?? '.' }));
-
-      if (toAdd.length) {
-        modified = tmplInjectImports(modified, toAdd, MODULE_RE);
-      }
-
-      if (modified !== src) {
-        writeFileSync(full, modified);
-        count++;
-        console.log(`  ↳ ${e}: ${toPromote.join(', ')} moved from declarations → imports`);
-      }
+    // Find the declarations array manually (tmplGetDecoratorImportsArray only handles 'imports')
+    const modIdx = src.search(MODULE_RE);
+    if (modIdx === -1) return;
+    let depth = 0, modEnd = -1;
+    for (let i = src.indexOf('(', modIdx); i < src.length; i++) {
+      if (src[i] === '(') depth++;
+      else if (src[i] === ')') { if (--depth === 0) { modEnd = i; break; } }
     }
-  }
-  walk(srcDir);
+    if (modEnd === -1) return;
+
+    const body = src.slice(modIdx, modEnd + 1);
+    const declM = body.match(/\bdeclarations\s*:\s*\[/);
+    if (!declM) return;
+
+    const declArrStart = modIdx + declM.index + declM[0].length - 1;
+    let bd = 0, declArrEnd = -1;
+    for (let i = declArrStart; i < src.length; i++) {
+      if (src[i] === '[') bd++;
+      else if (src[i] === ']') { if (--bd === 0) { declArrEnd = i; break; } }
+    }
+    if (declArrEnd === -1) return;
+
+    const declContent = src.slice(declArrStart + 1, declArrEnd);
+    const declared = declContent.match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
+    const toPromote = declared.filter(isStandalone);
+    if (!toPromote.length) return;
+
+    // Rebuild declarations array cleanly
+    const toPromoteSet = new Set(toPromote);
+    const toKeep = declared.filter(sym => !toPromoteSet.has(sym));
+    const indentMatch = declContent.match(/\n([ \t]+)[A-Z]/);
+    const itemIndent = indentMatch ? indentMatch[1] : '        ';
+    const closeIndent = itemIndent.length >= 4 ? itemIndent.slice(0, -4) : '';
+    const newDeclContent = toKeep.length > 0
+      ? '\n' + toKeep.map(s => `${itemIndent}${s},`).join('\n') + '\n' + closeIndent
+      : '\n' + closeIndent;
+    let modified = src.slice(0, declArrStart + 1) + newDeclContent + src.slice(declArrEnd);
+    declArrEnd = declArrStart + 1 + newDeclContent.length;
+
+    const esImports = buildEsImportMap(modified);
+    const toAdd = toPromote
+      .filter(sym => {
+        const imp = tmplGetDecoratorImportsArray(modified, MODULE_RE);
+        return !imp?.existing.has(sym);
+      })
+      .map(sym => ({ sym, pkg: esImports.get(sym) ?? '.' }));
+
+    if (toAdd.length) modified = tmplInjectImports(modified, toAdd, MODULE_RE);
+
+    if (modified !== src) {
+      writeFileSync(full, modified);
+      count++;
+      console.log(`  ↳ ${e}: ${toPromote.join(', ')} moved from declarations → imports`);
+    }
+  });
   if (count > 0) console.log(`  ↳ fixStandaloneInModuleDeclarations: ${count} module(s) corrigido(s)`);
   return count;
 }
@@ -975,20 +933,13 @@ export function collectStandaloneFalseCount() {
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return 0;
   let count = 0;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
-      const src = readFileSync(full, 'utf8');
-      if ((src.includes('standalone: false') || src.includes('standalone:false')) &&
-          (src.includes('@Component(') || src.includes('@Pipe(') || src.includes('@Directive('))) {
-        count++;
-      }
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if ((src.includes('standalone: false') || src.includes('standalone:false')) &&
+        (src.includes('@Component(') || src.includes('@Pipe(') || src.includes('@Directive('))) {
+      count++;
     }
-  }
-  walk(srcDir);
+  });
   return count;
 }
 
@@ -996,74 +947,60 @@ export function convertOrphanedNonStandalone() {
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return 0;
 
-  // Coleta todos os nomes de classe presentes em declarations: [] de NgModules ainda existentes
+  // Collect class names declared in still-existing NgModules
   const declaredInModule = new Set();
-  function indexModules(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { indexModules(full); continue; }
-      if (!entry.endsWith('.module.ts')) continue;
-      const src = readFileSync(full, 'utf8');
-      if (!src.includes('@NgModule')) continue;
-      const declIdx = src.search(/\bdeclarations\s*:/);
-      if (declIdx === -1) continue;
-      const arrOpen = src.indexOf('[', declIdx);
-      if (arrOpen === -1) continue;
-      let depth = 0, arrEnd = -1;
-      for (let i = arrOpen; i < src.length; i++) {
-        if (src[i] === '[') depth++;
-        else if (src[i] === ']') { if (--depth === 0) { arrEnd = i; break; } }
-      }
-      if (arrEnd === -1) continue;
-      for (const m of src.slice(arrOpen + 1, arrEnd).matchAll(/\b[A-Z][A-Za-z0-9_]*\b/g)) {
-        declaredInModule.add(m[0]);
-      }
+  walkFiles(srcDir, e => e.endsWith('.module.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes('@NgModule')) return;
+    const declIdx = src.search(/\bdeclarations\s*:/);
+    if (declIdx === -1) return;
+    const arrOpen = src.indexOf('[', declIdx);
+    if (arrOpen === -1) return;
+    let depth = 0, arrEnd = -1;
+    for (let i = arrOpen; i < src.length; i++) {
+      if (src[i] === '[') depth++;
+      else if (src[i] === ']') { if (--depth === 0) { arrEnd = i; break; } }
     }
-  }
-  indexModules(srcDir);
+    if (arrEnd === -1) return;
+    for (const m of src.slice(arrOpen + 1, arrEnd).matchAll(/\b[A-Z][A-Za-z0-9_]*\b/g)) {
+      declaredInModule.add(m[0]);
+    }
+  });
 
   let count = 0;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
-      const src = readFileSync(full, 'utf8');
-      if (!src.includes('@Component(')) continue;
-      if (!src.includes('standalone: false') && !src.includes('standalone:false')) continue;
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes('@Component(')) return;
+    if (!src.includes('standalone: false') && !src.includes('standalone:false')) return;
 
-      const classNames = [...src.matchAll(/export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g)].map(m => m[1]);
-      if (classNames.some(cls => declaredInModule.has(cls))) continue;
+    const classNames = [...src.matchAll(/export\s+(?:abstract\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g)].map(m => m[1]);
+    if (classNames.some(cls => declaredInModule.has(cls))) return;
 
-      let updated = src.replace(/\bstandalone\s*:\s*false/g, 'standalone: true');
-      if (updated === src) continue;
-      // Ensure each @Component that became standalone: true also has imports: []
-      const COMP_RE2 = /@Component\s*\(/g;
-      let m2; let r2 = updated; let sh2 = 0;
-      while ((m2 = COMP_RE2.exec(updated)) !== null) {
-        const ds = m2.index + sh2;
-        let depth2 = 0, de = -1;
-        for (let i = r2.indexOf('(', ds); i < r2.length; i++) {
-          if (r2[i] === '(') depth2++; else if (r2[i] === ')') { if (--depth2 === 0) { de = i; break; } }
-        }
-        if (de === -1) continue;
-        const db = r2.slice(ds, de + 1);
-        if (!db.includes('standalone: true') || db.includes('imports:')) continue;
-        const ob = r2.indexOf('{', ds);
-        if (ob === -1 || ob > de) continue;
-        const ins = '\n  imports: [],';
-        r2 = r2.slice(0, ob + 1) + ins + r2.slice(ob + 1);
-        sh2 += ins.length;
+    let updated = src.replace(/\bstandalone\s*:\s*false/g, 'standalone: true');
+    if (updated === src) return;
+    // Ensure each @Component that became standalone: true also has imports: []
+    const COMP_RE2 = /@Component\s*\(/g;
+    let m2; let r2 = updated; let sh2 = 0;
+    while ((m2 = COMP_RE2.exec(updated)) !== null) {
+      const ds = m2.index + sh2;
+      let depth2 = 0, de = -1;
+      for (let i = r2.indexOf('(', ds); i < r2.length; i++) {
+        if (r2[i] === '(') depth2++; else if (r2[i] === ')') { if (--depth2 === 0) { de = i; break; } }
       }
-      updated = r2;
-      writeFileSync(full, updated);
-      count++;
-      console.log(`  ↳ ${basename(full)}: standalone: false → true (órfão)`);
+      if (de === -1) continue;
+      const db = r2.slice(ds, de + 1);
+      if (!db.includes('standalone: true') || db.includes('imports:')) continue;
+      const ob = r2.indexOf('{', ds);
+      if (ob === -1 || ob > de) continue;
+      const ins = '\n  imports: [],';
+      r2 = r2.slice(0, ob + 1) + ins + r2.slice(ob + 1);
+      sh2 += ins.length;
     }
-  }
-  walk(srcDir);
+    updated = r2;
+    writeFileSync(full, updated);
+    count++;
+    console.log(`  ↳ ${basename(full)}: standalone: false → true (órfão)`);
+  });
   if (count > 0) console.log(`  ↳ ${count} componente(s) órfão(s) convertidos para standalone: true`);
   return count;
 }
@@ -1072,22 +1009,15 @@ export function cleanupStandaloneTodos() {
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return 0;
   let count = 0;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts') && !entry.endsWith('.html')) continue;
-      const src = readFileSync(full, 'utf8');
-      if (!src.includes('TODO(standalone-migration)')) continue;
-      const updated = src.split('\n')
-        .filter(line => !/^\s*\/\/\s*TODO\(standalone-migration\)/.test(line))
-        .join('\n')
-        .replace(/\s*\/\*\s*TODO\(standalone-migration\)[^*]*\*\//g, '');
-      if (updated !== src) { writeFileSync(full, updated); count++; }
-    }
-  }
-  walk(srcDir);
+  walkFiles(srcDir, e => e.endsWith('.ts') || e.endsWith('.html'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes('TODO(standalone-migration)')) return;
+    const updated = src.split('\n')
+      .filter(line => !/^\s*\/\/\s*TODO\(standalone-migration\)/.test(line))
+      .join('\n')
+      .replace(/\s*\/\*\s*TODO\(standalone-migration\)[^*]*\*\//g, '');
+    if (updated !== src) { writeFileSync(full, updated); count++; }
+  });
   if (count > 0) console.log(`  ↳ TODO(standalone-migration): removido de ${count} arquivo(s)`);
   return count;
 }
@@ -1098,43 +1028,36 @@ export function fixCircularStandaloneImports() {
 
   const fileInfo = new Map();
 
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
-      const src = readFileSync(full, 'utf8');
-      if (!src.includes('standalone: true')) continue;
-      if (!/@(?:Component|Directive|Pipe)\s*\(/.test(src)) continue;
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes('standalone: true')) return;
+    if (!/@(?:Component|Directive|Pipe)\s*\(/.test(src)) return;
 
-      const classes = new Set(
-        [...src.matchAll(/export\s+(?:abstract\s+)?class\s+([A-Z]\w*)/g)].map(m => m[1]),
-      );
+    const classes = new Set(
+      [...src.matchAll(/export\s+(?:abstract\s+)?class\s+([A-Z]\w*)/g)].map(m => m[1]),
+    );
 
-      const decM = src.match(/@(?:Component|Directive|Pipe)\s*\(\s*\{[\s\S]*?\bimports\s*:\s*\[([\s\S]*?)\]/);
-      const decoratorImportClasses = decM
-        ? [...decM[1].matchAll(/\b([A-Z]\w*)\b/g)].map(m => m[1])
-        : [];
+    const decM = src.match(/@(?:Component|Directive|Pipe)\s*\(\s*\{[\s\S]*?\bimports\s*:\s*\[([\s\S]*?)\]/);
+    const decoratorImportClasses = decM
+      ? [...decM[1].matchAll(/\b([A-Z]\w*)\b/g)].map(m => m[1])
+      : [];
 
-      const esImportMap = new Map();
-      for (const m of src.matchAll(/^import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/gm)) {
-        const importPath = m[2];
-        if (!importPath.startsWith('.')) continue;
-        let resolved = resolve(dirname(full), importPath);
-        if (!resolved.endsWith('.ts')) resolved += '.ts';
-        for (const rawCls of m[1].split(',')) {
-          const cls = rawCls.replace(/\s+as\s+\S+/, '').trim();
-          if (cls) esImportMap.set(cls, resolved);
-        }
-      }
-
-      if (classes.size > 0 && decoratorImportClasses.length > 0) {
-        fileInfo.set(full, { classes, decoratorImportClasses, esImportMap });
+    const esImportMap = new Map();
+    for (const m of src.matchAll(/^import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/gm)) {
+      const importPath = m[2];
+      if (!importPath.startsWith('.')) continue;
+      let resolved = resolve(dirname(full), importPath);
+      if (!resolved.endsWith('.ts')) resolved += '.ts';
+      for (const rawCls of m[1].split(',')) {
+        const cls = rawCls.replace(/\s+as\s+\S+/, '').trim();
+        if (cls) esImportMap.set(cls, resolved);
       }
     }
-  }
-  walk(srcDir);
+
+    if (classes.size > 0 && decoratorImportClasses.length > 0) {
+      fileInfo.set(full, { classes, decoratorImportClasses, esImportMap });
+    }
+  });
 
   let fixed = 0;
   const handled = new Set();
@@ -1201,36 +1124,38 @@ export function autoFixBuildErrors() {
   // conseguimos encontrá-lo mesmo que o módulo original tenha sido removido.
   function buildProjectEsMap() {
     const map = new Map(); // sym → pkg
-    function walk(dir) {
-      for (const e of readdirSync(dir)) {
-        if (SKIP_DIRS.has(e)) continue;
-        const full = join(dir, e);
-        if (statSync(full).isDirectory()) { walk(full); continue; }
-        if (!e.endsWith('.ts') || e.endsWith('.spec.ts')) continue;
-        const src = readFileSync(full, 'utf8');
-        for (const m of src.matchAll(/^import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/gm)) {
-          const pkg = m[2];
-          if (pkg.startsWith('.')) continue;
-          for (const sym of m[1].split(',').map(s => s.replace(/\s+as\s+\w+/, '').trim()).filter(Boolean)) {
-            if (!map.has(sym)) map.set(sym, pkg);
-          }
+    walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+      const src = readFileSync(full, 'utf8');
+      for (const m of src.matchAll(/^import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/gm)) {
+        const pkg = m[2];
+        if (pkg.startsWith('.')) continue;
+        for (const sym of m[1].split(',').map(s => s.replace(/\s+as\s+\w+/, '').trim()).filter(Boolean)) {
+          if (!map.has(sym)) map.set(sym, pkg);
         }
       }
-    }
-    walk(srcDir);
+    });
     return map;
   }
 
-  // Detect available build configuration (some projects don't have 'development')
-  function buildCmd() {
-    const probe = capture('npx ng build --configuration development 2>&1 | head -3');
-    if (probe && probe.includes("is not set in the workspace")) return 'npx ng build 2>&1';
-    return 'npx ng build --configuration development 2>&1';
-  }
-  const ngBuildCmd = buildCmd();
+  // Detect available build configuration by reading angular.json — avoids launching
+  // a full build process just to check if 'development' config exists.
+  const ngBuildCmd = (() => {
+    const ngPath = join(destPath, 'angular.json');
+    try {
+      const ng = JSON.parse(readFileSync(ngPath, 'utf8'));
+      for (const proj of Object.values(ng.projects ?? {})) {
+        if (proj.architect?.build?.configurations?.development) {
+          return 'npx ng build --configuration development 2>&1';
+        }
+      }
+    } catch {}
+    return 'npx ng build 2>&1';
+  })();
 
   let totalFixed = 0;
   const MAX_PASSES = 6;
+  // Build once before the loop; rebuilt only after files are written (passFixed > 0)
+  let projectEsMap = buildProjectEsMap();
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const out = capture(ngBuildCmd);
@@ -1244,9 +1169,14 @@ export function autoFixBuildErrors() {
     }
 
     // Coleta erros NG8001/NG8004 (import desconhecido) e NG2012 (import inválido)
+    // Suporta dois formatos de output:
+    //   esbuild: "✘ [ERROR] NG2012: ...\n  src/path.ts:88:8:\n    88 │     Symbol,"
+    //   webpack: "Error: src/path.ts:88:9 - error NG2012: ...\n88     Symbol,"
     const errors = [];
-    const blocks = out.split(/(?=✘ \[ERROR\] NG(?:800[14]|2012|6008|6004):)/);
-    for (const block of blocks) {
+
+    // ── esbuild format ──────────────────────────────────────────────────────
+    const esbuildBlocks = out.split(/(?=✘ \[ERROR\] NG(?:800[14]|2012|6008|6004):)/);
+    for (const block of esbuildBlocks) {
       let name = null; let type = null;
       const ng8001 = block.match(/NG8001[^']*'<([^>]+)>'/);
       const ng8004 = block.match(/NG8004[^']*'([^']+)'/);
@@ -1257,22 +1187,42 @@ export function autoFixBuildErrors() {
       if (!type) continue;
       const tsMatch = block.match(/\b(src\/[^\s:'"]+\.(?:component|directive|pipe)\.ts)/);
       if (!tsMatch) continue;
-      // For template errors (NG8001/NG8002), the error points to the .html file.
-      // Derive the .ts component file from the .html path if needed.
-      let resolvedTs = tsMatch?.[1];
+      let resolvedTs = tsMatch[1];
       if (!resolvedTs) {
         const htmlMatch = block.match(/\b(src\/[^\s:'"]+\.component\.html)/);
         if (htmlMatch) resolvedTs = htmlMatch[1].replace('.html', '.ts');
       }
       if (!resolvedTs) continue;
-
       if (type === 'invalid-import') {
-        // Extract the invalid symbol from the indented source line: "    62 │     NgProgressModule,"
+        // esbuild shows: "    88 │     NgProgressModule,"
         const symMatch = block.match(/│\s+([A-Z][A-Za-z0-9_]*)\s*[,\]]/);
         if (!symMatch) continue;
         errors.push({ name: symMatch[1], type: 'invalid-import', compFile: join(destPath, resolvedTs) });
       } else {
         errors.push({ name, type, compFile: join(destPath, resolvedTs) });
+      }
+    }
+
+    // ── webpack format ──────────────────────────────────────────────────────
+    // "Error: src/path.ts:LINE:COL - error NG2012: ..."  followed by  "LINE     Symbol,"
+    const webpackLines = out.split('\n');
+    for (let i = 0; i < webpackLines.length; i++) {
+      const line = webpackLines[i];
+      if (!line.includes('NG2012')) continue;
+      // webpack: "Error: src/app/foo.component.ts:88:9 - error NG2012:"
+      const fileLine = line.match(/Error:\s+(src\/[^\s:]+\.(?:component|directive|pipe)\.ts):(\d+):\d+\s+-\s+error NG2012/);
+      if (!fileLine) continue;
+      const resolvedTs = fileLine[1];
+      const lineNo = parseInt(fileLine[2], 10);
+      // The symbol is on the source-echo line: "88     NgProgressModule,"
+      // Angular CLI prints it within the next ~3 lines
+      for (let j = i + 1; j <= Math.min(i + 4, webpackLines.length - 1); j++) {
+        const srcLine = webpackLines[j];
+        const symMatch = srcLine.match(/^\s*\d+\s+([A-Z][A-Za-z0-9_]*)\s*[,\]]/);
+        if (symMatch) {
+          errors.push({ name: symMatch[1], type: 'invalid-import', compFile: join(destPath, resolvedTs) });
+          break;
+        }
       }
     }
 
@@ -1375,7 +1325,6 @@ export function autoFixBuildErrors() {
     if (!errors.length) break; // sem erros relevantes → pronto
 
     const dynReg = buildDynamicNgRegistry();
-    const projectEsMap = buildProjectEsMap();
     let passFixed = 0;
 
     for (const { name, type, compFile } of errors) {
@@ -1383,25 +1332,24 @@ export function autoFixBuildErrors() {
       let src = readFileSync(compFile, 'utf8');
       if (!src.includes('@Component(')) continue;
 
-      // NG2012: invalid import — remove from imports array, then try to re-add correct symbol
+      // NG2012: invalid import — replace with TODO comment so the developer knows what to update
       if (type === 'invalid-import') {
         const arrInfo = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
         if (!arrInfo || !arrInfo.existing.has(name)) continue;
-        // Remove the symbol from the imports array (and its ES import if unused)
-        src = src.replace(new RegExp(`\\b${name}\\b,?\\s*\\n?`, 'g'), (m, offset) => {
-          // Only remove inside decorator region
-          if (offset >= arrInfo.start && offset <= arrInfo.end) return '';
+        // Replace the symbol with a TODO comment inside the imports array
+        const todo = `// TODO: [NG2012] ${name} — NgModule incompatível com Angular. Atualize o pacote para versão compatível.`;
+        src = src.replace(new RegExp(`\\b${name}\\b,?([ \\t]*)\\n?`, 'g'), (m, trail, offset) => {
+          if (offset >= arrInfo.start && offset <= arrInfo.end) return `${todo}\n`;
           return m;
         });
-        // Clean up the ES import line if the symbol no longer appears in the decorator
-        const updatedArr = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
-        const stillInDec = updatedArr?.existing.has(name);
-        if (!stillInDec) {
-          src = src.replace(new RegExp(`^import\\s+\\{[^}]*\\b${name}\\b[^}]*\\}\\s+from\\s+['"][^'"]+['"];?\\n?`, 'm'), '');
-        }
+        // Comment out the ES import statement for this symbol
+        src = src.replace(
+          new RegExp(`^(import\\s+\\{[^}]*\\b${name}\\b[^}]*\\}\\s+from\\s+['"][^'"]+['"];?)`, 'm'),
+          (m) => `// TODO: ${m}`,
+        );
         writeFileSync(compFile, src);
         passFixed++;
-        console.log(`  ↳ ${basename(compFile)}: removed invalid import '${name}' (NG2012)`);
+        console.log(`  ↳ ${basename(compFile)}: '${name}' marcado como TODO (NG2012 — NgModule incompatível)`);
         continue;
       }
 
@@ -1462,6 +1410,7 @@ export function autoFixBuildErrors() {
 
     totalFixed += passFixed;
     if (passFixed === 0) break; // nenhuma correção nesse pass → não há progresso
+    projectEsMap = buildProjectEsMap(); // arquivos foram escritos — atualiza o mapa
     console.log(`  ↳ build error fix pass ${pass + 1}: ${passFixed} correção(ões)`);
   }
 

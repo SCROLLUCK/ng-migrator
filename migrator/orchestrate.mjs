@@ -1,8 +1,8 @@
 import { spawnSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync, appendFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { destPath, report, skipSteps, SKIP_DIRS } from './context.mjs';
-import { capture, run, runUntilStable, captureGitDiff } from './utils.mjs';
+import { destPath, report, skipSteps, SKIP_DIRS, opts } from './context.mjs';
+import { capture, run, runUntilStable, captureGitDiff, scanForContent } from './utils.mjs';
 import { hasPackage } from './packages.mjs';
 import { writeMigrationData } from './report.mjs';
 import {
@@ -12,9 +12,12 @@ import {
   invalidateProjectIndex, autoFixBuildErrors, fixStandaloneInModuleDeclarations,
 } from './standalone.mjs';
 import { convertLazyModulesToRoutes, convertRemainingRoutingModules, removeUnusedModules } from './modules.mjs';
+import { patchThirdPartyVersions } from './ng-update.mjs';
 import {
   fixUntypedForms, fixReservedKeywordVariables, fixThrowError, fixTsCompat,
-  fixMomentImport, fixSubjectVoid, fixSassImports, fixStyleUrls, inlinePolyfills,
+  fixMomentImport, fixSubjectVoid, fixVoidOutputEmit, fixReadonlySignalInputAssignments,
+  fixSignalPropertyAccess, fixSubjectEmit, fixDoubleCommas, fixTs2663SignalAccess,
+  fixSassImports, fixStyleUrls, inlinePolyfills,
   modernizeTsconfig, addTsconfigPathAliases, migrateToApplicationBuilder, addEslint,
 } from './transforms.mjs';
 import { createAppConfigAndRoutes } from './app-config.mjs';
@@ -23,6 +26,12 @@ import { buildCheck } from './build-check.mjs';
 
 export function runModernizationMigrations() {
   let prevHash = capture('git rev-parse HEAD');
+
+  // Record intentionally skipped steps so the UI can show a distinct "skipped" badge
+  if (skipSteps.size > 0) {
+    report.skippedSteps = [...skipSteps];
+    writeMigrationData();
+  }
 
   function hasEslintConfig() {
     return existsSync(join(destPath, 'eslint.config.js'))
@@ -75,6 +84,12 @@ export function runModernizationMigrations() {
   if (!skipSteps.has('signals')) {
     console.log(`\n  🔄 signals  (@Input/@Output/@ViewChild → signal APIs)...`);
     run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
+    // output() without type param defaults to void — remove stray args from .emit() calls
+    fixVoidOutputEmit();
+    // Revert signal inputs that are assigned to in code (TS2540 — read-only)
+    fixReadonlySignalInputAssignments();
+    // Fix this.signalProp.x → this.signalProp().x (incomplete migrations by schematic)
+    fixSignalPropertyAccess();
     report.modernize.signals = true;
     commitStep('signals', 'signals');
     buildCheck('signals');
@@ -95,15 +110,22 @@ export function runModernizationMigrations() {
     buildCheck('untypedForms');
   }
 
-  // 2c. throwError() → factory function (RxJS 7) + fixes RxJS/TS compat
+  // 2c. throwError() → factory function (RxJS 7)
   if (!skipSteps.has('throwError')) {
     console.log(`\n  🔄 throwError  (RxJS 7 factory function)...`);
     report.modernize.throwErrorFixed = fixThrowError();
     fixSubjectVoid();
-    fixMomentImport();
     fixTsCompat();
     commitStep('throwError', 'throwError factory + RxJS/TS fixes');
     buildCheck('throwError');
+  }
+
+  // 2d. moment: import * as moment → default import (requer esModuleInterop)
+  if (!skipSteps.has('fixMoment')) {
+    console.log(`\n  🔄 fixMoment  (moment default import)...`);
+    fixMomentImport();
+    commitStep('fixMoment', 'moment: namespace import → default import');
+    buildCheck('fixMoment');
   }
 
   // 3. standalone migration (3 passos obrigatórios em sequência)
@@ -124,6 +146,11 @@ export function runModernizationMigrations() {
     convertOrphanedNonStandalone();
     console.log(`\n  🔄 standalone  (standalone-bootstrap)...`);
     run('npx ng generate @angular/core:standalone-migration --mode standalone-bootstrap --defaults', { ignoreError: true });
+    // Fix double commas (,,) introduced by the standalone migration schematic
+    fixDoubleCommas();
+    // @Output() Subject → EventEmitter: run AFTER standalone migration since the
+    // schematic may regenerate component files, reverting earlier signal-step changes
+    fixSubjectEmit();
     report.modernize.standalone = true;
     invalidateProjectIndex(); // invalidate cache: new standalone components were just created
     commitStep('standalone', 'standalone migration');
@@ -137,6 +164,8 @@ export function runModernizationMigrations() {
     removeImportsFromNonStandalone();
     console.log(`\n  🔄 standalone  (move standalone components from NgModule declarations → imports)...`);
     fixStandaloneInModuleDeclarations();
+    // Re-run double comma fix: fixStandaloneInModuleDeclarations may introduce new ones
+    fixDoubleCommas();
     console.log(`\n  🔄 standalone  (add missing Material/Angular imports)...`);
     report.modernize.standaloneFixed += fixStandaloneImports();
     console.log(`\n  🔄 standalone  (fix remaining NgModule imports for standalone:false components)...`);
@@ -148,11 +177,21 @@ export function runModernizationMigrations() {
   }
 
   // 3c. control-flow: *ngIf/*ngFor/*ngSwitch → @if/@for/@switch
+  // ng update @angular/core@19 aplica isso como migração obrigatória —
+  // se não sobrou nada para converter, pulamos o schematic redundante.
   if (!skipSteps.has('controlFlow')) {
-    runUntilStable(
-      'npx ng generate @angular/core:control-flow',
-      'control-flow  (*ngIf/*ngFor → @if/@for)',
-    );
+    // Scan both .html and .ts (inline templates) for legacy control-flow syntax
+    const hasLegacyControlFlow = scanForContent('*ngIf', ['.html', '.ts'])
+      || scanForContent('*ngFor', ['.html', '.ts'])
+      || scanForContent('*ngSwitch', ['.html', '.ts']);
+    if (hasLegacyControlFlow) {
+      runUntilStable(
+        'npx ng generate @angular/core:control-flow',
+        'control-flow  (*ngIf/*ngFor → @if/@for)',
+      );
+    } else {
+      console.log(`\n  ✅ control-flow  (já aplicado pelo ng update — nenhum *ngIf/*ngFor encontrado)`);
+    }
     report.modernize.controlFlow = true;
     commitStep('controlFlow', 'control-flow');
     buildCheck('controlFlow');
@@ -199,6 +238,9 @@ export function runModernizationMigrations() {
   // 5. Vite/esbuild builder
   if (!skipSteps.has('builder')) {
     migrateToApplicationBuilder();
+    // esbuild's stricter TS checking exposes TS2663 (bare signal property access
+    // without 'this.') that webpack tolerated. Fix now that esbuild is active.
+    fixTs2663SignalAccess();
     report.modernize.builder = true;
     commitStep('builder', 'application builder');
     buildCheck('builder');
@@ -218,6 +260,8 @@ export function runModernizationMigrations() {
     report.modernize.tsconfigModernized = modernizeTsconfig();
     commitStep('tsconfig', 'tsconfig ES2022/bundler');
     buildCheck('tsconfig');
+    // Re-run after tsconfig: skipLibCheck + ES2022 reduce noise, making TS2663 clearly visible
+    fixTs2663SignalAccess();
   }
 
   // 6b. Path aliases
@@ -268,7 +312,11 @@ export function runModernizationMigrations() {
         cleanupStandaloneTodos();
         const secondPassConverted = convertOrphanedNonStandalone();
         invalidateProjectIndex(); // freshly-converted components need a rebuilt index
-        if (secondPassConverted > 0) fixStandaloneImports();
+        if (secondPassConverted > 0) {
+          // Move newly-standalone components from NgModule declarations → imports
+          fixStandaloneInModuleDeclarations();
+          fixStandaloneImports();
+        }
         fixMissingStandalone(); // handles standalone: false + no imports (Angular 19 case)
         removeImportsFromNonStandalone();
         fixStandaloneImports(); // populate imports for components just promoted by fixMissingStandalone
@@ -318,6 +366,13 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 build error fix  (resolução genérica de imports faltantes)...`);
     const buildFixed = autoFixBuildErrors();
     if (buildFixed > 0) commitStep('cleanupImports', 'build error import fixes');
+  }
+
+  // Atualiza versões de libs de terceiros para compatibilidade com a versão Angular alvo
+  if (!skipSteps.has('thirdPartyVersions')) {
+    console.log(`\n  🔄 Atualizando versões de libs de terceiros para Angular ${opts.to}...`);
+    patchThirdPartyVersions(opts.to);
+    commitStep('thirdPartyVersions', `update third-party packages for Angular ${opts.to}`);
   }
 
   // Lint fix único no final — não contamina diffs de steps individuais
