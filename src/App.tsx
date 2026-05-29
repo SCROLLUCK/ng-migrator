@@ -60,6 +60,7 @@ export default function App() {
   const [data, setData] = useState<MigrationData>(EMPTY_DATA)
   const [viewedData, setViewedData] = useState<MigrationData | null>(null)
   const [terminalLines, setTerminalLines] = useState<string[]>([])
+  const [terminalTotal, setTerminalTotal] = useState(0)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const sseRef = useRef<EventSource | null>(null)
   const reconnectTimeoutRef = useRef<any>(null)
@@ -87,12 +88,14 @@ export default function App() {
       try {
         const parsed = JSON.parse(ev.data)
         if (parsed && typeof parsed === 'object' && 'done' in parsed) return
+        setTerminalTotal(n => n + 1)
         setTerminalLines((prev) => {
           const next = [...prev, String(parsed)]
           if (next.length > 2000) return next.slice(next.length - 2000)
           return next
         })
       } catch {
+        setTerminalTotal(n => n + 1)
         setTerminalLines((prev) => {
           const next = [...prev, ev.data]
           if (next.length > 2000) return next.slice(next.length - 2000)
@@ -125,7 +128,7 @@ export default function App() {
     prevStatusRef.current = data.status
   }, [data.status, connectSSE])
 
-  const handleClearTerminal = useCallback(() => setTerminalLines([]), [])
+  const handleClearTerminal = useCallback(() => { setTerminalLines([]); setTerminalTotal(0) }, [])
 
   const handleLoadMigration = useCallback((loaded: MigrationData) => {
     setViewedData(loaded)
@@ -234,6 +237,7 @@ export default function App() {
           <RightColumn
             data={displayData}
             terminalLines={terminalLines}
+            terminalTotal={terminalTotal}
             onClearTerminal={handleClearTerminal}
           />
         </div>

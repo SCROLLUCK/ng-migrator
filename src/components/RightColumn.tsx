@@ -3,15 +3,17 @@ import type { MigrationData } from '../types'
 import { TerminalCard } from './TerminalCard'
 import { ModernizationCard } from './ModernizationCard'
 import { NgUpdateCard } from './NgUpdateCard'
+import { FinalBuildStatus } from './BuildCheckViews'
 import { useTranslation } from '../lib/i18n'
 
 interface Props {
   data: MigrationData
   terminalLines: string[]
+  terminalTotal: number
   onClearTerminal: () => void
 }
 
-export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
+export function RightColumn({ data, terminalLines, terminalTotal, onClearTerminal }: Props) {
   const { t } = useTranslation()
   const [query, setQuery] = useState('')
 
@@ -23,6 +25,7 @@ export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
     <div className="flex flex-col gap-5 overflow-x-hidden">
       <TerminalCard
         lines={terminalLines}
+        totalLines={terminalTotal}
         onClear={onClearTerminal}
       />
 
@@ -54,6 +57,9 @@ export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
       )}
       {data.status !== 'idle' && (
         <ModernizationCard data={data} query={query} />
+      )}
+      {data.status !== 'idle' && (
+        <FinalBuildStatus data={data} />
       )}
     </div>
   )

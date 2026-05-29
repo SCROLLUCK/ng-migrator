@@ -11,7 +11,7 @@ interface Props {
   query: string
 }
 
-type StepStatus = 'done' | 'pending' | 'skipped'
+type StepStatus = 'done' | 'pending' | 'skipped' | 'intentional-skip'
 
 interface StepRow {
   key: string
@@ -23,6 +23,7 @@ interface StepRow {
 function getStepIcon(status: StepStatus) {
   if (status === 'done') return <span className="text-green">✓</span>
   if (status === 'pending') return <span className="animate-pulse-custom text-amber">◌</span>
+  if (status === 'intentional-skip') return <span className="text-[#7070A0]">⊘</span>
   return <span className="opacity-38">–</span>
 }
 
@@ -37,38 +38,40 @@ export function ModernizationCard({ data, query = '' }: Props) {
   const isRunning = data.status === 'running'
   const ngUpdateDone = data.ngUpdateSteps.length > 0
   const q = query.toLowerCase()
+  const intentionalSkips = new Set(data.skippedSteps ?? [])
 
-  function makeStatus(done: boolean | number | null | undefined, prevDone?: boolean | number | null): StepStatus {
+  function makeStatus(key: string, done: boolean | number | null | undefined, prevDone?: boolean | number | null): StepStatus {
     if (done === true || (typeof done === 'number' && done > 0)) return 'done'
+    if (intentionalSkips.has(key)) return 'intentional-skip'
     if (isRunning && ngUpdateDone && (prevDone === true || (typeof prevDone === 'number' && prevDone > 0) || prevDone === undefined)) return 'pending'
     return 'skipped'
   }
 
   const rows: StepRow[] = [
-    { key: 'flexLayout', label: '@angular/flex-layout → Tailwind CSS', status: m.flexLayoutMigrated ? 'done' : 'skipped', detail: m.flexLayoutMigrated ? `${m.flexLayoutMigrated.htmlCount} template(s), ${m.flexLayoutMigrated.tsCount} TS` : undefined },
-    { key: 'inject', label: 'inject() — constructor DI → inject()', status: makeStatus(m.inject) },
-    { key: 'signals', label: 'Signals — @Input/@Output/@ViewChild → signal APIs', status: makeStatus(m.signals, m.inject) },
-    { key: 'reservedKeywords', label: 'Reserved keyword variables renamed (e.g. const for →  forValue)', status: makeStatus(m.reservedKeywordsFixed, m.signals), detail: m.reservedKeywordsFixed > 0 ? t('filesCount', { count: m.reservedKeywordsFixed }) : undefined },
-    { key: 'untypedForms', label: 'UntypedForm* → typed forms', status: makeStatus(m.untypedFormsFixed, m.signals), detail: m.untypedFormsFixed > 0 ? t('filesCount', { count: m.untypedFormsFixed }) : undefined },
-    { key: 'throwError', label: 'throwError() → factory function (RxJS 7)', status: makeStatus(m.throwErrorFixed, m.signals), detail: m.throwErrorFixed > 0 ? t('filesCount', { count: m.throwErrorFixed }) : undefined },
-    { key: 'standalone', label: 'Standalone — convert → prune → bootstrap', status: makeStatus(m.standalone, m.throwErrorFixed !== undefined ? m.throwErrorFixed : m.signals) },
-    { key: 'standaloneFixed', label: 'standalone: true patches in pipes/directives', status: makeStatus(m.standaloneFixed, m.standalone), detail: m.standaloneFixed > 0 ? t('filesCount', { count: m.standaloneFixed }) : undefined },
-    { key: 'controlFlow', label: 'Control flow — @if / @for / @switch', status: makeStatus(m.controlFlow, m.standalone) },
-    { key: 'ngClassToClass', label: '[ngClass] → [class]', status: makeStatus(m.ngClassToClass, m.controlFlow) },
-    { key: 'ngStyleToStyle', label: '[ngStyle] → [style]', status: makeStatus(m.ngStyleToStyle, m.ngClassToClass) },
-    { key: 'appConfig', label: 'app.config.ts + app.routes.ts', status: makeStatus(m.appConfig, m.ngStyleToStyle) },
-    { key: 'lazyRoutes', label: 'Lazy NgModules → routes files', status: makeStatus(m.lazyRoutesConverted, m.appConfig), detail: m.lazyRoutesConverted > 0 ? t('modulesCount', { count: m.lazyRoutesConverted }) : undefined },
-    { key: 'builder', label: 'Builder → esbuild / Vite', status: makeStatus(m.builder, m.appConfig) },
-    { key: 'polyfills', label: 'polyfills.ts → zone.js inline in angular.json', status: makeStatus(m.polyfillsInlined, m.builder) },
-    { key: 'tsconfig', label: 'tsconfig — ES2022 / moduleResolution: bundler', status: makeStatus(m.tsconfigModernized, m.builder) },
-    { key: 'pathAliases', label: 'Path aliases — @app / @core / @shared / @features', status: makeStatus(m.pathAliases, m.tsconfigModernized) },
-    { key: 'eslint', label: 'ESLint via @angular/eslint', status: makeStatus(m.eslintAdded, m.pathAliases) },
-    { key: 'lintFix', label: 'ESLint --fix (final pass)', status: makeStatus((data.details['lintFix'] ?? []).length > 0, m.eslintAdded) },
-    { key: 'sass', label: 'SCSS @import → @use as *', status: makeStatus(m.sassImports, m.eslintAdded), detail: m.sassImports > 0 ? t('filesCount', { count: m.sassImports }) : undefined },
-    { key: 'modules', label: 'Unused .module.ts files removed', status: makeStatus(m.modulesRemoved, m.sassImports), detail: m.modulesRemoved > 0 ? t('filesCount', { count: m.modulesRemoved }) : undefined },
-    { key: 'styleUrl', label: 'styleUrls: [] → styleUrl (Angular 19)', status: makeStatus(m.styleUrlFixed, m.modulesRemoved), detail: m.styleUrlFixed > 0 ? t('filesCount', { count: m.styleUrlFixed }) : undefined },
-    { key: 'selfClosing', label: 'Self-closing tags', status: makeStatus(m.selfClosingTags, m.styleUrlFixed) },
-    { key: 'cleanupImports', label: 'Cleanup unused component imports', status: makeStatus(m.cleanupImports, m.selfClosingTags) },
+    { key: 'flexLayout', label: '@angular/flex-layout → Tailwind CSS', status: m.flexLayoutMigrated ? 'done' : (intentionalSkips.has('flexLayout') ? 'intentional-skip' : 'skipped'), detail: m.flexLayoutMigrated ? `${m.flexLayoutMigrated.htmlCount} template(s), ${m.flexLayoutMigrated.tsCount} TS` : undefined },
+    { key: 'inject', label: 'inject() — constructor DI → inject()', status: makeStatus('inject', m.inject) },
+    { key: 'signals', label: 'Signals — @Input/@Output/@ViewChild → signal APIs', status: makeStatus('signals', m.signals, m.inject) },
+    { key: 'reservedKeywords', label: 'Reserved keyword variables renamed (e.g. const for →  forValue)', status: makeStatus('reservedKeywords', m.reservedKeywordsFixed, m.signals), detail: m.reservedKeywordsFixed > 0 ? t('filesCount', { count: m.reservedKeywordsFixed }) : undefined },
+    { key: 'untypedForms', label: 'UntypedForm* → typed forms', status: makeStatus('untypedForms', m.untypedFormsFixed, m.signals), detail: m.untypedFormsFixed > 0 ? t('filesCount', { count: m.untypedFormsFixed }) : undefined },
+    { key: 'throwError', label: 'throwError() → factory function (RxJS 7)', status: makeStatus('throwError', m.throwErrorFixed, m.signals), detail: m.throwErrorFixed > 0 ? t('filesCount', { count: m.throwErrorFixed }) : undefined },
+    { key: 'standalone', label: 'Standalone — convert → prune → bootstrap', status: makeStatus('standalone', m.standalone, m.throwErrorFixed !== undefined ? m.throwErrorFixed : m.signals) },
+    { key: 'standaloneFixed', label: 'standalone: true patches in pipes/directives', status: makeStatus('standaloneFixed', m.standaloneFixed, m.standalone), detail: m.standaloneFixed > 0 ? t('filesCount', { count: m.standaloneFixed }) : undefined },
+    { key: 'controlFlow', label: 'Control flow — @if / @for / @switch', status: makeStatus('controlFlow', m.controlFlow, m.standalone) },
+    { key: 'ngClassToClass', label: '[ngClass] → [class]', status: makeStatus('ngClassToClass', m.ngClassToClass, m.controlFlow) },
+    { key: 'ngStyleToStyle', label: '[ngStyle] → [style]', status: makeStatus('ngStyleToStyle', m.ngStyleToStyle, m.ngClassToClass) },
+    { key: 'appConfig', label: 'app.config.ts + app.routes.ts', status: makeStatus('appConfig', m.appConfig, m.ngStyleToStyle) },
+    { key: 'lazyRoutes', label: 'Lazy NgModules → routes files', status: makeStatus('lazyRoutes', m.lazyRoutesConverted, m.appConfig), detail: m.lazyRoutesConverted > 0 ? t('modulesCount', { count: m.lazyRoutesConverted }) : undefined },
+    { key: 'builder', label: 'Builder → esbuild / Vite', status: makeStatus('builder', m.builder, m.appConfig) },
+    { key: 'polyfills', label: 'polyfills.ts → zone.js inline in angular.json', status: makeStatus('polyfills', m.polyfillsInlined, m.builder) },
+    { key: 'tsconfig', label: 'tsconfig — ES2022 / moduleResolution: bundler', status: makeStatus('tsconfig', m.tsconfigModernized, m.builder) },
+    { key: 'pathAliases', label: 'Path aliases — @app / @core / @shared / @features', status: makeStatus('pathAliases', m.pathAliases, m.tsconfigModernized) },
+    { key: 'eslint', label: 'ESLint via @angular/eslint', status: makeStatus('eslint', m.eslintAdded, m.pathAliases) },
+    { key: 'lintFix', label: 'ESLint --fix (final pass)', status: makeStatus('lintFix', (data.details['lintFix'] ?? []).length > 0, m.eslintAdded) },
+    { key: 'sass', label: 'SCSS @import → @use as *', status: makeStatus('sass', m.sassImports, m.eslintAdded), detail: m.sassImports > 0 ? t('filesCount', { count: m.sassImports }) : undefined },
+    { key: 'modules', label: 'Unused .module.ts files removed', status: makeStatus('modules', m.modulesRemoved, m.sassImports), detail: m.modulesRemoved > 0 ? t('filesCount', { count: m.modulesRemoved }) : undefined },
+    { key: 'styleUrl', label: 'styleUrls: [] → styleUrl (Angular 19)', status: makeStatus('styleUrl', m.styleUrlFixed, m.modulesRemoved), detail: m.styleUrlFixed > 0 ? t('filesCount', { count: m.styleUrlFixed }) : undefined },
+    { key: 'selfClosing', label: 'Self-closing tags', status: makeStatus('selfClosing', m.selfClosingTags, m.styleUrlFixed) },
+    { key: 'cleanupImports', label: 'Cleanup unused component imports', status: makeStatus('cleanupImports', m.cleanupImports, m.selfClosingTags) },
   ]
 
   const visibleRows = rows.filter(row => {
@@ -128,7 +131,7 @@ export function ModernizationCard({ data, query = '' }: Props) {
                   onClick={() => isExpandable && toggleStep(row.key)}
                   className={cn(
                     'flex items-center gap-2 px-4 py-[0.45rem] border-b border-[#2A2A45] transition-colors',
-                    row.status === 'skipped' && !query.trim() ? 'opacity-38' : '',
+                    (row.status === 'skipped' || row.status === 'intentional-skip') && !query.trim() ? 'opacity-38' : '',
                     isExpandable ? 'cursor-pointer' : '',
                     isOpen ? 'bg-blue/4' : isExpandable ? 'hover:bg-white/3' : '',
                   )}
@@ -146,6 +149,9 @@ export function ModernizationCard({ data, query = '' }: Props) {
                     {row.label}
                     {row.detail && (
                       <span className="text-[#7070A0] text-[0.75rem] ml-1.5">({row.detail})</span>
+                    )}
+                    {row.status === 'intentional-skip' && (
+                      <span className="ml-2 text-[0.65rem] px-1.5 py-0.5 rounded bg-[#7070A0]/10 border border-[#7070A0]/20 text-[#7070A0] font-mono">skipped</span>
                     )}
                   </span>
                   <span className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>

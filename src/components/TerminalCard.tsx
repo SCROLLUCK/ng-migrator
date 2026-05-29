@@ -1,13 +1,14 @@
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useLayoutEffect } from 'react'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '../lib/i18n'
 
 interface Props {
   lines: string[]
+  totalLines: number
   onClear: () => void
 }
 
-export function TerminalCard({ lines, onClear }: Props) {
+export function TerminalCard({ lines, totalLines, onClear }: Props) {
   const { t } = useTranslation()
   const [collapsed, setCollapsed] = useState(false)
   const [pendingLines, setPendingLines] = useState(0)
@@ -16,10 +17,12 @@ export function TerminalCard({ lines, onClear }: Props) {
   const isAtBottomRef = useRef(true)
   const prevLengthRef = useRef(0)
 
-  // Auto-scroll when pinned to bottom; count new lines when user scrolled up
-  useEffect(() => {
-    const added = lines.length - prevLengthRef.current
-    prevLengthRef.current = lines.length
+  // useLayoutEffect fires synchronously after DOM update, before browser scroll events.
+  // This prevents the spurious handleScroll from treating a content-shift (e.g. when
+  // the 2000-line slice removes the top line) as a user scroll-up.
+  useLayoutEffect(() => {
+    const added = totalLines - prevLengthRef.current
+    prevLengthRef.current = totalLines
 
     if (lines.length === 0) {
       setPendingLines(0)
@@ -28,14 +31,14 @@ export function TerminalCard({ lines, onClear }: Props) {
       return
     }
 
-    if (added <= 0) return
-
     if (isAtBottomRef.current) {
+      // Always scroll to bottom when pinned — handles both new lines and slice-induced shifts
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-    } else {
+      setPendingLines(0)
+    } else if (added > 0) {
       setPendingLines(n => n + added)
     }
-  }, [lines])
+  }, [lines, totalLines])
 
   function handleScroll() {
     const el = scrollRef.current

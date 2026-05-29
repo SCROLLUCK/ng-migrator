@@ -36,6 +36,44 @@ function splitTopLevel(str) {
   return parts;
 }
 
+// Extrai opções de RouterModule.forRoot e converte para with*() features do provideRouter.
+// Cobre as opções mais comuns: preloadingStrategy, scrollPositionRestoration, useHash, enableTracing.
+function extractRouterWithFeatures(content) {
+  // Match RouterModule.forRoot(anything, { ...options... })
+  const m = content.match(/RouterModule\.forRoot\s*\([^,)]+,\s*(\{[\s\S]*?\})\s*\)/);
+  if (!m) return { features: [], extraImports: [] };
+
+  const opts = m[1];
+  const features = [];
+  const extraImports = [];
+  const routerSymbols = [];
+
+  const preloadM = opts.match(/preloadingStrategy\s*:\s*(\w+)/);
+  if (preloadM) {
+    features.push(`withPreloading(${preloadM[1]})`);
+    routerSymbols.push('withPreloading');
+  }
+
+  const scrollM = opts.match(/scrollPositionRestoration\s*:\s*['"](\w+)['"]/);
+  if (scrollM) {
+    const anchorScrolling = /anchorScrolling\s*:\s*['"]enabled['"]/.test(opts) ? `, anchorScrolling: 'enabled'` : '';
+    features.push(`withInMemoryScrolling({ scrollPositionRestoration: '${scrollM[1]}'${anchorScrolling} })`);
+    routerSymbols.push('withInMemoryScrolling');
+  }
+
+  if (/enableTracing\s*:\s*true/.test(opts)) {
+    features.push('withDebugTracing()');
+    routerSymbols.push('withDebugTracing');
+  }
+
+  if (/useHash\s*:\s*true/.test(opts)) {
+    features.push('withHashLocation()');
+    routerSymbols.push('withHashLocation');
+  }
+
+  return { features, routerSymbols, extraImports };
+}
+
 // Removes bootstrap-level modules from root app.component.ts imports array.
 // These modules are provided by bootstrapApplication / app.config.ts and must NOT
 // be in a standalone component's imports (causes double-init of animation system etc.)
@@ -221,10 +259,15 @@ export function createAppConfigAndRoutes() {
 
   const mainContent = existsSync(mainPath) ? readFileSync(mainPath, 'utf8') : '';
 
-  // 1. app.routes.ts — extrai o array de rotas do routing module
+  // 1. app.routes.ts — extrai o array de rotas do routing module.
+  // Captura as opções de RouterModule.forRoot ANTES de deletar o arquivo.
   let hasRoutes = existsSync(routesPath);
+  let routerWithFeatures = { features: [], routerSymbols: [], extraImports: [] };
+
   if (!hasRoutes && existsSync(routingPath)) {
     const routingContent = readFileSync(routingPath, 'utf8');
+    // Extrai with*() features das opções do forRoot antes de apagar o arquivo
+    routerWithFeatures = extractRouterWithFeatures(routingContent);
     const routesBlock = extractBracketBlock(routingContent, 'const routes: Routes =');
     if (routesBlock) {
       const extraImports = (routingContent.match(/^import\s+.+;$/gm) ?? [])
@@ -240,9 +283,19 @@ export function createAppConfigAndRoutes() {
       report.modernize.appRoutes = true;
       report.filesCreated.push('src/app/app.routes.ts');
       hasRoutes = true;
-      // Routing module is now superseded by app.routes.ts
       unlinkSync(routingPath);
       console.log('  ↳ app-routing.module.ts removido');
+    }
+  } else if (existsSync(routingPath)) {
+    // Routing module existe mas app.routes.ts já foi criado — ainda extrai opções
+    routerWithFeatures = extractRouterWithFeatures(readFileSync(routingPath, 'utf8'));
+  }
+
+  // Se não achou opções no routing module, tenta no app.module.ts
+  if (!routerWithFeatures.features.length) {
+    const appModulePath = join(appDir, 'app.module.ts');
+    if (existsSync(appModulePath)) {
+      routerWithFeatures = extractRouterWithFeatures(readFileSync(appModulePath, 'utf8'));
     }
   }
 
@@ -253,22 +306,43 @@ export function createAppConfigAndRoutes() {
   const unknownMods   = [];
 
   if (hasRoutes) {
-    providers.push(`provideRouter(routes)`);
-    configImports.push(`import { provideRouter } from '@angular/router';`);
+    const routerSymbols = ['provideRouter', ...(routerWithFeatures.routerSymbols ?? [])];
+    configImports.push(`import { ${routerSymbols.join(', ')} } from '@angular/router';`);
     configImports.push(`import { routes } from './app.routes';`);
+    const withArgs = routerWithFeatures.features.length
+      ? `routes,\n    ${routerWithFeatures.features.join(',\n    ')}`
+      : 'routes';
+    providers.push(`provideRouter(${withArgs})`);
+    if (routerWithFeatures.features.length) {
+      console.log(`  ↳ provideRouter: ${routerWithFeatures.features.map(f => f.replace(/\(.*$/, '()')).join(', ')}`);
+    }
   }
+
+  // Detecta se o projeto usa HTTP_INTERCEPTORS (DI-based interceptors)
+  const hasHttpInterceptors = scanForContent('HTTP_INTERCEPTORS', ['.ts']);
 
   for (const mod of modules) {
     if (mod === 'BrowserModule' || mod === 'AppRoutingModule') continue;
     if (mod === 'BrowserAnimationsModule') {
-      providers.push(`provideAnimationsAsync()`);
-      configImports.push(`import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';`);
+      // provideAnimations() (síncrono) é a conversão segura de BrowserAnimationsModule.
+      // provideAnimationsAsync() muda o comportamento — animações carregadas lazy podem
+      // não estar prontas quando o app component renderiza pela primeira vez.
+      providers.push(`provideAnimations()`);
+      configImports.push(`import { provideAnimations } from '@angular/platform-browser/animations';`);
     } else if (mod === 'NoopAnimationsModule') {
       providers.push(`provideNoopAnimations()`);
       configImports.push(`import { provideNoopAnimations } from '@angular/platform-browser/animations';`);
     } else if (mod === 'HttpClientModule') {
-      providers.push(`provideHttpClient()`);
-      configImports.push(`import { provideHttpClient } from '@angular/common/http';`);
+      // withInterceptorsFromDi() preserva interceptors class-based registrados via HTTP_INTERCEPTORS.
+      // Sem isso, qualquer interceptor de autenticação/logging para de funcionar silenciosamente.
+      if (hasHttpInterceptors) {
+        providers.push(`provideHttpClient(withInterceptorsFromDi())`);
+        configImports.push(`import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';`);
+        console.log('  ↳ provideHttpClient(withInterceptorsFromDi()) — HTTP_INTERCEPTORS detectado');
+      } else {
+        providers.push(`provideHttpClient()`);
+        configImports.push(`import { provideHttpClient } from '@angular/common/http';`);
+      }
     } else {
       unknownMods.push(mod);
     }

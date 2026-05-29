@@ -46,8 +46,16 @@ node migrate.mjs [source] [options]
 | `--to <version>` | Target Angular major version | `21` |
 | `--from <version>` | Starting version (if auto-detection fails) | auto |
 | `--dest <path>` | Custom output directory | `<source>-ng<target>` |
+| `--split-versions` | Generate separate version-specific folders (e.g. `ng11`, `ng12`, etc.) inside a parent directory named `<project-name>-ng-versions` | off (single folder) |
 | `--dry-run` | Print what would happen without doing anything | off |
 | `--no-modernize` | Skip the modernization steps | off |
+| `--ng-update-checks` | Run `ng build` after each major `ng update` step to surface compilation errors early | off |
+
+**Environment variables:**
+
+| Variable | Description |
+|---|---|
+| `NG_MIGRATOR_SKIP_STEPS` | Comma-separated list of modernization step keys to skip (e.g. `signals,flexLayout`). Used by the dashboard UI; can also be set manually. |
 
 ### Examples
 
@@ -64,6 +72,9 @@ node migrate.mjs ./my-project --from 14
 # Custom output folder
 node migrate.mjs ./my-project --dest ./my-project-migrated
 
+# Generate separate version-specific folders for each incremental major step
+node migrate.mjs ./my-project --split-versions
+
 # Just upgrade, skip modernization
 node migrate.mjs ./my-project --no-modernize
 
@@ -71,7 +82,7 @@ node migrate.mjs ./my-project --no-modernize
 node migrate.mjs ./my-project --dry-run
 ```
 
-The migrated project is created at `<source>-ng<target>` (e.g. `my-project-ng21`). The original is never touched.
+By default, the migrated project is created at `<source>-ng<target>` (e.g. `my-project-ng21`). When `--split-versions` is active, it creates separate folders for each major upgrade step (e.g., `ng11`, `ng12`, `ng13`...) inside a parent directory named `<project-name>-ng-versions` (e.g., `my-project-ng-versions/`). The original project is never touched.
 
 ## Node.js Version Isolation (Docker)
 
@@ -153,7 +164,7 @@ Each step runs as its own git commit, so the history shows exactly what changed 
 | Control flow | Converts `*ngIf`/`*ngFor`/`*ngSwitch` → `@if`/`@for`/`@switch` |
 | `[ngClass]` → `[class]` | Official Angular schematic |
 | `[ngStyle]` → `[style]` | Official Angular schematic |
-| `app.config.ts` | Creates `app.config.ts` with functional providers (`provideRouter`, `provideAnimationsAsync`, etc.) |
+| `app.config.ts` | Creates `app.config.ts` with functional providers (`provideRouter`, `provideAnimations`, etc.) |
 | `app.routes.ts` | Extracts routes from `app-routing.module.ts` |
 | Lazy routes | Converts `loadChildren: () => import('./foo.module')` to `.routes.ts` files |
 | esbuild builder | Switches from Webpack (`browser`) to esbuild/Vite (`application`) |

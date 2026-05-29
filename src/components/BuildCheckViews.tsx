@@ -1,5 +1,6 @@
-import type { BuildCheck } from '../types'
+import type { BuildCheck, MigrationData } from '../types'
 import { useTranslation } from '../lib/i18n'
+import { cn } from '@/lib/utils'
 
 export function BuildBadge({ check }: { check: BuildCheck }) {
   const { t } = useTranslation()
@@ -34,6 +35,61 @@ export function BuildBadge({ check }: { check: BuildCheck }) {
     <span className="text-[0.68rem] px-1.5 py-0.5 rounded border border-amber/45 bg-amber/12 text-[#FFB74D] font-bold shadow-[0_0_8px_rgba(255,183,77,0.15)] whitespace-nowrap">
       Total: {t('errorsCount', { count: check.total })}
     </span>
+  )
+}
+
+export function FinalBuildStatus({ data }: { data: MigrationData }) {
+  const checks = data.buildChecks ?? {}
+  const keys = Object.keys(checks)
+  if (!keys.length) return null
+
+  const remaining = new Set<string>()
+  let lastTotal = 0
+  for (const key of keys) {
+    const check = checks[key]
+    for (const c of check.new) remaining.add(c)
+    for (const c of check.fixed) remaining.delete(c)
+    lastTotal = check.total
+  }
+
+  const isClean = lastTotal === 0
+  const lastStep = keys[keys.length - 1]
+  const isRunning = data.status === 'running'
+
+  return (
+    <div className={cn(
+      'rounded-[10px] border px-4 py-3',
+      isClean ? 'bg-green/5 border-green/30' : 'bg-red/5 border-red/30',
+    )}>
+      <div className="flex items-center gap-2">
+        <span className={cn(
+          'text-[0.72rem] font-bold tracking-[0.07em] uppercase',
+          isClean ? 'text-green' : 'text-[#FF5252]',
+        )}>
+          {isClean ? '✓ Build clean' : '⚠ Build errors'}
+        </span>
+        {!isClean && (
+          <span className="text-[0.72rem] text-[#7070A0]">
+            — {lastTotal} error type{lastTotal !== 1 ? 's' : ''} remaining
+          </span>
+        )}
+        {isRunning && (
+          <span className="ml-auto text-[0.65rem] text-[#4A4A70] animate-pulse-custom">updating…</span>
+        )}
+      </div>
+      {!isClean && remaining.size > 0 && (
+        <div className="flex flex-wrap gap-1 mt-2">
+          {Array.from(remaining).map(code => (
+            <span key={code} className="text-[0.72rem] px-1.5 py-0.5 rounded bg-red/8 border border-red/25 text-[#FF5252]/80 font-mono">
+              {code}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="text-[0.65rem] text-[#3A3A60] mt-1.5">
+        {isRunning ? 'current state' : 'final state'} · last check: {lastStep}
+      </div>
+    </div>
   )
 }
 

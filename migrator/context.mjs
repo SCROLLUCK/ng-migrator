@@ -21,9 +21,11 @@ export const opts = {
   to:            parseInt(args.includes('--to')   ? args[args.indexOf('--to')   + 1] : '21'),
   from:          args.includes('--from') ? parseInt(args[args.indexOf('--from') + 1]) : null,
   dest:          args.includes('--dest') ? resolve(args[args.indexOf('--dest')  + 1]) : null,
-  dryRun:        args.includes('--dry-run'),
-  modernize:     !args.includes('--no-modernize'),
-  splitVersions: args.includes('--split-versions'),
+  versionsDir:   args.includes('--versions-dir') ? resolve(args[args.indexOf('--versions-dir') + 1]) : null,
+  dryRun:          args.includes('--dry-run'),
+  modernize:       !args.includes('--no-modernize'),
+  splitVersions:   args.includes('--split-versions'),
+  ngUpdateChecks:  args.includes('--ng-update-checks'),
 };
 
 // Steps to skip (passed via env var from ng-migrator-ui or --skip-steps CLI)
@@ -45,7 +47,7 @@ try {
 
 export let destPath = '';
 if (opts.splitVersions) {
-  const parentDir = join(dirname(sourcePath), `${basename(sourcePath)}-ng-versions`);
+  const parentDir = opts.versionsDir ?? join(dirname(sourcePath), `${basename(sourcePath)}-ng-versions`);
   const startVer = opts.from ?? detectedVersion;
   destPath = join(parentDir, `ng${startVer}`);
 } else {
@@ -100,6 +102,7 @@ export const report = {
   },
   filesCreated: [],
   notes: [],
+  skippedSteps: [],  // steps that were intentionally skipped via NG_MIGRATOR_SKIP_STEPS
   details: {},   // key → [{path, action, lines}]
 };
 

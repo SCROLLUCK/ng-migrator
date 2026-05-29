@@ -1,6 +1,0 @@
-{
-  "name": "mock-ng-app",
-  "dependencies": {
-    "@angular/core": "^12.0.0"
-  }
-}

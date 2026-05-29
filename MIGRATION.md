@@ -134,7 +134,7 @@ meu-projeto-angular/
     "@angular/router": "^21.0.0",
     "rxjs": "~7.8.0",
     "tslib": "^2.6.0",
-    "zone.js": "~0.14.0"
+    "zone.js": "~0.16.0"
   },
   "devDependencies": {
     "@angular-devkit/build-angular": "^21.0.0",
@@ -354,9 +354,9 @@ bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err))
 
 ```scss
 /* Reset e Imports */
-@import 'tailwindcss/base';
-@import 'tailwindcss/components';
-@import 'tailwindcss/utilities';
+@use 'tailwindcss/base' as *;
+@use 'tailwindcss/components' as *;
+@use 'tailwindcss/utilities' as *;
 
 /* Variáveis Globais */
 :root {
@@ -417,7 +417,7 @@ import { CommonModule } from '@angular/common';
   standalone: true, // ← STANDALONE!
   imports: [CommonModule, RouterOutlet], // ← Imports direto aqui
   templateUrl: './app.component.html',
-  styleUrls: ['./app.component.scss'],
+  styleUrl: './app.component.scss',
 })
 export class AppComponent implements OnInit {
   // Usando Signals (Angular 16+)
@@ -1005,7 +1005,7 @@ import { CommonModule } from '@angular/common';
       <ng-content />
     </button>
   `,
-  styleUrls: ['./button.component.scss'],
+  styleUrl: './button.component.scss',
 })
 export class ButtonComponent {
   // Novos input/output signals (Angular 17+)
@@ -1283,7 +1283,7 @@ import { CardComponent } from '@shared/components/card.component';
       }
     </div>
   `,
-  styleUrls: ['./product-list.component.scss'],
+  styleUrl: './product-list.component.scss',
 })
 export class ProductListComponent implements OnInit {
   private productService = inject(ProductService);
@@ -1444,7 +1444,7 @@ import { AuthService } from '@core/services/auth.service';
       </div>
     </header>
   `,
-  styleUrls: ['./header.component.scss'],
+  styleUrl: './header.component.scss',
 })
 export class HeaderComponent {
   private authService = inject(AuthService);
@@ -2056,85 +2056,6 @@ ng update @angular/core@21 @angular/cli@21
 | **Arquitetura**          | NgModules obrigatórios | Standalone components       |
 | **State Management**     | RxJS BehaviorSubject   | Signals                     |
 | **Control Flow**         | *ngIf, *ngFor          | @if, @for, @switch          |
-| **Inputs/Outputs**       | @Input, @Output        | input(), output()           |
-| **Dependency Injection** | Constructor            | inject() function           |
-| **Guards**               | Classes (CanActivate)  | Funções (CanActivateFn)     |
-| **Interceptors**         | Classes                | Funções (HttpInterceptorFn) |
-| **Bundler**              | Webpack                | Vite                        |
-| **TypeScript**           | 4.8                    | 5.4+                        |
-| **Configuração**         | app.module.ts          | app.config.ts               |
-| **Rotas**                | \*-routing.module.ts   | \*.routes.ts                |
-
-ng generate @angular/core:standalone
-
-````
-
----
-
-## Checklist de Boas Práticas Angular 20/21
-
-- [ ] Todos os componentes são **standalone** (sem NgModules)
-- [ ] Usar `inject()` ao invés de constructor injection
-- [ ] Usar **Signals** para state management local
-- [ ] Usar **nova sintaxe de control flow** (@if, @for, @switch)
-- [ ] Usar **input/output signals** ao invés de @Input/@Output
-- [ ] Guards e interceptors são **funcionais** (não classes)
-- [ ] Features organizadas por domínio (não por tipo)
-- [ ] Lazy loading implementado para features
-- [ ] Path aliases configurados no tsconfig (@app, @core, @shared)
-- [ ] Environments separados (dev/prod) se necessário
-- [ ] Assets organizados por tipo
-- [ ] Modelos/Interfaces tipados
-- [ ] Serviços com `providedIn: 'root'`
-- [ ] Componentes seguindo Single Responsibility
-- [ ] Smart vs Presentation components separados
-- [ ] Testes unitários para componentes críticos
-- [ ] ESLint configurado (ao invés de TSLint)
-- [ ] Prettier configurado para formatação
-
----
-
-## Recursos Adicionais
-
-- [Angular.dev (Nova Documentação Oficial)](https://angular.dev)
-- [Angular CLI Documentation](https://angular.io/cli)
-- [Angular Signals Guide](https://angular.dev/guide/signals)
-- [Angular Control Flow Guide](https://angular.dev/guide/templates/control-flow)
-- [RxJS Best Practices](https://rxjs.dev/guide/overview)
-- [Angular Update Guide](https://update.angular.io/)
-
----
-
-## Migração Angular 11 → Angular 20/21
-
-### Passos principais
-
-1. **Atualizar para Angular 15** (suporte a standalone)
-2. **Converter para standalone components** gradualmente
-3. **Atualizar para Angular 17** (control flow, signals)
-4. **Migrar guards/interceptors** para funcionais
-5. **Adotar signals** para state management
-6. **Atualizar para Angular 20/21**
-
-### Comando de migração automática
-
-```bash
-# Migrar para standalone
-ng generate @angular/core:standalone
-
-# Atualizar versão
-ng update @angular/core@21 @angular/cli@21
-````
-
----
-
-## Diferenças-chave: Angular 11 vs Angular 20/21
-
-| Recurso                  | Angular 11             | Angular 20/21               |
-| ------------------------ | ---------------------- | --------------------------- |
-| **Arquitetura**          | NgModules obrigatórios | Standalone components       |
-| **State Management**     | RxJS BehaviorSubject   | Signals                     |
-| **Control Flow**         | *ngIf,*ngFor           | @if, @for, @switch          |
 | **Inputs/Outputs**       | @Input, @Output        | input(), output()           |
 | **Dependency Injection** | Constructor            | inject() function           |
 | **Guards**               | Classes (CanActivate)  | Funções (CanActivateFn)     |

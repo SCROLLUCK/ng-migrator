@@ -3,7 +3,7 @@ import {
 } from 'fs';
 import { join, dirname, relative } from 'path';
 import { destPath, SKIP_DIRS, report } from './context.mjs';
-import { readJson, writeJson, run } from './utils.mjs';
+import { readJson, writeJson, run, capture, walkFiles } from './utils.mjs';
 
 // ─── UntypedForm* → typed forms ──────────────────────────────────────────────
 
@@ -16,32 +16,24 @@ export function fixUntypedForms() {
   ];
 
   let count = 0;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts')) continue;
-      let src = readFileSync(full, 'utf8');
-      if (!REPLACEMENTS.some(([from]) => src.includes(from))) continue;
+  walkFiles(join(destPath, 'src'), e => e.endsWith('.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    if (!REPLACEMENTS.some(([from]) => src.includes(from))) return;
 
-      let out = src;
-      for (const [from, to] of REPLACEMENTS) out = out.replaceAll(from, to);
+    let out = src;
+    for (const [from, to] of REPLACEMENTS) out = out.replaceAll(from, to);
 
-      // Deduplica imports de @angular/forms (evita duplicatas após substituição)
-      out = out.replace(
-        /import\s*\{([^}]+)\}\s*from\s*'@angular\/forms'\s*;/g,
-        (_, names) => {
-          const unique = [...new Set(names.split(',').map(n => n.trim()).filter(Boolean))].join(', ');
-          return `import { ${unique} } from '@angular/forms';`;
-        },
-      );
+    // Deduplica imports de @angular/forms (evita duplicatas após substituição)
+    out = out.replace(
+      /import\s*\{([^}]+)\}\s*from\s*'@angular\/forms'\s*;/g,
+      (_, names) => {
+        const unique = [...new Set(names.split(',').map(n => n.trim()).filter(Boolean))].join(', ');
+        return `import { ${unique} } from '@angular/forms';`;
+      },
+    );
 
-      if (out !== src) { writeFileSync(full, out); count++; }
-    }
-  }
-
-  walk(join(destPath, 'src'));
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
   if (count > 0) console.log(`  ↳ UntypedForm* → typed forms: ${count} arquivo(s)`);
   return count;
 }
@@ -62,68 +54,60 @@ export function fixReservedKeywordVariables() {
 
   let count = 0;
 
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
-      const src = readFileSync(full, 'utf8');
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full, entry) => {
+    const src = readFileSync(full, 'utf8');
+    declRe.lastIndex = 0;
+    if (!declRe.test(src)) { declRe.lastIndex = 0; return; }
+    declRe.lastIndex = 0;
+
+    let out = src;
+    let fileChanged = false;
+
+    for (let safety = 0; safety < 30; safety++) {
       declRe.lastIndex = 0;
-      if (!declRe.test(src)) { declRe.lastIndex = 0; continue; }
-      declRe.lastIndex = 0;
+      const m = declRe.exec(out);
+      if (!m) break;
 
-      let out = src;
-      let fileChanged = false;
+      const keyword = m[2];
+      const newName = keyword + 'Value';
 
-      for (let safety = 0; safety < 30; safety++) {
-        declRe.lastIndex = 0;
-        const m = declRe.exec(out);
-        if (!m) break;
+      // Walk backward from match to find the opening { of the enclosing block
+      let depth = 0, blockStart = -1;
+      for (let i = m.index - 1; i >= 0; i--) {
+        if (out[i] === '}') depth++;
+        else if (out[i] === '{') { if (depth === 0) { blockStart = i + 1; break; } depth--; }
+      }
+      const start = blockStart === -1 ? 0 : blockStart;
 
-        const keyword = m[2];
-        const newName = keyword + 'Value';
-
-        // Walk backward from match to find the opening { of the enclosing block
-        let depth = 0, blockStart = -1;
-        for (let i = m.index - 1; i >= 0; i--) {
-          if (out[i] === '}') depth++;
-          else if (out[i] === '{') { if (depth === 0) { blockStart = i + 1; break; } depth--; }
-        }
-        const start = blockStart === -1 ? 0 : blockStart;
-
-        // Find the matching closing }
-        let end = out.length;
-        if (blockStart !== -1) {
-          depth = 1;
-          for (let i = blockStart; i < out.length && depth > 0; i++) {
-            if (out[i] === '{') depth++;
-            else if (out[i] === '}') { if (--depth === 0) { end = i + 1; break; } }
-          }
-        }
-
-        const block = out.slice(start, end);
-
-        const newBlock = block.replace(
-          new RegExp('(?<!\\.)\\b' + keyword + '\\b(?!\\s*\\()', 'g'),
-          newName,
-        );
-
-        if (newBlock !== block) {
-          out = out.slice(0, start) + newBlock + out.slice(end);
-          fileChanged = true;
-          count++;
-          console.log(`  ↳ ${entry}: '${keyword}' → '${newName}' (palavra reservada)`);
-        } else {
-          break;
+      // Find the matching closing }
+      let end = out.length;
+      if (blockStart !== -1) {
+        depth = 1;
+        for (let i = blockStart; i < out.length && depth > 0; i++) {
+          if (out[i] === '{') depth++;
+          else if (out[i] === '}') { if (--depth === 0) { end = i + 1; break; } }
         }
       }
 
-      if (fileChanged) writeFileSync(full, out);
-    }
-  }
+      const block = out.slice(start, end);
 
-  walk(srcDir);
+      const newBlock = block.replace(
+        new RegExp('(?<!\\.)\\b' + keyword + '\\b(?!\\s*\\()', 'g'),
+        newName,
+      );
+
+      if (newBlock !== block) {
+        out = out.slice(0, start) + newBlock + out.slice(end);
+        fileChanged = true;
+        count++;
+        console.log(`  ↳ ${entry}: '${keyword}' → '${newName}' (palavra reservada)`);
+      } else {
+        break;
+      }
+    }
+
+    if (fileChanged) writeFileSync(full, out);
+  });
   if (count > 0) console.log(`  ↳ ${count} variável(eis) com nome reservado renomeada(s)`);
   return count;
 }
@@ -135,14 +119,9 @@ export function fixTsCompat() {
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return 0;
 
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts') || entry.endsWith('.spec.ts')) continue;
-      let src = readFileSync(full, 'utf8');
-      let out = src;
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    let out = src;
 
       // rxjs/internal-compatibility was removed in RxJS 7
       if (out.includes('rxjs/internal-compatibility')) {
@@ -157,6 +136,12 @@ export function fixTsCompat() {
       out = out.replace(/_countGroupLabelsBeforeLegacyOption/g, '_countGroupLabelsBeforeOption');
       // _getLegacyOptionScrollPosition → _getOptionScrollPosition (Material v15)
       out = out.replace(/_getLegacyOptionScrollPosition/g, '_getOptionScrollPosition');
+      // Material v15+: _control.ngControl return type widened to NgControl | AbstractControlDirective
+      // Cast is safe — in MatFormFieldControl context ngControl is always NgControl when not null.
+      // Must wrap in parens when followed by property access to avoid broken `x as T.prop` syntax.
+      out = out.replace(/(\._control\.ngControl)(?!\s+as\s+NgControl)(\.[A-Za-z_$])/g, '($1 as NgControl)$2');
+      // Fallback for standalone occurrences (not followed by property access)
+      out = out.replace(/(\._control\.ngControl)(?!\s+as\s+NgControl)(?!\s*\.\w)/g, '$1 as NgControl');
 
       // Double commas in TypeScript arrays/imports (from schematic add/remove operations)
       out = out.replace(/,(\s*,)+/g, ',');
@@ -170,10 +155,8 @@ export function fixTsCompat() {
         }
       }
 
-      if (out !== src) { writeFileSync(full, out); count++; }
-    }
-  }
-  walk(srcDir);
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
   if (count > 0) console.log(`  ↳ ts-compat fixes: ${count} arquivo(s)`);
   return count;
 }
@@ -182,61 +165,55 @@ export function fixTsCompat() {
 
 export function fixThrowError() {
   let count = 0;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts')) continue;
-      let src = readFileSync(full, 'utf8');
-      if (!src.includes('throwError(')) continue;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+  walkFiles(srcDir, e => e.endsWith('.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    if (!src.includes('throwError(')) return;
 
-      let out = '';
-      let pos = 0;
-      let modified = false;
-      const marker = 'throwError(';
+    let out = '';
+    let pos = 0;
+    let modified = false;
+    const marker = 'throwError(';
 
-      while (pos < src.length) {
-        const idx = src.indexOf(marker, pos);
-        if (idx === -1) { out += src.slice(pos); break; }
-        out += src.slice(pos, idx + marker.length);
-        const argStart = idx + marker.length;
+    while (pos < src.length) {
+      const idx = src.indexOf(marker, pos);
+      if (idx === -1) { out += src.slice(pos); break; }
+      out += src.slice(pos, idx + marker.length);
+      const argStart = idx + marker.length;
 
-        let depth = 1, inStr = false, strChar = '';
-        let j = argStart;
-        while (j < src.length && depth > 0) {
-          const ch = src[j];
-          if (inStr) {
-            if (ch === '\\') j++;
-            else if (ch === strChar) inStr = false;
-          } else {
-            if (ch === '"' || ch === "'" || ch === '`') { inStr = true; strChar = ch; }
-            else if (ch === '(') depth++;
-            else if (ch === ')') { if (--depth === 0) break; }
-          }
-          j++;
-        }
-
-        const arg = src.slice(argStart, j).trim();
-        const isFactory = /^(\(\s*[^)]*\)|\w+)\s*=>/.test(arg) || /^function[\s({]/.test(arg);
-
-        if (isFactory) {
-          out += src.slice(argStart, j) + ')';
-        } else if (arg.startsWith('{')) {
-          out += `() => (${arg}))`;
-          modified = true;
+      let depth = 1, inStr = false, strChar = '';
+      let j = argStart;
+      while (j < src.length && depth > 0) {
+        const ch = src[j];
+        if (inStr) {
+          if (ch === '\\') j++;
+          else if (ch === strChar) inStr = false;
         } else {
-          out += `() => ${arg})`;
-          modified = true;
+          if (ch === '"' || ch === "'" || ch === '`') { inStr = true; strChar = ch; }
+          else if (ch === '(') depth++;
+          else if (ch === ')') { if (--depth === 0) break; }
         }
-        pos = j + 1;
+        j++;
       }
 
-      if (modified) { writeFileSync(full, out); count++; }
+      const arg = src.slice(argStart, j).trim();
+      const isFactory = /^(\(\s*[^)]*\)|\w+)\s*=>/.test(arg) || /^function[\s({]/.test(arg);
+
+      if (isFactory) {
+        out += src.slice(argStart, j) + ')';
+      } else if (arg.startsWith('{')) {
+        out += `() => (${arg}))`;
+        modified = true;
+      } else {
+        out += `() => ${arg})`;
+        modified = true;
+      }
+      pos = j + 1;
     }
-  }
-  const srcDir = join(destPath, 'src');
-  if (existsSync(srcDir)) walk(srcDir);
+
+    if (modified) { writeFileSync(full, out); count++; }
+  });
   if (count > 0) console.log(`  ↳ throwError() → factory function (RxJS 7): ${count} arquivo(s)`);
   return count;
 }
@@ -245,19 +222,13 @@ export function fixThrowError() {
 
 export function fixMomentImport() {
   let count = 0;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts')) continue;
-      let src = readFileSync(full, 'utf8');
-      const out = src.replace(/import\s+\*\s+as\s+moment\s+from\s+(['"])moment\1/g, `import moment from 'moment'`);
-      if (out !== src) { writeFileSync(full, out); count++; }
-    }
-  }
   const srcDir = join(destPath, 'src');
-  if (existsSync(srcDir)) walk(srcDir);
+  if (existsSync(srcDir)) walkFiles(srcDir, e => e.endsWith('.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    // Cobre: from 'moment', from "moment", from 'moment/moment', from "moment/moment"
+    const out = src.replace(/import\s+\*\s+as\s+moment\s+from\s+(['"])moment(?:\/[^'"]+)?\1/g, `import moment from 'moment'`);
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
   if (count > 0) {
     const tsconfigPath = join(destPath, 'tsconfig.json');
     if (existsSync(tsconfigPath)) {
@@ -277,28 +248,143 @@ export function fixMomentImport() {
 
 export function fixSubjectVoid() {
   let count = 0;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts')) continue;
-      let src = readFileSync(full, 'utf8');
-      if (!src.includes('new Subject()') && !src.includes('new Subject<unknown>()')) continue;
-      let out = src
-        .replace(/new\s+Subject\s*<unknown>\s*\(\)/g, 'new Subject<void>()')
-        .replace(
-          /((?:private|protected|public|readonly)\s+)?(\w+)\$?\s*(?:=\s*)new\s+Subject\s*\(\)/g,
-          (match, _mod, name) =>
-            /(?:unsubscribe|destroy|teardown|stop|complete|close)/i.test(name)
-              ? match.replace('new Subject()', 'new Subject<void>()') : match,
-        );
-      if (out !== src) { writeFileSync(full, out); count++; }
-    }
-  }
   const srcDir = join(destPath, 'src');
-  if (existsSync(srcDir)) walk(srcDir);
+  if (existsSync(srcDir)) walkFiles(srcDir, e => e.endsWith('.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    if (!src.includes('new Subject()') && !src.includes('new Subject<unknown>()')) return;
+    let out = src
+      .replace(/new\s+Subject\s*<unknown>\s*\(\)/g, 'new Subject<void>()')
+      .replace(
+        /((?:private|protected|public|readonly)\s+)?(\w+)\$?\s*(?:=\s*)new\s+Subject\s*\(\)/g,
+        (match, _mod, name) =>
+          /(?:unsubscribe|destroy|teardown|stop|complete|close)/i.test(name)
+            ? match.replace('new Subject()', 'new Subject<void>()') : match,
+      );
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
   if (count > 0) console.log(`  ↳ Subject<void>: ${count} arquivo(s)`);
+  return count;
+}
+
+// ─── output() sem tipo → remove arg de emit() (void emitter) ─────────────────
+
+export function fixVoidOutputEmit() {
+  let count = 0;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes('= output()')) return;
+
+    // Collect names of void outputs: `readonly xxx = output()` (no type param → void)
+    const voidOutputRe = /\breadonly\s+(\w+)\s*=\s*output\s*\(\s*\)/g;
+    const voidOutputs = [];
+    let m;
+    while ((m = voidOutputRe.exec(src)) !== null) voidOutputs.push(m[1]);
+    if (!voidOutputs.length) return;
+
+    let out = src;
+    for (const name of voidOutputs) {
+      // Remove argument from .emit(arg) calls on this void emitter
+      // Pattern handles one level of nested parens (e.g. emit(func())) correctly
+      out = out.replace(
+        new RegExp(`((?:this\\.)?${name}\\.emit)\\((?:[^()]|\\([^)]*\\))+\\)`, 'g'),
+        '$1()',
+      );
+      // Fix subscribe callbacks that only forwarded the event: (e => ..emit()) → (() => ..emit())
+      out = out.replace(
+        new RegExp(
+          `(\\.subscribe\\s*\\()\\s*(\\w+)\\s*=>\\s*((?:[^;{}]*\\.)?${name}\\.emit\\(\\))\\s*(\\))`,
+          'g',
+        ),
+        '$1() => $3$4',
+      );
+    }
+
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
+  if (count > 0) console.log(`  ↳ output() void emit args removed: ${count} arquivo(s)`);
+  return count;
+}
+
+// ─── Revert signal inputs assigned to (TS2540) → @Input() ───────────────────
+// The signals schematic with --best-effort-mode sometimes converts @Input()
+// properties that are directly assigned (this.prop = value), which produces
+// TS2540 (read-only). We detect and revert those back to @Input().
+export function fixReadonlySignalInputAssignments() {
+  let count = 0;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes('= input(') && !src.includes('= input<')) return;
+
+    // Find all signal inputs: readonly xxx = input<Type>(default?)
+    const signalRe = /readonly\s+(\w+)\s*=\s*input(?:<[^>]*>)?\([^)]*\)/g;
+    const signalNames = [];
+    let m;
+    while ((m = signalRe.exec(src)) !== null) signalNames.push(m[1]);
+    if (!signalNames.length) return;
+
+    // Keep only those that are assigned to in code: this.xxx =
+    const assigned = signalNames.filter(n => new RegExp(`this\\.${n}\\s*=(?!=)`).test(src));
+    if (!assigned.length) return;
+
+    let out = src;
+    const htmlPath = full.replace(/\.ts$/, '.html');
+    let htmlSrc = existsSync(htmlPath) ? readFileSync(htmlPath, 'utf8') : null;
+    let htmlOut = htmlSrc;
+
+    for (const name of assigned) {
+      // Capture full signal declaration to extract type and default
+      const declRe = new RegExp(
+        `(readonly\\s+${name}\\s*=\\s*input)(?:<([^>]*)>)?\\(([^)]*)\\)`,
+      );
+      out = out.replace(declRe, (_, _prefix, type, defaultVal) => {
+        const t = (type || '').trim() || 'any';
+        const d = (defaultVal || '').trim();
+        return d
+          ? `@Input() ${name}: ${t} = ${d}`
+          : `@Input() ${name}!: ${t}`;
+      });
+
+      // Revert zero-arg signal calls in TS: this.xxx() → this.xxx
+      out = out.replace(new RegExp(`this\\.${name}\\(\\)`, 'g'), `this.${name}`);
+
+      // Revert zero-arg signal calls in HTML template: xxx() → xxx
+      if (htmlOut) {
+        htmlOut = htmlOut.replace(new RegExp(`\\b${name}\\(\\)`, 'g'), name);
+      }
+    }
+
+    if (htmlOut && htmlOut !== htmlSrc) writeFileSync(htmlPath, htmlOut);
+
+    if (out === src) return;
+
+    // Fix @angular/core imports: add Input, remove input if unused
+    out = out.replace(
+      /import\s*\{([^}]+)\}\s*from\s*['"]@angular\/core['"]/,
+      (match, body) => {
+        const items = body.split(',').map(s => s.trim()).filter(Boolean);
+        if (!items.includes('Input')) items.push('Input');
+        // Remove 'input' only if no remaining usages
+        const afterMatch = out.slice(out.indexOf(match) + match.length);
+        const beforeMatch = out.slice(0, out.indexOf(match));
+        const stillUsed = /\binput\s*[<(]/.test(beforeMatch + afterMatch);
+        if (!stillUsed) {
+          const idx = items.indexOf('input');
+          if (idx !== -1) items.splice(idx, 1);
+        }
+        return `import { ${items.join(', ')} } from '@angular/core'`;
+      },
+    );
+
+    writeFileSync(full, out);
+    count++;
+  });
+  if (count > 0) console.log(`  ↳ signal input → @Input() revert (TS2540): ${count} arquivo(s)`);
   return count;
 }
 
@@ -352,14 +438,9 @@ export function fixSassImports() {
   let count = 0;
   const srcDir = join(destPath, 'src');
 
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.scss')) continue;
-      let src = readFileSync(full, 'utf8');
-      let out = src;
+  if (existsSync(srcDir)) walkFiles(srcDir, e => e.endsWith('.scss'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    let out = src;
 
       // @angular/material/theming was merged into @angular/material in v15
       out = out.replace(/@angular\/material\/theming/g, '@angular/material');
@@ -367,6 +448,10 @@ export function fixSassImports() {
       // @import "~pkg" / @import "path" → @use "path" as *  (strips tilde prefix)
       out = out.replace(/@import\s+(['"])(~?)([^'"]+)\1\s*;/g,
         (_, q, _tilde, path) => `@use ${q}${path}${q} as *;`);
+
+      // url("~pkg/...") → url("pkg/...") — webpack ~ prefix not supported by esbuild
+      out = out.replace(/url\(\s*(['"]?)~([^'")\s]+)\1\s*\)/g,
+        (_, q, path) => `url(${q}${path}${q})`);
 
       // Material v1 SCSS API → v15/v17+ API
       const hasMat1Api = out.includes('mat-typography-config(') || out.includes('mat-typography-level(') ||
@@ -377,22 +462,29 @@ export function fixSassImports() {
         out = out.replace(/@use\s+(['"])@angular\/material\1\s+as\s+\*/g,
           `@use '@angular/material' as mat`);
 
-        if (report.targetVersion >= 17) {
-          out = removeM2TypographyBlocks(out);
-          // mat-base-typography is M2-only: remove the call entirely for v17+
-          out = out.replace(/[ \t]*@include\s+mat-base-typography\s*\([^)]*\)\s*;\n?/g, '');
-        } else {
-          const matFnRenames = [
-            [/\bmat-typography-config\s*\(/g,  'mat.define-typography-config('],
-            [/\bmat-typography-level\s*\(/g,   'mat.define-typography-level('],
-            [/\bmat-base-typography\s*\(/g,    'mat.typography-hierarchy('],
-          ];
+        {
+          // For all target versions: convert M2 typography to the appropriate modern API.
+          // Do NOT remove the variable — removing leaves orphaned $var references in mixin calls.
+          const typographyRenames = report.targetVersion >= 17
+            ? [
+                // v17+: use legacy-compat function so existing M2 themes keep working
+                [/\bmat-typography-config\s*\(/g, 'mat.define-legacy-typography-config('],
+                [/\bmat-typography-level\s*\(/g,  'mat.define-typography-level('],
+              ]
+            : [
+                [/\bmat-typography-config\s*\(/g, 'mat.define-typography-config('],
+                [/\bmat-typography-level\s*\(/g,  'mat.define-typography-level('],
+                [/\bmat-base-typography\s*\(/g,   'mat.typography-hierarchy('],
+              ];
           out = out.split('\n').map(line => {
             if (/^\s*@(function|mixin)\s/.test(line)) return line;
-            for (const [from, to] of matFnRenames) line = line.replace(from, to);
+            for (const [from, to] of typographyRenames) line = line.replace(from, to);
             return line;
           }).join('\n');
-          out = out.replace(/,\s*\$letter-spacing\s*:\s*[^,)]+/g, '');
+          // mat-base-typography is removed in v17+ (no direct replacement)
+          if (report.targetVersion >= 17) {
+            out = out.replace(/[ \t]*@include\s+mat-base-typography\s*\([^)]*\)\s*;\n?/g, '');
+          }
         }
 
         const matFnRenamesCommon = [
@@ -526,11 +618,8 @@ export function fixSassImports() {
         }
       }
 
-      if (out !== src) { writeFileSync(full, out); count++; }
-    }
-  }
-
-  if (existsSync(srcDir)) walk(srcDir);
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
   if (count > 0) console.log(`  ↳ SCSS @import → @use + tilde fix: ${count} arquivo(s)`);
   return count;
 }
@@ -574,16 +663,67 @@ export function addEslint() {
   const hasEslint = existsSync(join(destPath, '.eslintrc.json'))
     || existsSync(join(destPath, 'eslint.config.js'))
     || existsSync(join(destPath, 'eslint.config.mjs'));
-  if (hasEslint) { console.log('  ↳ ESLint já configurado'); return false; }
+  if (hasEslint) {
+    console.log('  ↳ ESLint já configurado');
+    fixEslintConfig();
+    return false;
+  }
 
   run('npx ng add @angular/eslint --skip-confirmation', { ignoreError: true });
 
   const added = existsSync(join(destPath, '.eslintrc.json'))
     || existsSync(join(destPath, 'eslint.config.js'))
     || existsSync(join(destPath, 'eslint.config.mjs'));
-  if (added) console.log('  ↳ @angular/eslint configurado');
+  if (added) { console.log('  ↳ @angular/eslint configurado'); fixEslintConfig(); }
   else console.log('  ↳ ESLint: ng add falhou — adicione manualmente com: ng add @angular/eslint');
   return added;
+}
+
+// Remove presets depreciados do ng-cli-compat (removidos no @angular-eslint v17+)
+// e limpa parserOptions legadas para evitar erros de carregamento de config.
+function fixEslintConfig() {
+  const eslintPath = join(destPath, '.eslintrc.json');
+  if (!existsSync(eslintPath)) return;
+
+  const config = readJson(eslintPath);
+  let changed = false;
+
+  for (const override of config.overrides ?? []) {
+    // Replace ng-cli-compat presets with current equivalents
+    if (Array.isArray(override.extends)) {
+      const before = JSON.stringify(override.extends);
+      override.extends = override.extends
+        .filter(e => e !== 'plugin:@angular-eslint/ng-cli-compat--formatting-add-on')
+        .map(e => e === 'plugin:@angular-eslint/ng-cli-compat'
+          ? 'plugin:@angular-eslint/recommended'
+          : e);
+      if (JSON.stringify(override.extends) !== before) changed = true;
+    }
+
+    // Remove deprecated parserOptions
+    if (override.parserOptions) {
+      if (override.parserOptions.createDefaultProgram !== undefined) {
+        delete override.parserOptions.createDefaultProgram;
+        changed = true;
+      }
+      // Remove non-existent tsconfig paths (e.g. e2e/ removed during migration)
+      if (Array.isArray(override.parserOptions.project)) {
+        const filtered = override.parserOptions.project.filter(p => {
+          const abs = join(destPath, p);
+          return existsSync(abs);
+        });
+        if (filtered.length !== override.parserOptions.project.length) {
+          override.parserOptions.project = filtered;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  if (changed) {
+    writeJson(eslintPath, config);
+    console.log('  ↳ .eslintrc.json: ng-cli-compat → @angular-eslint/recommended');
+  }
 }
 
 // ─── Path aliases no tsconfig ─────────────────────────────────────────────────
@@ -593,39 +733,155 @@ export function addTsconfigPathAliases() {
   const tsconfig = readJson(tsconfigPath);
   if (tsconfig.compilerOptions?.paths) { console.log('  ↳ paths já existem no tsconfig.json'); return; }
   if (!tsconfig.compilerOptions) tsconfig.compilerOptions = {};
-  tsconfig.compilerOptions.paths = {
-    '@app/*':          ['src/app/*'],
-    '@core/*':         ['src/app/core/*'],
-    '@shared/*':       ['src/app/shared/*'],
-    '@features/*':     ['src/app/features/*'],
-    '@environments/*': ['src/environments/*'],
-  };
+
+  // @app/* sempre existe (src/app é obrigatório em qualquer projeto Angular)
+  const paths = { '@app/*': ['src/app/*'] };
+
+  // Demais aliases: só adiciona se o diretório realmente existir no projeto
+  const candidates = [
+    ['@core/*',         'src/app/core'],
+    ['@shared/*',       'src/app/shared'],
+    ['@features/*',     'src/app/features'],
+    ['@pages/*',        'src/app/pages'],
+    ['@environments/*', 'src/environments'],
+  ];
+  for (const [alias, dir] of candidates) {
+    if (existsSync(join(destPath, dir))) {
+      paths[alias] = [`${dir}/*`];
+    }
+  }
+
+  tsconfig.compilerOptions.paths = paths;
   writeJson(tsconfigPath, tsconfig);
-  console.log('  ↳ @app, @core, @shared, @features, @environments adicionados');
+  console.log(`  ↳ path aliases: ${Object.keys(paths).join(', ')}`);
 }
 
 // ─── styleUrls (array) → styleUrl (singular) ─────────────────────────────────
 
 export function fixStyleUrls() {
   let count = 0;
-  function walk(dir) {
-    for (const entry of readdirSync(dir)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
-      if (!entry.endsWith('.ts')) continue;
-      let src = readFileSync(full, 'utf8');
-      if (!src.includes('styleUrls')) continue;
-      const out = src.replace(
-        /styleUrls\s*:\s*\[\s*(['"][^'"]+['"])\s*\]/g,
-        'styleUrl: $1',
-      );
-      if (out !== src) { writeFileSync(full, out); count++; }
-    }
-  }
   const srcDir = join(destPath, 'src');
-  if (existsSync(srcDir)) walk(srcDir);
+  if (existsSync(srcDir)) walkFiles(srcDir, e => e.endsWith('.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    if (!src.includes('styleUrls')) return;
+    const out = src.replace(
+      /styleUrls\s*:\s*\[\s*(['"][^'"]+['"])\s*\]/g,
+      'styleUrl: $1',
+    );
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
   if (count > 0) console.log(`  ↳ styleUrls → styleUrl: ${count} arquivo(s)`);
+  return count;
+}
+
+// ─── Fix signal property access: this.signalProp.method → this.signalProp().method ──────
+// After the signals schematic converts @Input()/@ViewChild() to signal equivalents,
+// some call sites still access the signal object directly (this.prop.x) instead of
+// calling the signal first (this.prop().x). This produces TS2339 errors.
+export function fixSignalPropertyAccess() {
+  let count = 0;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  const SIGNAL_FACTORIES = ['input', 'viewChild', 'viewChildren', 'contentChild', 'contentChildren', 'model', 'computed', 'signal'];
+  const sigDeclRe = new RegExp(
+    `\\breadonly\\s+(\\w+)\\s*=\\s*(?:${SIGNAL_FACTORIES.join('|')})\\s*(?:<[^>]*>)?\\s*\\(`,
+    'g',
+  );
+
+  // Pass 1: build global index of ALL signal property names across all files
+  const globalSignalNames = new Set();
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!SIGNAL_FACTORIES.some(f => src.includes(`= ${f}(`))) return;
+    sigDeclRe.lastIndex = 0;
+    let m;
+    while ((m = sigDeclRe.exec(src)) !== null) globalSignalNames.add(m[1]);
+  });
+  if (!globalSignalNames.size) return 0;
+
+  // Pass 2: fix accesses in all files
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+
+    // Collect signal names declared in THIS file (for this.X.y fixes)
+    sigDeclRe.lastIndex = 0;
+    const localSignalNames = [];
+    let m;
+    while ((m = sigDeclRe.exec(src)) !== null) localSignalNames.push(m[1]);
+
+    let out = src;
+
+    // Fix this.X.y → this.X().y for locally-declared signals
+    for (const name of localSignalNames) {
+      const re = new RegExp(`(this\\.${name})\\.([A-Za-z_$])`, 'g');
+      out = out.replace(re, `$1().$2`);
+    }
+
+    // Fix cross-class access: obj().signalProp.x → obj().signalProp().x
+    // Match: word char or ) followed by .signalName.identifier (not already called)
+    for (const name of globalSignalNames) {
+      if (localSignalNames.includes(name)) continue; // already handled above
+      const re = new RegExp(`(\\))\\.${name}\\.([A-Za-z_$])`, 'g');
+      out = out.replace(re, `$1.${name}().$2`);
+    }
+
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
+  if (count > 0) console.log(`  ↳ signal property access fixed (this.prop.x → this.prop().x): ${count} arquivo(s)`);
+  return count;
+}
+
+// ─── Fix @Output() Subject → EventEmitter ──────────────────────────────────────
+// Angular @Output() should use EventEmitter, not plain Subject. Subject has no
+// .emit() method. Convert `@Output() x = new Subject<T>()` → `new EventEmitter<T>()`.
+// This also fixes downstream `.emit()` calls that fail when target is Subject.
+export function fixSubjectEmit() {
+  let count = 0;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes('@Output()') || !src.includes('new Subject')) return;
+
+    // Convert @Output() x = new Subject<T>() → new EventEmitter<T>()
+    const outputSubjectRe = /(@Output\(\)[^=\n]*=\s*)new\s+Subject\s*(<[^>]*>)?\s*\(\)/g;
+    let out = src.replace(outputSubjectRe, (_, prefix, typeParam) => {
+      const tp = typeParam ?? '';
+      return `${prefix}new EventEmitter${tp}()`;
+    });
+
+    if (out === src) return;
+
+    // Fix Angular core imports: add EventEmitter, remove Subject if unused
+    out = out.replace(
+      /import\s*\{([^}]+)\}\s*from\s*['"]@angular\/core['"]/,
+      (match, body) => {
+        const items = body.split(',').map(s => s.trim()).filter(Boolean);
+        if (!items.includes('EventEmitter')) items.push('EventEmitter');
+        return `import { ${items.join(', ')} } from '@angular/core'`;
+      },
+    );
+    // Remove Subject from rxjs import if no longer used
+    out = out.replace(
+      /import\s*\{([^}]+)\}\s*from\s*['"]rxjs['"]/,
+      (match, body) => {
+        const items = body.split(',').map(s => s.trim()).filter(Boolean);
+        const subjectUsed = /\bSubject\b/.test(out.replace(match, ''));
+        if (!subjectUsed) {
+          const idx = items.indexOf('Subject');
+          if (idx !== -1) items.splice(idx, 1);
+        }
+        if (!items.length) return '';
+        return `import { ${items.join(', ')} } from 'rxjs'`;
+      },
+    );
+
+    writeFileSync(full, out);
+    count++;
+  });
+  if (count > 0) console.log(`  ↳ @Output() Subject → EventEmitter: ${count} arquivo(s)`);
   return count;
 }
 
@@ -676,19 +932,21 @@ export function inlinePolyfills() {
     unlinkSync(polyfillsPath);
     console.log('  ↳ polyfills.ts inlined → angular.json ["zone.js"]');
 
-    // Remove polyfills.ts (and its ngtypecheck counterpart) from tsconfig.app.json files array
-    const tsconfigAppPath = join(destPath, 'tsconfig.app.json');
-    if (existsSync(tsconfigAppPath)) {
+    // Remove polyfills.ts from all tsconfig*.json files arrays
+    const tsconfigFiles = readdirSync(destPath)
+      .filter(f => f.startsWith('tsconfig') && f.endsWith('.json'));
+    for (const fname of tsconfigFiles) {
+      const tsconfigPath = join(destPath, fname);
       try {
-        const tsapp = readJson(tsconfigAppPath);
-        if (Array.isArray(tsapp.files)) {
-          const before = tsapp.files.length;
-          tsapp.files = tsapp.files.filter(f =>
+        const tscfg = readJson(tsconfigPath);
+        if (Array.isArray(tscfg.files)) {
+          const before = tscfg.files.length;
+          tscfg.files = tscfg.files.filter(f =>
             !String(f).includes('polyfills.ts') && !String(f).includes('polyfills.ngtypecheck.ts')
           );
-          if (tsapp.files.length !== before) {
-            writeJson(tsconfigAppPath, tsapp);
-            console.log('  ↳ polyfills.ts removido do tsconfig.app.json');
+          if (tscfg.files.length !== before) {
+            writeJson(tsconfigPath, tscfg);
+            console.log(`  ↳ polyfills.ts removido do ${fname}`);
           }
         }
       } catch { /* ignore malformed tsconfig */ }
@@ -696,4 +954,84 @@ export function inlinePolyfills() {
     return true;
   }
   return false;
+}
+
+// ─── Fix double commas (,, → ,) introduced by standalone migration schematic ─
+// The Angular standalone-migration schematic sometimes produces trailing double
+// commas (e.g. MatGridListModule,,) in NgModule import/export arrays. These are
+// syntax artifacts that can mask other compile errors downstream.
+export function fixDoubleCommas() {
+  let count = 0;
+  walkFiles(join(destPath, 'src'), e => e.endsWith('.ts') || e.endsWith('.html'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes(',,')) return;
+    const out = src.replace(/,(\s*,)+/g, ',');
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
+  if (count > 0) console.log(`  ↳ double commas (,,) fixed: ${count} arquivo(s)`);
+  return count;
+}
+
+// ─── Fix TS2663: bare signal property access without 'this.' ─────────────────
+// The signals schematic sometimes converts `this.prop.x` → `prop.x` (drops
+// `this.` entirely) instead of the correct `this.prop().x`. TypeScript reports
+// TS2663: "Cannot find name 'prop'. Did you mean the instance member 'this.prop'?"
+// We run a build to get precise file:line locations, then fix surgically.
+export function fixTs2663SignalAccess() {
+  const raw = capture('npx ng build --no-progress 2>&1; true');
+  let count = 0;
+  const lines = raw.split('\n');
+  const ts2663Lines = lines.filter(l => l.replace(/\x1b\[[0-9;]*m/g, '').includes('TS2663')).length;
+  if (ts2663Lines > 0 || lines.length > 5) {
+    console.log(`  ↳ TS2663 scan: ${lines.length} linhas capturadas, ${ts2663Lines} ocorrência(s)`);
+  }
+
+  const errors = [];
+  for (let i = 0; i < lines.length; i++) {
+    const clean = lines[i].replace(/\x1b\[[0-9;]*m/g, '');
+    if (!clean.includes('TS2663')) continue;
+    const nameMatch = clean.match(/Cannot find name [''](\w+)['']/);
+    if (!nameMatch) continue;
+    const propName = nameMatch[1];
+
+    // File:line reference is in surrounding context (esbuild multi-line format)
+    for (let j = Math.max(0, i - 3); j <= Math.min(lines.length - 1, i + 6); j++) {
+      const ref = lines[j].replace(/\x1b\[[0-9;]*m/g, '');
+      const m = ref.match(/([^\s:]+\.ts):(\d+):(\d+)/);
+      if (m) {
+        errors.push({ propName, file: m[1], line: parseInt(m[2]) - 1 });
+        break;
+      }
+    }
+  }
+
+  if (!errors.length) return 0;
+
+  // Group by file to batch writes
+  const byFile = new Map();
+  for (const e of errors) {
+    const fullPath = join(destPath, e.file);
+    if (!byFile.has(fullPath)) byFile.set(fullPath, []);
+    byFile.get(fullPath).push(e);
+  }
+
+  for (const [fullPath, errs] of byFile) {
+    if (!existsSync(fullPath)) continue;
+    const fileLines = readFileSync(fullPath, 'utf8').split('\n');
+    let changed = false;
+    for (const { propName, line } of errs) {
+      if (line >= fileLines.length) continue;
+      const original = fileLines[line];
+      // Replace propName.x → this.propName().x (not preceded by . or word chars)
+      const fixed = original.replace(
+        new RegExp(`(?<![.\\w$])(${propName})\\.([A-Za-z_$])`, 'g'),
+        `this.${propName}().$2`,
+      );
+      if (fixed !== original) { fileLines[line] = fixed; changed = true; count++; }
+    }
+    if (changed) writeFileSync(fullPath, fileLines.join('\n'));
+  }
+
+  if (count > 0) console.log(`  ↳ TS2663 bare signal access (prop.x → this.prop().x): ${count} location(s)`);
+  return count;
 }

@@ -51,6 +51,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   const [cleanDest, setCleanDest] = useState(() => localStorage.getItem('ng-migrator.cleanDest') !== 'false')
   const [runAfter, setRunAfter] = useState(() => localStorage.getItem('ng-migrator.runAfter') === 'true')
   const [splitVersions, setSplitVersions] = useState(() => localStorage.getItem('ng-migrator.splitVersions') === 'true')
+  const [ngUpdateChecks, setNgUpdateChecks] = useState(() => localStorage.getItem('ng-migrator.ngUpdateChecks') === 'true')
   const [stepsOpen, setStepsOpen] = useState(false)
   const [selectedSteps, setSelectedSteps] = useState<Set<string>>(new Set(ALL_STEPS))
   const [error, setError] = useState<string | null>(null)
@@ -65,6 +66,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   useEffect(() => { localStorage.setItem('ng-migrator.cleanDest', String(cleanDest)) }, [cleanDest])
   useEffect(() => { localStorage.setItem('ng-migrator.runAfter', String(runAfter)) }, [runAfter])
   useEffect(() => { localStorage.setItem('ng-migrator.splitVersions', String(splitVersions)) }, [splitVersions])
+  useEffect(() => { localStorage.setItem('ng-migrator.ngUpdateChecks', String(ngUpdateChecks)) }, [ngUpdateChecks])
   useEffect(() => { localStorage.setItem('ng-migrator.loadPath', loadPath) }, [loadPath])
 
   const handleBrowse = async () => {
@@ -142,6 +144,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           cleanDest,
           runAfter,
           splitVersions,
+          ngUpdateChecks,
         }),
       })
       const json = await res.json()
@@ -258,6 +261,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           { id: 'modernize', label: t('runModernization'), checked: modernize, onChange: setModernize },
           { id: 'cleanDest', label: t('deleteDestFolder'), checked: cleanDest, onChange: setCleanDest },
           { id: 'runAfter', label: t('installServe'), checked: runAfter, onChange: setRunAfter },
+          { id: 'ngUpdateChecks', label: t('ngUpdateChecks'), checked: ngUpdateChecks, onChange: setNgUpdateChecks },
         ].map(({ id, label, checked, onChange }) => (
           <div key={id} className="flex items-center gap-2">
             <input

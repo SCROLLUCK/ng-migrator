@@ -27,6 +27,59 @@ let migrationProcess = null;
 let terminalLines = [];
 const sseClients = new Set();
 
+// ─── Attach to external migration (started via nohup/CLI) ────────────────────
+
+let externalTailProcess = null;
+
+function detectAndAttachExternalMigration() {
+  // Skip if we already own the process or are already tailing
+  if (migrationProcess || externalTailProcess) return;
+
+  // Find running migrate.mjs processes
+  const ps = spawnSync('ps', ['-eo', 'args'], { encoding: 'utf8' });
+  if (!ps.stdout) return;
+
+  for (const line of ps.stdout.split('\n')) {
+    if (!line.includes('migrate.mjs')) continue;
+
+    // Extract --dest or positional source arg to derive dest path
+    const destMatch = line.match(/--dest\s+(\S+)/);
+    let dest = destMatch?.[1];
+    if (!dest) {
+      // Infer from source: node migrate.mjs /path/to/proj  →  /path/to/proj-ng21
+      const srcMatch = line.match(/migrate\.mjs\s+(\S+)/);
+      if (srcMatch) dest = srcMatch[1].replace(/\/?$/, '') + '-ng21';
+    }
+    if (!dest) continue;
+
+    // Derive log file: same parent dir, source-name-migration.log
+    const name = basename(dest).replace(/-ng\d+$/, '');
+    const logFile = join(dirname(dest), `${name}-migration.log`);
+    if (!existsSync(logFile)) continue;
+
+    console.log(`[api] external migration detected → tailing ${logFile}`);
+    currentMigrationData = { ...currentMigrationData, destPath: dest, status: 'running' };
+
+    // Tail last 200 lines and follow
+    externalTailProcess = spawn('tail', ['-n', '200', '-f', logFile], { stdio: ['ignore', 'pipe', 'ignore'] });
+    externalTailProcess.stdout.on('data', (data) => {
+      for (const ln of data.toString().split('\n')) {
+        if (ln) broadcast(ln);
+      }
+    });
+    externalTailProcess.on('close', () => {
+      externalTailProcess = null;
+      // Refresh final status from MIGRATION-DATA.json
+      const fresh = readMigrationData(dest);
+      if (fresh) currentMigrationData = { ...fresh, status: fresh.status || 'done' };
+    });
+    break;
+  }
+}
+
+// Poll every 5s for external processes
+setInterval(detectAndAttachExternalMigration, 5000);
+
 // SQLite diff DBs: keyed by dest path to support multiple loaded migrations.
 const diffDbByDest = new Map();
 
@@ -303,7 +356,7 @@ const server = createServer(async (req, res) => {
     }
 
     const body = await parseBody(req);
-    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions } = body;
+    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions, ngUpdateChecks } = body;
 
     if (!source) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -324,6 +377,7 @@ const server = createServer(async (req, res) => {
     if (dest) args.push('--dest', dest);
     if (modernize === false) args.push('--no-modernize');
     if (splitVersions) args.push('--split-versions');
+    if (ngUpdateChecks) args.push('--ng-update-checks');
 
     activeSplitVersions = !!splitVersions;
     if (activeSplitVersions) {
@@ -353,6 +407,9 @@ const server = createServer(async (req, res) => {
     const skipStepsEnv = Array.isArray(steps) && steps.length > 0
       ? steps.join(',')
       : '';
+
+    // Stop any external tail if running
+    if (externalTailProcess) { externalTailProcess.kill(); externalTailProcess = null; }
 
     // Reset state
     terminalLines = [];

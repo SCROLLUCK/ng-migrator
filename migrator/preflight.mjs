@@ -53,12 +53,23 @@ export function preflight() {
     changed = true;
   }
 
+  // @types/node@18.7+ usa sintaxe `export type { type X }` (requer TS 4.5+).
+  // Para projetos com TS < 4.5 (Angular 11-12), usar @types/node@^14.18.0.
+  // Para TS 4.5-5.1 (Angular 13-16), ^16.18.0 é compatível e não usa Disposable.
+  // Angular 17+ (TS 5.2+) pode usar ^20.0.0, mas o override é removido em syncVersions().
+  const tsRaw = pkg.devDependencies?.typescript ?? pkg.dependencies?.typescript ?? '';
+  const [tsMaj, tsMin] = tsRaw.replace(/[^0-9.]/g, '').split('.').map(Number);
+  const safeNodeTypes =
+    (tsMaj < 4 || (tsMaj === 4 && (tsMin ?? 0) < 5))  ? '^14.18.0'  // TS < 4.5
+    : (tsMaj === 4)                                     ? '^16.18.0'  // TS 4.5-4.9
+    :                                                     '^18.19.0'; // TS 5.x+
+
   // Atualiza devDependencies com versões muito defasadas
   const DEV_BUMPS = {
-    '@types/node':    '^20.0.0',  // Angular 21 requer Node 18+; ^12 é de 2019
-    'ts-node':        '~10.0.0',  // ~7 é de 2018
-    '@types/jasmine': '~5.1.0',   // ~3.8 é de 2021; 5.0.0 não existe, atual é 5.1.x
-    'jasmine-core':   '~5.1.0',   // ~3.8 é de 2021; atual é 5.x
+    '@types/node':    safeNodeTypes, // versão-aware: evita sintaxe TS 4.5+ em projetos antigos
+    'ts-node':        '~10.0.0',     // ~7 é de 2018
+    '@types/jasmine': '~5.1.0',      // ~3.8 é de 2021; 5.0.0 não existe, atual é 5.1.x
+    'jasmine-core':   '~5.1.0',      // ~3.8 é de 2021; atual é 5.x
   };
   for (const [name, version] of Object.entries(DEV_BUMPS)) {
     for (const section of ['dependencies', 'devDependencies']) {
@@ -68,6 +79,15 @@ export function preflight() {
         changed = true;
       }
     }
+  }
+
+  // @types/node pode vir como dep transitiva em versão muito nova (ex: @types/node@25.x via @angular/cli).
+  // Forçar via npm overrides garante a versão correta mesmo quando não está no package.json direto.
+  if (!pkg.overrides) pkg.overrides = {};
+  if (!pkg.overrides['@types/node']) {
+    pkg.overrides['@types/node'] = safeNodeTypes;
+    console.log(`  ↳ overrides["@types/node"] = ${safeNodeTypes} (TS-aware: evita breaking types)`);
+    changed = true;
   }
 
   // karma-coverage-istanbul-reporter (deprecated desde Angular 12) → karma-coverage

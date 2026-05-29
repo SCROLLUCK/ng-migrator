@@ -1,6 +1,6 @@
 import { writeFileSync, appendFileSync } from 'fs';
 import { join, resolve, relative, isAbsolute } from 'path';
-import { destPath, report } from './context.mjs';
+import { destPath, migratorDir, report } from './context.mjs';
 import { capture } from './utils.mjs';
 import { writeMigrationData } from './report.mjs';
 
@@ -9,14 +9,14 @@ let initialized = false;
 
 function initBuildCheckLog() {
   if (initialized) return;
-  const buildCheckLog = join(destPath, 'BUILD-CHECKS.md');
+  const buildCheckLog = join(migratorDir, 'BUILD-CHECKS.md');
   writeFileSync(buildCheckLog, `# Build checks por step da migração\n`);
   initialized = true;
 }
 
 export function buildCheck(stepKey) {
   initBuildCheckLog();
-  const buildCheckLog = join(destPath, 'BUILD-CHECKS.md');
+  const buildCheckLog = join(migratorDir, 'BUILD-CHECKS.md');
   console.log(`\n  🔍 [${stepKey}] build check...`);
   const raw = capture('npx ng build --no-progress 2>&1; true');
 

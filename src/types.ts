@@ -52,5 +52,6 @@ export interface MigrationData {
   details: Record<string, StepDetail[]>;
   buildChecks?: Record<string, BuildCheck>;
   notes: string[];
+  skippedSteps?: string[];
   filesCreated: string[];
 }
