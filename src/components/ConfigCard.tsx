@@ -2,7 +2,12 @@ import { useState, useEffect } from 'react'
 import type { MigrationData } from '../types'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '../lib/i18n'
-import { FolderOpen } from 'lucide-react'
+import { FolderOpen, ChevronDown, ChevronUp } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Checkbox } from '@/components/ui/checkbox'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 const STEP_LABELS: Record<string, string> = {
   flexLayout: '@angular/flex-layout → Tailwind CSS',
@@ -163,10 +168,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
     }
   }
 
-  const inputBase = cn(
-    'w-full bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] text-text px-[0.65rem] py-[0.45rem]',
-    'text-[0.82rem] outline-none transition-colors focus:border-blue',
-  )
+  const labelCls = 'text-[0.78rem] text-[#7070A0] block mb-1'
 
   return (
     <div className="bg-surface border border-[#2A2A45] rounded-[10px] overflow-hidden shrink-0">
@@ -184,50 +186,45 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
       <div className="px-4 py-[0.85rem] flex flex-col gap-3">
         {/* Source path */}
         <div>
-          <label className="text-[0.78rem] text-[#7070A0] block mb-1">
-            {t('sourceProjectPath')}
-          </label>
+          <label className={labelCls}>{t('sourceProjectPath')}</label>
           <div className="flex gap-1.5">
-            <input
-              className={cn(inputBase, 'flex-1', isRunning && 'cursor-not-allowed opacity-60')}
+            <Input
+              className="flex-1"
               type="text"
               placeholder="/path/to/my-angular-app"
               value={sourcePath}
               onChange={(e) => setSourcePath(e.target.value)}
               disabled={isRunning}
             />
-            <button
+            <Button
+              variant="outline"
+              size="icon"
               onClick={handleBrowse}
               disabled={isRunning || browsing}
               title={t('selectFolder')}
-              className={cn(
-                'bg-surface2 border border-[#2A2A45] rounded-[6px] px-[0.65rem] text-base flex items-center shrink-0 transition-colors',
-                isRunning || browsing ? 'text-[#4A4A70] cursor-not-allowed' : 'text-[#7070A0] cursor-pointer hover:text-text',
-              )}
             >
               <FolderOpen className="size-4" />
-            </button>
+            </Button>
           </div>
         </div>
 
         {/* Target version */}
         <div>
-          <label className="text-[0.78rem] text-[#7070A0] block mb-1">
-            {t('targetVersion')}
-          </label>
-          <select
-            className={cn(
-              'w-full bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] text-text px-[0.65rem] py-[0.45rem] text-[0.82rem] outline-none transition-colors focus:border-blue',
-              isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
-            )}
-            value={targetVersion}
-            onChange={(e) => setTargetVersion(parseInt(e.target.value))}
+          <label className={labelCls}>{t('targetVersion')}</label>
+          <Select
+            value={String(targetVersion)}
+            onValueChange={(v) => v && setTargetVersion(parseInt(v))}
             disabled={isRunning}
           >
-            {[12, 13, 14, 15, 16, 17, 18, 19, 20, 21].map((v) => (
-              <option key={v} value={v}>Angular {v}</option>
-            ))}
-          </select>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder={t('targetVersion')} />
+            </SelectTrigger>
+            <SelectContent>
+              {[12, 13, 14, 15, 16, 17, 18, 19, 20, 21].map((v) => (
+                <SelectItem key={v} value={String(v)}>Angular {v}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Migration Strategy */}
@@ -235,30 +232,21 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           <label className="text-[0.78rem] text-[#7070A0] block mb-1.5">
             {t('migrationStrategy')}
           </label>
-          <div className="flex flex-col gap-2 bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] p-2.5">
-            <label className={cn("flex items-center gap-2 text-[0.82rem] text-text", isRunning ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-              <input
-                type="radio"
-                name="migrationStrategy"
-                checked={!splitVersions}
-                onChange={() => setSplitVersions(false)}
-                disabled={isRunning}
-                className={cn('accent-red w-3.75 h-3.75', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
-              />
+          <RadioGroup
+            value={splitVersions ? 'split' : 'single'}
+            onValueChange={(v) => setSplitVersions(v === 'split')}
+            disabled={isRunning}
+            className="gap-2 bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] p-2.5"
+          >
+            <label className={cn('flex items-center gap-2 text-[0.82rem] text-text', isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer')}>
+              <RadioGroupItem value="single" disabled={isRunning} />
               <span>{t('singleFolder')}</span>
             </label>
-            <label className={cn("flex items-center gap-2 text-[0.82rem] text-text", isRunning ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-              <input
-                type="radio"
-                name="migrationStrategy"
-                checked={splitVersions}
-                onChange={() => setSplitVersions(true)}
-                disabled={isRunning}
-                className={cn('accent-red w-3.75 h-3.75', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
-              />
+            <label className={cn('flex items-center gap-2 text-[0.82rem] text-text', isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer')}>
+              <RadioGroupItem value="split" disabled={isRunning} />
               <span>{t('splitVersions')}</span>
             </label>
-          </div>
+          </RadioGroup>
         </div>
 
         {/* Toggles */}
@@ -269,54 +257,47 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           { id: 'ngUpdateChecks', label: t('ngUpdateChecks'), checked: ngUpdateChecks, onChange: setNgUpdateChecks },
           { id: 'forcePeerDeps', label: t('forcePeerDeps'), checked: forcePeerDeps, onChange: setForcePeerDeps },
         ].map(({ id, label, checked, onChange }) => (
-          <div key={id} className="flex items-center gap-2">
-            <input
-              type="checkbox"
+          <label
+            key={id}
+            htmlFor={id}
+            className={cn('flex items-center gap-2 text-[0.82rem] text-text', isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer')}
+          >
+            <Checkbox
               id={id}
               checked={checked}
-              onChange={(e) => onChange(e.target.checked)}
+              onCheckedChange={(c) => onChange(!!c)}
               disabled={isRunning}
-              className={cn('accent-red w-3.75 h-3.75', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
             />
-            <label
-              htmlFor={id}
-              className={cn('text-[0.82rem] text-text', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
-            >
-              {label}
-            </label>
-          </div>
+            {label}
+          </label>
         ))}
 
         {/* Collapsible steps */}
         {modernize && (
           <div>
-            <button
+            <Button
+              variant="outline"
               onClick={() => setStepsOpen((o) => !o)}
               disabled={isRunning}
-              className={cn(
-                'w-full bg-transparent border border-[#2A2A45] rounded-[6px] text-[#7070A0] text-[0.75rem] px-[0.65rem] py-[0.35rem] flex justify-between transition-colors',
-                isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-[#3A3A65] hover:text-text',
-              )}
+              className="w-full justify-between text-[#7070A0] text-[0.75rem]"
             >
               <span>{t('modernizationSteps')}</span>
-              <span>{stepsOpen ? '▲' : '▾'}</span>
-            </button>
+              {stepsOpen ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            </Button>
             {stepsOpen && (
-              <div className="bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] px-3 py-2 mt-1 flex flex-col gap-[0.35rem] max-h-55 overflow-y-auto">
+              <div className="bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] px-3 py-2 mt-1 flex flex-col gap-2 max-h-55 overflow-y-auto">
                 {ALL_STEPS.map((key) => (
                   <label
                     key={key}
                     className={cn(
-                      'flex items-center gap-[0.4rem] text-[0.75rem] text-[#B0B0D0]',
+                      'flex items-center gap-2 text-[0.75rem] text-[#B0B0D0]',
                       isRunning ? 'cursor-not-allowed' : 'cursor-pointer',
                     )}
                   >
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={selectedSteps.has(key)}
-                      onChange={() => toggleStep(key)}
+                      onCheckedChange={() => toggleStep(key)}
                       disabled={isRunning}
-                      className={cn('accent-red w-3.25 h-3.25', isRunning ? 'cursor-not-allowed' : 'cursor-pointer')}
                     />
                     {STEP_LABELS[key]}
                   </label>
@@ -328,26 +309,28 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
 
         {/* Error */}
         {error && (
-          <div className="bg-[#EF5350]/10 border border-[#EF5350]/30 rounded-[6px] px-[0.65rem] py-[0.45rem] text-[0.78rem] text-[#EF5350]">
+          <div className="bg-red/10 border border-red/30 rounded-[6px] px-[0.65rem] py-[0.45rem] text-[0.78rem] text-red">
             {error}
           </div>
         )}
 
         {/* Start / Stop */}
         {!isRunning ? (
-          <button
+          <Button
             onClick={handleStart}
-            className="w-full bg-linear-to-br from-[#2E7D32] to-green text-white border-none rounded-[6px] py-[0.6rem] text-[0.88rem] font-semibold cursor-pointer hover:opacity-90 transition-opacity"
+            size="lg"
+            className="w-full bg-linear-to-br from-[#2E7D32] to-green text-white font-semibold hover:opacity-90"
           >
             {t('startMigration')}
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
             onClick={onStop}
-            className="w-full bg-linear-to-br from-[#C62828] to-[#EF5350] text-white border-none rounded-[6px] py-[0.6rem] text-[0.88rem] font-semibold cursor-pointer hover:opacity-90 transition-opacity"
+            size="lg"
+            className="w-full bg-linear-to-br from-[#C62828] to-[#EF5350] text-white font-semibold hover:opacity-90"
           >
             {t('stop')}
-          </button>
+          </Button>
         )}
 
         {/* Destination path info */}
@@ -365,37 +348,32 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
               {t('loadReport')}
             </span>
             <div className="flex gap-1.5">
-              <input
-                className={cn(inputBase, 'flex-1')}
+              <Input
+                className="flex-1"
                 type="text"
                 placeholder="/path/to/migrated-project"
                 value={loadPath}
                 onChange={(e) => setLoadPath(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleLoad()}
               />
-              <button
+              <Button
+                variant="outline"
+                size="icon"
                 onClick={handleLoadBrowse}
                 disabled={loadBrowsing}
                 title={t('selectFolder')}
-                className={cn(
-                  'bg-surface2 border border-[#2A2A45] rounded-[6px] px-[0.65rem] text-base flex items-center shrink-0 transition-colors',
-                  loadBrowsing ? 'text-[#4A4A70] cursor-not-allowed' : 'text-[#7070A0] cursor-pointer hover:text-text',
-                )}
               >
                 <FolderOpen className="size-4" />
-              </button>
+              </Button>
             </div>
             {loadError && (
-              <div className="bg-[#EF5350]/10 border border-[#EF5350]/30 rounded-[6px] px-[0.65rem] py-[0.45rem] text-[0.78rem] text-[#EF5350]">
+              <div className="bg-red/10 border border-red/30 rounded-[6px] px-[0.65rem] py-[0.45rem] text-[0.78rem] text-red">
                 {loadError}
               </div>
             )}
-            <button
-              onClick={handleLoad}
-              className="w-full bg-surface2 border border-[#2A2A45] text-[#B0B0D0] rounded-[6px] py-2 text-[0.82rem] font-semibold cursor-pointer hover:border-blue hover:text-blue transition-colors"
-            >
+            <Button variant="outline" onClick={handleLoad} className="w-full">
               {t('load')}
-            </button>
+            </Button>
           </div>
         )}
       </div>
