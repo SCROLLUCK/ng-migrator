@@ -157,7 +157,7 @@ export function ModernizationCard({ data, query = '' }: Props) {
                   </span>
                   <span className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
                     {row.status === 'done' && data.status !== 'running' && data.sourcePath && (
-                      <ResumeStepButton data={data} step={row.key} stepLabel={row.label} />
+                      <ResumeStepButton data={data} step={row.key} stepLabel={row.label} buildCheck={buildCheck} />
                     )}
                     {buildCheck && <BuildBadge check={buildCheck} />}
                     {hasFiles && (

@@ -111,7 +111,7 @@ export function NgUpdateCard({ data, query = '' }: Props) {
                   </span>
                   <span className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
                     {data.status !== 'running' && data.sourcePath && (
-                      <ResumeStepButton data={data} step={`ng${step.version}`} stepLabel={`Angular ${step.version}`} />
+                      <ResumeStepButton data={data} step={`ng${step.version}`} stepLabel={`Angular ${step.version}`} buildCheck={buildCheck} />
                     )}
                     {showPeer && step.peer && <PeerBadge peer={step.peer} />}
                     {buildCheck && <BuildBadge check={buildCheck} />}
