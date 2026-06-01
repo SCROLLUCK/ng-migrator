@@ -3,6 +3,7 @@ import type { MigrationData, BuildCheck } from '../types'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '../lib/i18n'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import { Check, TriangleAlert, RotateCcw, RotateCw, Undo2 } from 'lucide-react'
 
 interface Props {
   data: MigrationData
@@ -34,9 +35,9 @@ export function ResumeStepButton({ data, step, stepLabel, buildCheck, disabled }
   }[buildState]
   const stateText = { clean: 'text-green', errors: 'text-red', unknown: 'text-amber' }[buildState]
   const buildStatusLabel =
-    buildState === 'clean' ? `✓ ${t('buildClean')}`
-    : buildState === 'errors' ? `⚠ ${t('buildErrors', { count: buildCheck!.total })}`
-    : t('buildUnknown')
+    buildState === 'clean' ? <><Check className="size-3" /> {t('buildClean')}</>
+    : buildState === 'errors' ? <><TriangleAlert className="size-3" /> {t('buildErrors', { count: buildCheck!.total })}</>
+    : <>{t('buildUnknown')}</>
 
   async function dispatch(mode: Mode) {
     setBusy(mode)
@@ -69,11 +70,11 @@ export function ResumeStepButton({ data, step, stepLabel, buildCheck, disabled }
         onClick={(e) => { e.stopPropagation(); setOpen(true) }}
         title={t('stepActionsTitle')}
         className={cn(
-          'border border-[#2A2A45] rounded-[5px] text-[#7070A0] text-[0.66rem] px-1.5 py-0.5 whitespace-nowrap transition-colors',
+          'inline-flex items-center gap-1 border border-[#2A2A45] rounded-[5px] text-[#7070A0] text-[0.66rem] px-1.5 py-0.5 whitespace-nowrap transition-colors',
           disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:border-blue hover:text-blue',
         )}
       >
-        ↺ {t('stepActions')}
+        <RotateCcw className="size-3" /> {t('stepActions')}
       </button>
 
       <Dialog open={open} onOpenChange={(o) => { if (!busy) setOpen(o) }}>
@@ -90,7 +91,7 @@ export function ResumeStepButton({ data, step, stepLabel, buildCheck, disabled }
               disabled={!!busy}
               className="text-left border border-blue/30 bg-blue/5 hover:bg-blue/10 rounded-md p-3 cursor-pointer transition-colors disabled:opacity-50"
             >
-              <div className="text-[0.85rem] font-semibold text-blue mb-0.5">↻ {t('resumeOption')}</div>
+              <div className="inline-flex items-center gap-1.5 text-[0.85rem] font-semibold text-blue mb-0.5"><RotateCw className="size-3.5" /> {t('resumeOption')}</div>
               <div className="text-[0.76rem] text-muted">{t('resumeOptionDesc')}</div>
             </button>
 
@@ -101,15 +102,15 @@ export function ResumeStepButton({ data, step, stepLabel, buildCheck, disabled }
               className={cn('text-left border rounded-md p-3 cursor-pointer transition-colors disabled:opacity-50', stateBox)}
             >
               <div className="flex items-center justify-between gap-2 mb-0.5">
-                <span className={cn('text-[0.85rem] font-semibold', stateText)}>⏪ {t('rollbackOption')}</span>
-                <span className={cn('text-[0.72rem] font-semibold shrink-0', stateText)}>{buildStatusLabel}</span>
+                <span className={cn('inline-flex items-center gap-1.5 text-[0.85rem] font-semibold', stateText)}><Undo2 className="size-3.5" /> {t('rollbackOption')}</span>
+                <span className={cn('inline-flex items-center gap-1 text-[0.72rem] font-semibold shrink-0', stateText)}>{buildStatusLabel}</span>
               </div>
               <div className="text-[0.76rem] text-muted">{t('rollbackOptionDesc')}</div>
             </button>
           </div>
 
-          <p className="text-[0.74rem] text-amber bg-amber/8 border border-amber/25 rounded-md px-2.5 py-1.5">
-            ⚠ {t('resetWarn')}
+          <p className="flex items-start gap-1.5 text-[0.74rem] text-amber bg-amber/8 border border-amber/25 rounded-md px-2.5 py-1.5">
+            <TriangleAlert className="size-3.5 shrink-0 mt-px" /> {t('resetWarn')}
           </p>
           {error && <p className="text-[0.78rem] text-red whitespace-pre-wrap">{error}</p>}
           {busy && <p className="text-[0.78rem] text-blue">{busy === 'resume' ? t('resumeOption') : t('rollbackOption')}…</p>}

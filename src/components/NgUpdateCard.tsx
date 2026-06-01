@@ -7,6 +7,7 @@ import { BuildBadge, BuildCheckDetail } from './BuildCheckViews'
 import { PeerBadge, PeerResolutionDetail, hasPeerInfo } from './PeerResolutionView'
 import { ResumeStepButton } from './ResumeStepButton'
 import { useTranslation } from '../lib/i18n'
+import { Check, TriangleAlert, Circle, ChevronDown, ChevronRight } from 'lucide-react'
 
 interface Props {
   data: MigrationData
@@ -100,11 +101,11 @@ export function NgUpdateCard({ data, query = '' }: Props) {
                     isOpen ? 'bg-blue/4' : isExpandable ? 'hover:bg-white/3' : '',
                   )}
                 >
-                  <span className="shrink-0 text-[0.58rem] text-[#3A3A60] w-2.5 text-center">
-                    {isExpandable ? (isOpen ? '▼' : '▶') : ''}
+                  <span className="shrink-0 text-[#3A3A60] w-2.5 inline-flex justify-center">
+                    {isExpandable ? (isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />) : null}
                   </span>
-                  <span className={cn('text-base w-5 text-center shrink-0', step.ok ? 'text-green' : 'text-amber')}>
-                    {step.ok ? '✓' : '⚠'}
+                  <span className={cn('w-5 shrink-0 inline-flex justify-center', step.ok ? 'text-green' : 'text-amber')}>
+                    {step.ok ? <Check className="size-4" /> : <TriangleAlert className="size-4" />}
                   </span>
                   <span className={cn('flex-1 text-[0.855rem]', step.ok ? 'text-green' : 'text-amber')}>
                     Angular {step.version}
@@ -160,7 +161,7 @@ export function NgUpdateCard({ data, query = '' }: Props) {
             return (
               <div key={`pending-${v}`} className="flex items-center gap-2 px-4 py-[0.45rem] border-b border-[#2A2A45] opacity-38">
                 <span className="shrink-0 w-2.5" />
-                <span className="w-5 text-center shrink-0 text-[#3A3A60]">·</span>
+                <span className="w-5 shrink-0 inline-flex justify-center text-[#3A3A60]"><Circle className="size-2" /></span>
                 <span className="flex-1 text-[0.855rem]">Angular {v}</span>
               </div>
             )

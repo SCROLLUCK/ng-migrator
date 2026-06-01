@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { StepDetail } from '../types'
 import { StepFileList } from './StepFileList'
 import { useTranslation } from '../lib/i18n'
+import { X } from 'lucide-react'
 
 interface Props {
   title: string
@@ -46,10 +47,10 @@ export function FileModal({ title, files, destPath, onClose, errorsByFile }: Pro
           </span>
           <button
             onClick={onClose}
-            className="ml-auto bg-transparent border border-[#2A2A45] rounded-[6px] text-[#7070A0] cursor-pointer px-2 py-0.5 text-[0.85rem] leading-none shrink-0 hover:text-text hover:border-[#3A3A65] transition-colors"
+            className="ml-auto inline-flex items-center bg-transparent border border-[#2A2A45] rounded-[6px] text-[#7070A0] cursor-pointer px-2 py-1 leading-none shrink-0 hover:text-text hover:border-[#3A3A65] transition-colors"
             title={t('closeEsc')}
           >
-            ✕
+            <X className="size-3.5" />
           </button>
         </div>
 

@@ -1,6 +1,7 @@
 import type { PeerLog } from '../types'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '../lib/i18n'
+import { Check, TriangleAlert, Zap, RotateCw } from 'lucide-react'
 
 // Há algo de peer-resolution que valha mostrar neste step?
 export function hasPeerInfo(peer?: PeerLog): peer is PeerLog {
@@ -20,22 +21,22 @@ export function PeerBadge({ peer }: { peer: PeerLog }) {
 
   if (peer.forced) {
     return (
-      <span className="bg-amber/15 text-amber border border-amber/30 rounded px-1.5 py-px text-[0.66rem] font-semibold whitespace-nowrap">
-        ⚡ --force
+      <span className="inline-flex items-center gap-1 bg-amber/15 text-amber border border-amber/30 rounded px-1.5 py-px text-[0.66rem] font-semibold whitespace-nowrap">
+        <Zap className="size-3" /> --force
       </span>
     )
   }
   if (peer.failedNonPeer) {
     return (
-      <span className="bg-red/12 text-red border border-red/25 rounded px-1.5 py-px text-[0.66rem] font-semibold whitespace-nowrap">
-        ⚠ {t('peerNonPeerFail')}
+      <span className="inline-flex items-center gap-1 bg-red/12 text-red border border-red/25 rounded px-1.5 py-px text-[0.66rem] font-semibold whitespace-nowrap">
+        <TriangleAlert className="size-3" /> {t('peerNonPeerFail')}
       </span>
     )
   }
   if (retries > 0 || peer.prePinned.length > 0) {
     return (
-      <span className="bg-blue/12 text-blue border border-blue/25 rounded px-1.5 py-px text-[0.66rem] font-semibold whitespace-nowrap">
-        ↻ {t('peerResolved', { count: retries + peer.prePinned.length })}
+      <span className="inline-flex items-center gap-1 bg-blue/12 text-blue border border-blue/25 rounded px-1.5 py-px text-[0.66rem] font-semibold whitespace-nowrap">
+        <RotateCw className="size-3" /> {t('peerResolved', { count: retries + peer.prePinned.length })}
       </span>
     )
   }
@@ -78,8 +79,8 @@ export function PeerResolutionDetail({ peer }: { peer: PeerLog }) {
       {/* Tentativas de ng update */}
       {peer.attempts.map((a) => (
         <div key={a.iteration} className="mb-1 flex items-start gap-1.5">
-          <span className={cn('shrink-0 text-base leading-none mt-px', a.ok ? 'text-green' : 'text-amber')}>
-            {a.ok ? '✓' : '⚠'}
+          <span className={cn('shrink-0 inline-flex mt-px', a.ok ? 'text-green' : 'text-amber')}>
+            {a.ok ? <Check className="size-3.5" /> : <TriangleAlert className="size-3.5" />}
           </span>
           <div className="flex-1">
             <span className="text-[#7070A0]">
@@ -97,7 +98,7 @@ export function PeerResolutionDetail({ peer }: { peer: PeerLog }) {
       {/* Falha não relacionada a peer deps (não forçamos) */}
       {peer.failedNonPeer && (
         <div className="mt-2 border-t border-[#2A2A45] pt-2">
-          <div className="text-red font-semibold mb-1">⚠ {t('peerNonPeerFailTitle')}</div>
+          <div className="inline-flex items-center gap-1.5 text-red font-semibold mb-1"><TriangleAlert className="size-3.5" /> {t('peerNonPeerFailTitle')}</div>
           {peer.failureTail && (
             <pre className="font-mono text-[0.68rem] text-[#9090C0] bg-[#0A0A14] border border-[#2A2A45] rounded p-2 overflow-x-auto whitespace-pre-wrap">
               {peer.failureTail}
@@ -109,7 +110,7 @@ export function PeerResolutionDetail({ peer }: { peer: PeerLog }) {
       {/* Fallback --force */}
       {peer.forced && (
         <div className="mt-2 border-t border-[#2A2A45] pt-2">
-          <div className="text-amber font-semibold mb-1">⚡ {t('peerForcedFallback')}</div>
+          <div className="inline-flex items-center gap-1.5 text-amber font-semibold mb-1"><Zap className="size-3.5" /> {t('peerForcedFallback')}</div>
           {peer.forcedConflicts.length > 0 && (
             <>
               <div className="text-[#7070A0] mb-0.5">{t('peerForcedConflicts')}</div>

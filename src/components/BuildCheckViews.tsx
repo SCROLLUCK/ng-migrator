@@ -1,13 +1,14 @@
 import type { BuildCheck, MigrationData } from '../types'
 import { useTranslation } from '../lib/i18n'
 import { cn } from '@/lib/utils'
+import { Check, TriangleAlert, CircleCheckBig, ArrowRight } from 'lucide-react'
 
 export function BuildBadge({ check }: { check: BuildCheck }) {
   const { t } = useTranslation()
   if (check.total === 0 && check.new.length === 0) {
     return (
-      <span className="text-[0.68rem] px-1.5 py-0.5 rounded border border-green/40 bg-green/10 text-green font-bold shadow-[0_0_8px_rgba(76,175,80,0.15)] whitespace-nowrap">
-        build ✓
+      <span className="inline-flex items-center gap-1 text-[0.68rem] px-1.5 py-0.5 rounded border border-green/40 bg-green/10 text-green font-bold shadow-[0_0_8px_rgba(76,175,80,0.15)] whitespace-nowrap">
+        build <Check className="size-3" />
       </span>
     )
   }
@@ -63,10 +64,10 @@ export function FinalBuildStatus({ data }: { data: MigrationData }) {
     )}>
       <div className="flex items-center gap-2">
         <span className={cn(
-          'text-[0.72rem] font-bold tracking-[0.07em] uppercase',
+          'inline-flex items-center gap-1.5 text-[0.72rem] font-bold tracking-[0.07em] uppercase',
           isClean ? 'text-green' : 'text-[#FF5252]',
         )}>
-          {isClean ? '✓ Build clean' : '⚠ Build errors'}
+          {isClean ? <><Check className="size-3.5" /> Build clean</> : <><TriangleAlert className="size-3.5" /> Build errors</>}
         </span>
         {!isClean && (
           <span className="text-[0.72rem] text-[#7070A0]">
@@ -97,8 +98,10 @@ export function BuildCheckDetail({ check }: { check: BuildCheck }) {
   const { t } = useTranslation()
   if (check.new.length === 0 && check.fixed.length === 0) {
     return (
-      <div className="px-4 py-2 text-[0.75rem] text-[#4A4A70]">
-        {check.total === 0 ? `✅ ${t('buildClean')}` : `➡ ${t('buildNoChange', { count: check.total })}`}
+      <div className="px-4 py-2 inline-flex items-center gap-1.5 text-[0.75rem] text-[#4A4A70]">
+        {check.total === 0
+          ? <><CircleCheckBig className="size-3.5 text-green" /> {t('buildClean')}</>
+          : <><ArrowRight className="size-3.5" /> {t('buildNoChange', { count: check.total })}</>}
       </div>
     )
   }

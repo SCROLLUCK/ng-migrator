@@ -3,6 +3,7 @@ import type { StepDetail } from '../types'
 import { cn } from '@/lib/utils'
 import { parseDiff, highlightPath, DiffPanel, type TabType, type ExpandedState } from './DiffPanel'
 import { useTranslation } from '../lib/i18n'
+import { TriangleAlert, ChevronDown, ChevronRight } from 'lucide-react'
 
 interface Props {
   files: StepDetail[]
@@ -87,8 +88,8 @@ export function StepFileList({ files, destPath, query = '', errorsByFile }: Prop
                   : cn('border-transparent', hasDiff ? 'cursor-pointer hover:bg-white/4' : 'cursor-default'),
               )}
             >
-              <span className="shrink-0 text-[0.58rem] text-[#3A3A60] w-2.5 text-center">
-                {hasDiff ? (isOpen ? '▼' : '▶') : ''}
+              <span className="shrink-0 text-[#3A3A60] w-2.5 inline-flex justify-center">
+                {hasDiff ? (isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />) : null}
               </span>
               {badge}
               <div className="flex-1 min-w-0 overflow-hidden flex items-center gap-2 flex-wrap">
@@ -103,9 +104,9 @@ export function StepFileList({ files, destPath, query = '', errorsByFile }: Prop
                         <span
                           key={errCode}
                           title={`${errCode} (${occurrences} ${occurrences === 1 ? t('errorsCount', { count: 1 }).replace('1 ', '') : t('errorsCount', { count: occurrences }).replace(`${occurrences} `, '')})`}
-                          className="shrink-0 text-[0.62rem] font-bold px-[0.3rem] rounded-[3px] bg-red/15 text-red border border-red/30 leading-[1.6]"
+                          className="shrink-0 inline-flex items-center gap-1 text-[0.62rem] font-bold px-[0.3rem] rounded-[3px] bg-red/15 text-red border border-red/30 leading-[1.6]"
                         >
-                          ⚠️ {errCode}{occurrences > 1 ? ` (${occurrences})` : ''}
+                          <TriangleAlert className="size-2.5" /> {errCode}{occurrences > 1 ? ` (${occurrences})` : ''}
                         </span>
                       )
                     })}
@@ -113,9 +114,9 @@ export function StepFileList({ files, destPath, query = '', errorsByFile }: Prop
                 ) : errorCount > 0 ? (
                   <span
                     title={t('errorsCount', { count: errorCount })}
-                    className="shrink-0 text-[0.62rem] font-bold px-[0.3rem] rounded-[3px] bg-red/15 text-red border border-red/30 leading-[1.6]"
+                    className="shrink-0 inline-flex items-center gap-1 text-[0.62rem] font-bold px-[0.3rem] rounded-[3px] bg-red/15 text-red border border-red/30 leading-[1.6]"
                   >
-                    ⚠️ {t('errorsCount', { count: errorCount })}
+                    <TriangleAlert className="size-2.5" /> {t('errorsCount', { count: errorCount })}
                   </span>
                 ) : null}
               </div>

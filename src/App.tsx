@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/sidebar'
 import { useTranslation } from './lib/i18n'
 import { cn } from '@/lib/utils'
+import { X, Check } from 'lucide-react'
 
 const EMPTY_DATA: MigrationData = {
   status: 'idle',
@@ -183,9 +184,9 @@ export default function App() {
               {t('reportLoaded')}
               <button
                 onClick={() => { setViewedData(null); setSidebarOpen(true) }}
-                className="ml-0.5 text-blue/60 hover:text-blue transition-colors leading-none cursor-pointer"
+                className="ml-0.5 inline-flex text-blue/60 hover:text-blue transition-colors leading-none cursor-pointer"
                 title={t('closeReport')}
-              >✕</button>
+              ><X className="size-3" /></button>
             </span>
           )}
 
@@ -226,8 +227,8 @@ export default function App() {
                   <span className="text-green">{t('statusServing')}</span>
                 </>
               )}
-              {data.status === 'done'  && <span className="text-green">✓ {t('statusDone')}</span>}
-              {data.status === 'error' && <span className="text-red">✗ {t('statusError')}</span>}
+              {data.status === 'done'  && <span className="inline-flex items-center gap-1 text-green"><Check className="size-3.5" /> {t('statusDone')}</span>}
+              {data.status === 'error' && <span className="inline-flex items-center gap-1 text-red"><X className="size-3.5" /> {t('statusError')}</span>}
               {data.status === 'idle'  && <span className="text-[#4A4A70]">{t('statusIdle')}</span>}
             </div>
           </div>

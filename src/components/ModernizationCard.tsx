@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { BuildBadge, BuildCheckDetail } from './BuildCheckViews'
 import { ResumeStepButton } from './ResumeStepButton'
 import { useTranslation } from '../lib/i18n'
+import { Check, LoaderCircle, Ban, Minus, ChevronDown, ChevronRight } from 'lucide-react'
 
 interface Props {
   data: MigrationData
@@ -22,10 +23,10 @@ interface StepRow {
 }
 
 function getStepIcon(status: StepStatus) {
-  if (status === 'done') return <span className="text-green">✓</span>
-  if (status === 'pending') return <span className="animate-pulse-custom text-amber">◌</span>
-  if (status === 'intentional-skip') return <span className="text-[#7070A0]">⊘</span>
-  return <span className="opacity-38">–</span>
+  if (status === 'done') return <Check className="size-4 text-green" />
+  if (status === 'pending') return <LoaderCircle className="size-4 text-amber animate-spin" />
+  if (status === 'intentional-skip') return <Ban className="size-4 text-[#7070A0]" />
+  return <Minus className="size-4 opacity-38" />
 }
 
 
@@ -137,10 +138,10 @@ export function ModernizationCard({ data, query = '' }: Props) {
                     isOpen ? 'bg-blue/4' : isExpandable ? 'hover:bg-white/3' : '',
                   )}
                 >
-                  <span className="shrink-0 text-[0.58rem] text-[#3A3A60] w-2.5 text-center">
-                    {isExpandable ? (isOpen ? '▼' : '▶') : ''}
+                  <span className="shrink-0 text-[#3A3A60] w-2.5 inline-flex justify-center">
+                    {isExpandable ? (isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />) : null}
                   </span>
-                  <span className="text-base w-5 text-center shrink-0">
+                  <span className="w-5 shrink-0 inline-flex justify-center">
                     {getStepIcon(row.status)}
                   </span>
                   <span className={cn(

@@ -6,6 +6,7 @@ import { NgUpdateCard } from './NgUpdateCard'
 import { NotesCard } from './NotesCard'
 import { FinalBuildStatus } from './BuildCheckViews'
 import { useTranslation } from '../lib/i18n'
+import { X } from 'lucide-react'
 
 interface Props {
   data: MigrationData
@@ -45,9 +46,9 @@ export function RightColumn({ data, terminalLines, terminalTotal, onClearTermina
           {query && (
             <button
               onClick={() => setQuery('')}
-              className="text-[#4A4A70] hover:text-text text-[0.75rem] leading-none cursor-pointer transition-colors"
+              className="inline-flex text-[#4A4A70] hover:text-text leading-none cursor-pointer transition-colors"
             >
-              ✕
+              <X className="size-3.5" />
             </button>
           )}
         </div>
