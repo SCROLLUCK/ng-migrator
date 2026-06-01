@@ -60,6 +60,54 @@ if (opts.dryRun) {
 // 1.5 Verifica se o Docker está em execução antes de começar
 checkDocker();
 
+// Migrações criadas antes do marcador [ng-migrator-step:KEY] (trailer) não o têm; seus commits de
+// modernização usam o assunto histórico abaixo. Esta tabela espelha esses assuntos para que
+// --rollback-to/--resume-from também funcionem em destinos legados (pré-trailer). Migrações novas
+// usam o trailer como lookup primário — isto é só rede de compatibilidade retroativa.
+const LEGACY_STEP_SUBJECTS = {
+  flexLayout: 'refactor: @angular/flex-layout → Tailwind',
+  inject: 'refactor: inject()',
+  signals: 'refactor: signals',
+  reservedKeywords: 'refactor: reserved keyword variables',
+  untypedForms: 'refactor: untyped forms',
+  throwError: 'refactor: throwError factory + RxJS/TS fixes',
+  fixMoment: 'refactor: moment: namespace import → default import',
+  standalone: 'refactor: standalone migration',
+  standaloneFixed: 'refactor: standalone: true patch + imports',
+  controlFlow: 'refactor: control-flow',
+  ngClassToClass: 'refactor: ngClass → class',
+  ngStyleToStyle: 'refactor: ngStyle → style',
+  appConfig: 'refactor: app.config.ts + app.routes.ts',
+  lazyRoutes: 'refactor: lazy routes',
+  builder: 'refactor: application builder',
+  polyfills: 'refactor: polyfills inline',
+  tsconfig: 'refactor: tsconfig ES2022/bundler',
+  pathAliases: 'refactor: tsconfig path aliases',
+  eslint: 'refactor: ESLint',
+  sass: 'refactor: SCSS @use',
+  modules: 'refactor: remove unused modules',
+  styleUrl: 'refactor: styleUrls → styleUrl',
+  selfClosing: 'refactor: self-closing tags',
+  cleanupImports: 'refactor: cleanup unused imports',
+  thirdPartyVersions: 'refactor: update third-party packages',
+  lintFix: 'chore: eslint --fix',
+};
+
+// Resolve o commit de um step na ordem: 1) trailer [ng-migrator-step:KEY] (migrações novas);
+// 2) ngNN → "chore: Angular N"; 3) fallback legado pelo assunto do commit (migrações pré-trailer).
+function findStepCommit(step) {
+  const ngMatch = step.match(/^ng(\d+)$/);
+  let commit = capture(`git log -E --grep="\\[ng-migrator-step:${step}\\]" --format=%H -n 1`).trim().split('\n')[0];
+  if (!commit && ngMatch) {
+    commit = capture(`git log -E --grep="^chore: Angular ${ngMatch[1]}$" --format=%H -n 1`).trim().split('\n')[0];
+  }
+  if (!commit && LEGACY_STEP_SUBJECTS[step]) {
+    // -F (fixed-strings): os assuntos têm caracteres especiais de regex (→, (), :)
+    commit = capture(`git log -F --grep="${LEGACY_STEP_SUBJECTS[step]}" --format=%H -n 1`).trim().split('\n')[0];
+  }
+  return commit || null;
+}
+
 // --resume-from: retoma uma migração já existente a partir de um step (git reset --hard
 // pro commit antes do step) — sem refazer copy/preflight/git-init nem os steps anteriores.
 const resuming = !!opts.resumeFrom;
@@ -98,11 +146,7 @@ process.on('uncaughtException', (err) => {
 // Roda antes de abrir o diffDb (pra o reset --hard não mexer no .ng-migrator/diffs.db aberto).
 if (opts.rollbackTo) {
   const step = opts.rollbackTo;
-  const ngMatch = step.match(/^ng(\d+)$/);
-  let commit = capture(`git log -E --grep="\\[ng-migrator-step:${step}\\]" --format=%H -n 1`).trim().split('\n')[0];
-  if (!commit && ngMatch) {
-    commit = capture(`git log -E --grep="^chore: Angular ${ngMatch[1]}$" --format=%H -n 1`).trim().split('\n')[0];
-  }
+  const commit = findStepCommit(step);
   if (!commit) {
     console.error(`\n❌ Step '${step}' não encontrado no histórico de ${destPath}.`);
     console.error(`   Válidos: ng12..ng${opts.to}, ${MODERNIZATION_STEPS.join(', ')}.`);
@@ -168,14 +212,10 @@ let resumeStartVersion = null;
 if (resuming) {
   const step = opts.resumeFrom;
   const ngMatch = step.match(/^ng(\d+)$/);
-  let commit = capture(`git log -E --grep="\\[ng-migrator-step:${step}\\]" --format=%H -n 1`).trim().split('\n')[0];
-  if (!commit && ngMatch) {
-    commit = capture(`git log -E --grep="^chore: Angular ${ngMatch[1]}$" --format=%H -n 1`).trim().split('\n')[0];
-  }
+  const commit = findStepCommit(step);
   if (!commit) {
     console.error(`\n❌ Step '${step}' não encontrado no histórico de ${destPath}.`);
     console.error(`   Válidos: ng12..ng${opts.to}, ${MODERNIZATION_STEPS.join(', ')}.`);
-    console.error(`   (Destinos migrados antes do suporte a --resume-from só têm o marcador em runs novos — retome de um 'ngNN' ou re-rode uma vez.)`);
     process.exit(1);
   }
   console.log(`\n⏪ Resume: git reset --hard ${commit.slice(0, 8)}~1 (estado antes do step '${step}')`);

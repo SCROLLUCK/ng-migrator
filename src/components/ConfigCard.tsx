@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import type { MigrationData } from '../types'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '../lib/i18n'
+import { FolderOpen } from 'lucide-react'
 
 const STEP_LABELS: Record<string, string> = {
   flexLayout: '@angular/flex-layout → Tailwind CSS',
@@ -204,7 +205,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
                 isRunning || browsing ? 'text-[#4A4A70] cursor-not-allowed' : 'text-[#7070A0] cursor-pointer hover:text-text',
               )}
             >
-              📁
+              <FolderOpen className="size-4" />
             </button>
           </div>
         </div>
@@ -381,7 +382,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
                   loadBrowsing ? 'text-[#4A4A70] cursor-not-allowed' : 'text-[#7070A0] cursor-pointer hover:text-text',
                 )}
               >
-                📁
+                <FolderOpen className="size-4" />
               </button>
             </div>
             {loadError && (
