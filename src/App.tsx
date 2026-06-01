@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/sidebar'
 import { useTranslation } from './lib/i18n'
 import { cn } from '@/lib/utils'
-import { X, Check } from 'lucide-react'
+import { X, Check, Undo2 } from 'lucide-react'
 
 const EMPTY_DATA: MigrationData = {
   status: 'idle',
@@ -191,6 +191,16 @@ export default function App() {
           )}
 
           <div className="ml-auto flex items-center gap-4 text-[0.72rem]">
+            {/* Rollback marker */}
+            {data.rolledBackTo && (
+              <span
+                title={t('rolledBackAt', { at: new Date(data.rolledBackTo.at).toLocaleString() })}
+                className="inline-flex items-center gap-1 bg-amber/15 text-amber border border-amber/30 rounded px-1.75 py-px font-semibold shrink-0"
+              >
+                <Undo2 className="size-3" /> {t('rolledBackTo')}: <span className="font-mono">{data.rolledBackTo.step}</span>
+              </span>
+            )}
+
             {/* Language Selector */}
             <div className="flex items-center bg-[#0F0F1A] border border-[#2A2A45] rounded-md overflow-hidden shrink-0">
               <button

@@ -83,4 +83,5 @@ export interface MigrationData {
   notes: string[];
   skippedSteps?: string[];
   filesCreated: string[];
+  rolledBackTo?: { step: string; at: string };
 }
