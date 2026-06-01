@@ -3,6 +3,7 @@ import type { MigrationData } from '../types'
 import { TerminalCard } from './TerminalCard'
 import { ModernizationCard } from './ModernizationCard'
 import { NgUpdateCard } from './NgUpdateCard'
+import { NotesCard } from './NotesCard'
 import { FinalBuildStatus } from './BuildCheckViews'
 import { useTranslation } from '../lib/i18n'
 
@@ -60,6 +61,9 @@ export function RightColumn({ data, terminalLines, terminalTotal, onClearTermina
       )}
       {data.status !== 'idle' && (
         <FinalBuildStatus data={data} />
+      )}
+      {data.status !== 'idle' && (
+        <NotesCard data={data} />
       )}
     </div>
   )
