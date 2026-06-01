@@ -255,10 +255,14 @@ export function fixSubjectVoid() {
     let out = src
       .replace(/new\s+Subject\s*<unknown>\s*\(\)/g, 'new Subject<void>()')
       .replace(
-        /((?:private|protected|public|readonly)\s+)?(\w+)\$?\s*(?:=\s*)new\s+Subject\s*\(\)/g,
-        (match, _mod, name) =>
-          /(?:unsubscribe|destroy|teardown|stop|complete|close)/i.test(name)
-            ? match.replace('new Subject()', 'new Subject<void>()') : match,
+        /((?:private|protected|public|readonly)\s+)?(\w+)(\$?)\s*(?:=\s*)new\s+Subject\s*\(\)/g,
+        (match, _mod, name, dollar) => {
+          // Converte para Subject<void> se: nome típico de destroy/unsubscribe, OU se há
+          // chamada `.next()` SEM argumento (RxJS 7+: Subject<unknown>.next() exige 1 arg → TS2554).
+          const nextNoArg = new RegExp(`\\b${name}\\${dollar || ''}\\s*\\.next\\(\\s*\\)`).test(src);
+          return /(?:unsubscribe|destroy|teardown|stop|complete|close)/i.test(name) || nextNoArg
+            ? match.replace('new Subject()', 'new Subject<void>()') : match;
+        },
       );
     if (out !== src) { writeFileSync(full, out); count++; }
   });
@@ -452,7 +456,13 @@ export function fixSassImports() {
       // ("Undefined mixin"). Conservador: mantém @import nesses arquivos (dart-sass ainda
       // aceita @import, só com deprecation warning até Sass 3.0), removendo apenas o ~ (não
       // suportado pelo esbuild builder). Material é tratado à parte adiante, com namespace.
-      const usesBareMixin = /@include\s+[\w-]+\s*[(;]/.test(out);
+      // Sinais de que o arquivo depende de membros do @import (mixins OU funções de theming):
+      //   - mixin bare:  @include nb-install-component(...)
+      //   - função bare de lib em atribuição: $nb-themes: nb-register-theme(...) / mat.define-...
+      // O @use não repassa esses membros transitivamente como o @import → "Undefined mixin/function".
+      const usesBareMixin =
+        /@include\s+[\w-]+\s*[(;]/.test(out) ||
+        /\$[\w-]+\s*:\s*[a-z][\w-]*-[\w-]+\s*\(/.test(out); // $var: hyphen-fn( … )
       let keptHere = false;
       out = out.replace(/@import\s+(['"])(~?)([^'"]+)\1\s*;/g, (full, q, _tilde, path) => {
         const isMaterial = /@angular\/material/.test(path);
@@ -921,6 +931,16 @@ export function inlinePolyfills() {
   if (content.includes('zone.js/dist/zone')) {
     content = content.replace(/zone\.js\/dist\/zone/g, 'zone.js');
     writeFileSync(polyfillsPath, content);
+  }
+
+  // Remove imports de polyfills legados: core-js/es6/* e core-js/es7/* (paths removidos no
+  // core-js 3 → "Could not resolve"), classlist.js, web-animations-js, intl — desnecessários
+  // em navegadores evergreen / Angular moderno. Sem isso o polyfills.ts quebra o build esbuild.
+  const legacyPolyfillRe = /^[ \t]*import\s+['"](?:core-js\/(?:es[67]|modules\/es[67])|classlist\.js|web-animations-js|intl(?:\/.*)?)['"];?[ \t]*\r?\n?/gm;
+  if (legacyPolyfillRe.test(content)) {
+    content = content.replace(legacyPolyfillRe, '');
+    writeFileSync(polyfillsPath, content);
+    console.log('  ↳ polyfills legados removidos (core-js es6/es7, classlist, intl…)');
   }
 
   const stripped = content

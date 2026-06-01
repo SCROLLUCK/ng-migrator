@@ -180,6 +180,22 @@ Quando `autoFixBuildErrors` encontra `NG2012` (NgModule não compilado com Ivy),
 
 `autoFixBuildErrors` também trata `TS2305` ("Module 'X' has no exported member 'Y'"): remove o `import` inválido e a entrada correspondente no `imports[]`/`declarations[]` do decorator. Surge quando um símbolo é resolvido a partir de algo que **não é export real** — ex: `PageModule` aparece só em **comentário JSDoc de exemplo** no `.d.ts` do `@nebular/theme`, e foi indevidamente importado de lá. Além de limpar o lixo, isso **desbloqueia o build-loop**: erros de TypeScript interrompem o `ng build` antes da fase de template, então resolver os TS2305 deixa o oráculo alcançar e tratar os NG2012/NG8001 seguintes.
 
+### TS2304 — símbolo usado sem import (resolução via registry de exports)
+
+`autoFixBuildErrors` trata `TS2304` ("Cannot find name 'X'"): resolve `X` no **mapa de imports do projeto** (`projectEsMap`) ou no **índice de símbolos exportados pelos `.d.ts` instalados** (`buildExternalSymbolIndex` — varre `declare class/function/const` e `export { … }` de cada dep) e adiciona o `import` ES. Pega símbolos que o `createAppConfigAndRoutes`/standalone-bootstrap referenciam sem importar: `NbSidebarModule`/`NbMenuModule`… no `importProvidersFrom` do `app.config.ts`, `NbAuthComponent`/`NbLoginComponent`… nas rotas de auth do `app.routes.ts`, e `forwardRef`. Só adiciona se o símbolo for resolvível (senão é erro real, não import faltante).
+
+### TS2341 — membro `private` acessado no template
+
+Templates Angular (estritos no 14+) não acessam membros `private`. `autoFixBuildErrors` trata `TS2341` ("Property 'X' is private…") tornando o membro **public** (remove o modificador `private` da declaração no `.ts` — resolvendo `.html` → `.ts` quando o template é externo).
+
+### forwardRef precisa ser importado ao ser injetado
+
+O fix de dependência circular injeta `forwardRef(() => X)` no `imports[]`. A checagem para importar `forwardRef` era `!src.includes('forwardRef')` — mas como o texto `forwardRef(() => X)` **acabou de ser inserido**, a checagem dava sempre `true` e o `import { forwardRef }` nunca era adicionado (→ TS2304). Agora a checagem testa o **import** real (`import { … forwardRef … } from '@angular/core'`), e cria o import se não existir.
+
+### cleanup-unused-imports roda 2× (o 2º quebra ciclos NG0919)
+
+`copyModuleImportsToComponents` é liberal: copia para cada componente os imports co-declarados (irmãos + pai do mesmo módulo), mesmo os não usados no template. Isso cria **imports circulares** entre componentes → `NG0919` ("Cannot read @Component metadata") em runtime. O schematic `cleanup-unused-imports` remove os excedentes, mas precisa de um **programa TS compilável** — o 1º passe (antes do `autoFixBuildErrors`) não removia nada porque o build ainda tinha erros. Por isso roda um **2º passe depois do `autoFixBuildErrors`**, com o build já saneado, quebrando os ciclos.
+
 ### resolveNodeTypesOverride — previne EOVERRIDE do npm 9+
 
 npm 9+ (Node 18+) rejeita instalações onde um `overrides` define um range incompatível com a dependência direta (`EOVERRIDE`). A função `resolveNodeTypesOverride(targetVersion)` deve ser chamada imediatamente **antes** de cada `ng update` para alinhar o override de `@types/node` com a versão correta de TypeScript disponível em cada step:
@@ -260,7 +276,7 @@ Se o destino já tem um `.git` (run anterior parou no meio), o pipeline pula có
    4. `createAppConfigAndRoutes()` — gera `app.config.ts` e `app.routes.ts`
    4b. `convertLazyModulesToRoutes()` + `convertRemainingRoutingModules()` — NgModule routes → `.routes.ts`
    5. `use-application-builder` migration (esbuild/Vite) + `fixTs2663SignalAccess`
-   5b. `inlinePolyfills()` — move `zone.js` para `angular.json`, remove `polyfills.ts`
+   5b. `inlinePolyfills()` — remove polyfills legados (`core-js/es6|es7/*`, `classlist.js`, `intl` — paths inexistentes no core-js 3 / desnecessários), move `zone.js` para `angular.json`, remove `polyfills.ts`
    6. `modernizeTsconfig()` — ES2022, `moduleResolution: "bundler"`, `useDefineForClassFields: false` + re-run `fixTs2663SignalAccess`
    6b. `addTsconfigPathAliases()` — aliases para diretórios existentes em `src/app/`
    6c. `addEslint()` — `ng add @angular/eslint`
@@ -327,7 +343,7 @@ O motivo de o loop ser iterativo, e não um único retry: o `ng update` reporta 
 
 A migração `@import` → `@use` é correta, mas o **`@use` não repassa membros transitivos** como o `@import` fazia: se A faz `@use 'tema' as *` e o tema faz `@use 'lib'`, os mixins/funções de `lib` **não** ficam disponíveis em A (faltaria `@forward`). Em sistemas de theming (Nebular, Bootstrap, Material) isso quebra o build com `Undefined mixin` (ex: `@include nb-install-component()`).
 
-Regra conservadora em `fixSassImports()`: se o arquivo `.scss` chama um **mixin sem namespace** (`@include nome(...)` sem `.`), ele provavelmente depende de membros vindos via `@import` → **mantém `@import`** (removendo só o `~`, que o esbuild builder não suporta) em vez de converter para `@use`. O dart-sass ainda aceita `@import` (com deprecation warning até o Sass 3.0). Registra `report.notes` com a contagem e orienta usar `@forward` se quiser migrar. Material é tratado à parte (convertido **com namespace** `mat` + reescrita das chamadas), então não cai nessa regra. Reescrever a cadeia de `@forward` de uma lib específica fica fora do escopo (seria fix específico de biblioteca).
+Regra conservadora em `fixSassImports()`: se o arquivo `.scss` chama um **mixin sem namespace** (`@include nome(...)` sem `.`) **ou uma função de theming** (atribuição `$var: hyphen-fn(...)` — ex: `$nb-themes: nb-register-theme(...)`), ele provavelmente depende de membros vindos via `@import` → **mantém `@import`** (removendo só o `~`, que o esbuild builder não suporta) em vez de converter para `@use`. (O `@include` cobre componentes; a função cobre o **entrypoint do tema**, ex: `themes.scss`, que não tem `@include` mas registra o tema via função — era onde a regra antiga falhava e quebrava o `nb-install-component` a jusante.) O dart-sass ainda aceita `@import` (com deprecation warning até o Sass 3.0). Registra `report.notes` com a contagem e orienta usar `@forward` se quiser migrar. Material é tratado à parte (convertido **com namespace** `mat` + reescrita das chamadas), então não cai nessa regra. Reescrever a cadeia de `@forward` de uma lib específica fica fora do escopo (seria fix específico de biblioteca).
 
 ### npm install no loop não pode falhar silenciosamente
 
