@@ -5,6 +5,7 @@ import { StepFileList } from './StepFileList'
 import { cn } from '@/lib/utils'
 import { BuildBadge, BuildCheckDetail } from './BuildCheckViews'
 import { PeerBadge, PeerResolutionDetail, hasPeerInfo } from './PeerResolutionView'
+import { ResumeStepButton } from './ResumeStepButton'
 import { useTranslation } from '../lib/i18n'
 
 interface Props {
@@ -109,6 +110,9 @@ export function NgUpdateCard({ data, query = '' }: Props) {
                     Angular {step.version}
                   </span>
                   <span className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                    {data.status !== 'running' && data.sourcePath && (
+                      <ResumeStepButton data={data} step={`ng${step.version}`} stepLabel={`Angular ${step.version}`} />
+                    )}
                     {showPeer && step.peer && <PeerBadge peer={step.peer} />}
                     {buildCheck && <BuildBadge check={buildCheck} />}
                     {hasFiles ? (
