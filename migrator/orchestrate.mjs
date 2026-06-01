@@ -16,6 +16,7 @@ import { patchThirdPartyVersions } from './ng-update.mjs';
 import {
   fixUntypedForms, fixReservedKeywordVariables, fixThrowError, fixTsCompat,
   fixMomentImport, fixSubjectVoid, fixVoidOutputEmit, fixReadonlySignalInputAssignments,
+  fixReadonlySignalQueryAssignments,
   fixSignalPropertyAccess, fixSubjectEmit, fixDoubleCommas, fixTs2663SignalAccess,
   fixSassImports, fixStyleUrls, inlinePolyfills,
   modernizeTsconfig, addTsconfigPathAliases, migrateToApplicationBuilder, addEslint,
@@ -86,8 +87,9 @@ export function runModernizationMigrations() {
     run('npx ng generate @angular/core:signals --defaults --best-effort-mode', { ignoreError: true });
     // output() without type param defaults to void — remove stray args from .emit() calls
     fixVoidOutputEmit();
-    // Revert signal inputs that are assigned to in code (TS2540 — read-only)
+    // Revert signal inputs/queries que são atribuídos no código (TS2540 — read-only)
     fixReadonlySignalInputAssignments();
+    fixReadonlySignalQueryAssignments();
     // Fix this.signalProp.x → this.signalProp().x (incomplete migrations by schematic)
     fixSignalPropertyAccess();
     report.modernize.signals = true;

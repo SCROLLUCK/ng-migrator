@@ -342,16 +342,20 @@ export function fixReadonlySignalInputAssignments() {
     let htmlOut = htmlSrc;
 
     for (const name of assigned) {
-      // Capture full signal declaration to extract type and default
+      // Capture o modificador de acesso ANTES de readonly (public/private/protected) — senão
+      // ele fica sobrando na frente do @Input() inserido → `public @Input()` (TS1436, ordem
+      // inválida: decorator deve vir ANTES do modificador). Emite `@Input() public name`.
       const declRe = new RegExp(
-        `(readonly\\s+${name}\\s*=\\s*input)(?:<([^>]*)>)?\\(([^)]*)\\)`,
+        `((?:public|private|protected)\\s+)?readonly\\s+${name}\\s*=\\s*input(?:<([^>]*)>)?\\(([^)]*)\\)`,
       );
-      out = out.replace(declRe, (_, _prefix, type, defaultVal) => {
+      out = out.replace(declRe, (_, mod, type, defaultVal) => {
+        const m = (mod || '').trim();
+        const pre = m ? `@Input() ${m} ` : '@Input() ';
         const t = (type || '').trim() || 'any';
         const d = (defaultVal || '').trim();
         return d
-          ? `@Input() ${name}: ${t} = ${d}`
-          : `@Input() ${name}!: ${t}`;
+          ? `${pre}${name}: ${t} = ${d}`
+          : `${pre}${name}!: ${t}`;
       });
 
       // Revert zero-arg signal calls in TS: this.xxx() → this.xxx
@@ -389,6 +393,70 @@ export function fixReadonlySignalInputAssignments() {
     count++;
   });
   if (count > 0) console.log(`  ↳ signal input → @Input() revert (TS2540): ${count} arquivo(s)`);
+  return count;
+}
+
+// ─── Revert signal queries atribuídas (TS2540) → @ViewChild/@ContentChild ─────
+// O schematic de signals converte @ViewChild/@ContentChild → viewChild()/contentChild()
+// (signal readonly). Se a propriedade é ATRIBUÍDA no código (`this.x = …`, comum em refs
+// reaproveitados como ViewContainerRef de chart), vira TS2540 (read-only). Reverte ao
+// decorator original. Mesmo princípio do fixReadonlySignalInputAssignments, mas pra queries.
+export function fixReadonlySignalQueryAssignments() {
+  let count = 0;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  const FACTORY_TO_DECORATOR = {
+    viewChild: 'ViewChild', viewChildren: 'ViewChildren',
+    contentChild: 'ContentChild', contentChildren: 'ContentChildren',
+  };
+
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    let src = readFileSync(full, 'utf8');
+    if (!/=\s*(?:viewChild|viewChildren|contentChild|contentChildren)\b/.test(src)) return;
+
+    const declRe = /((?:public|private|protected)\s+)?readonly\s+(\w+)\s*=\s*(viewChild|viewChildren|contentChild|contentChildren)(?:\.required)?(?:<([^>]*)>)?\(([^;]*?)\)\s*;/g;
+    const queries = [];
+    let m;
+    while ((m = declRe.exec(src)) !== null) {
+      queries.push({ mod: (m[1] || '').trim(), name: m[2], factory: m[3], type: (m[4] || '').trim(), args: m[5].trim(), full: m[0] });
+    }
+    if (!queries.length) return;
+
+    // Só os que são ATRIBUÍDOS (this.X = …) — esses é que dão TS2540.
+    const assigned = queries.filter(q => new RegExp(`this\\.${q.name}\\s*=(?!=)`).test(src));
+    if (!assigned.length) return;
+
+    let out = src;
+    const decoratorsUsed = new Set();
+    for (const q of assigned) {
+      const decorator = FACTORY_TO_DECORATOR[q.factory];
+      decoratorsUsed.add(decorator);
+      // tipo: <T> explícito → T; senão `{ read: R }` → R; senão any
+      let type = q.type;
+      if (!type) { const rm = q.args.match(/read\s*:\s*([A-Za-z_][\w.]*)/); type = rm ? rm[1] : 'any'; }
+      const mod = q.mod ? `${q.mod} ` : '';
+      out = out.replace(q.full, `@${decorator}(${q.args}) ${mod}${q.name}!: ${type};`);
+      // this.X() → this.X (a query deixou de ser signal)
+      out = out.replace(new RegExp(`this\\.${q.name}\\(\\)`, 'g'), `this.${q.name}`);
+    }
+    if (out === src) return;
+
+    out = out.replace(/import\s*\{([^}]+)\}\s*from\s*['"]@angular\/core['"]/, (match, body) => {
+      const items = body.split(',').map(s => s.trim()).filter(Boolean);
+      for (const d of decoratorsUsed) if (!items.includes(d)) items.push(d);
+      for (const f of Object.keys(FACTORY_TO_DECORATOR)) {
+        if (!new RegExp(`[=\\s(]${f}\\s*[<(]`).test(out)) { // não mais usado no arquivo
+          const idx = items.indexOf(f); if (idx !== -1) items.splice(idx, 1);
+        }
+      }
+      return `import { ${items.join(', ')} } from '@angular/core'`;
+    });
+
+    writeFileSync(full, out);
+    count++;
+  });
+  if (count > 0) console.log(`  ↳ signal query → @ViewChild/@ContentChild revert (TS2540): ${count} arquivo(s)`);
   return count;
 }
 

@@ -211,8 +211,9 @@ npm 9+ (Node 18+) rejeita instalações onde um `overrides` define um range inco
 O schematic `@angular/core:signals --best-effort-mode` produz três tipos de artefatos que precisam de correção imediata:
 
 1. **`fixVoidOutputEmit()`** — `output()` sem type param infere `void`. Calls `.emit(value)` que sobraram precisam ter o argumento removido.
-2. **`fixReadonlySignalInputAssignments()`** — o schematic converte `@Input()` para `input()`, mas se a propriedade é atribuída diretamente no código (`this.prop = value`), isso gera TS2540 (read-only). Detecta e reverte esses casos de volta para `@Input()`.
-3. **`fixSignalPropertyAccess()`** — migração incompleta deixa `this.signalProp.method` em vez de `this.signalProp().method`. Produz TS2339.
+2. **`fixReadonlySignalInputAssignments()`** — o schematic converte `@Input()` para `input()`, mas se a propriedade é atribuída diretamente no código (`this.prop = value`), isso gera TS2540 (read-only). Detecta e reverte esses casos de volta para `@Input()`. ⚠️ O revert **captura o modificador de acesso** (`public`/`private`) que precede `readonly` e emite `@Input() public name` — senão o modificador fica sobrando na frente (`public @Input()` → **TS1436**, decorator depois do modificador).
+3. **`fixReadonlySignalQueryAssignments()`** — mesmo problema para queries: `@ViewChild`/`@ContentChild` → `viewChild()`/`contentChild()` (signal readonly). Se a query é atribuída (`this.x = …` — comum em `ViewContainerRef` de chart), dá TS2540. Reverte ao decorator original, inferindo o tipo do `<T>` ou do `{ read: R }`.
+4. **`fixSignalPropertyAccess()`** — migração incompleta deixa `this.signalProp.method` em vez de `this.signalProp().method`. Produz TS2339.
 
 ### fixDoubleCommas — artefato do standalone-bootstrap
 
