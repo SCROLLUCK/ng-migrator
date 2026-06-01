@@ -1,6 +1,6 @@
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
-import { destPath, sourcePath, report, opts, migratorDir } from './context.mjs';
+import { destPath, sourcePath, report, opts, migratorDir, MODERNIZATION_STEPS, MODERNIZATION_STEP_FIELDS } from './context.mjs';
 import { capture, formatRanges } from './utils.mjs';
 
 // Ao retomar/continuar uma migração existente, o `report` nasce vazio — gravá-lo apagaria do
@@ -24,6 +24,42 @@ export function hydrateReportFromDisk() {
     return true;
   } catch {
     return false;
+  }
+}
+
+// --rollback-to leva a árvore de volta ao ESTADO de um step e PARA (sem re-rodar). Esta função
+// reescreve o report para refletir esse estado: marca o ponto de retorno e zera no report tudo que
+// vem DEPOIS dele (ng-update e/ou modernizações posteriores) — assim o dashboard não mostra como
+// "feito" algo que o rollback descartou. Deve ser chamada após hydrateReportFromDisk().
+export function markRollbackInReport(step) {
+  report.rolledBackTo = { step, at: new Date().toISOString() };
+  const ngMatch = step.match(/^ng(\d+)$/);
+
+  const clearDetailAndCheck = (key) => {
+    if (report.details) delete report.details[key];
+    if (report.buildChecks) delete report.buildChecks[key];
+  };
+  const resetModernizeStep = (key) => {
+    const fields = MODERNIZATION_STEP_FIELDS[key];
+    if (fields) for (const [f, v] of Object.entries(fields)) report.modernize[f] = v;
+    clearDetailAndCheck(key);
+  };
+
+  if (ngMatch) {
+    // Rollback para um ngNN: mantém ng-update <= N; descarta ng-update > N e TODA a modernização
+    // (a modernização roda inteira depois do loop de ng update).
+    const n = parseInt(ngMatch[1], 10);
+    report.ngUpdateSteps = (report.ngUpdateSteps ?? []).filter((s) => s.version <= n);
+    for (const key of [...Object.keys(report.details ?? {}), ...Object.keys(report.buildChecks ?? {})]) {
+      const m = key.match(/^ngUpdate_(\d+)$/);
+      if (m) { if (parseInt(m[1], 10) > n) clearDetailAndCheck(key); }
+      else clearDetailAndCheck(key); // qualquer chave de modernização
+    }
+    for (const key of MODERNIZATION_STEPS) resetModernizeStep(key);
+  } else {
+    // Rollback para um step de modernização: zera apenas os steps POSTERIORES a ele.
+    const idx = MODERNIZATION_STEPS.indexOf(step);
+    if (idx >= 0) for (const key of MODERNIZATION_STEPS.slice(idx + 1)) resetModernizeStep(key);
   }
 }
 

@@ -35,7 +35,7 @@ import {
   pinCompatibleThirdParty, listConflictPackageNames, captureAngularEcosystem,
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
-import { writeReport, writeMigrationData, hydrateReportFromDisk } from './migrator/report.mjs';
+import { writeReport, writeMigrationData, hydrateReportFromDisk, markRollbackInReport } from './migrator/report.mjs';
 import { buildCheck } from './migrator/build-check.mjs';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -154,6 +154,12 @@ if (opts.rollbackTo) {
   }
   console.log(`\n⏪ Rollback: git reset --hard ${commit.slice(0, 8)} (estado APÓS o step '${step}')`);
   run(`git reset --hard ${commit}`);
+  // Reescreve o report pro estado pós-rollback: marca o ponto e zera os steps posteriores, pra o
+  // dashboard refletir exatamente onde a árvore está (não mostra como feito o que foi descartado).
+  mkdirSync(migratorDir, { recursive: true });
+  hydrateReportFromDisk();
+  markRollbackInReport(step);
+  writeMigrationData();
   let v = 11;
   try {
     const p = readJson(join(destPath, 'package.json'));
@@ -224,6 +230,7 @@ if (resuming) {
   }
   console.log(`\n⏪ Resume: git reset --hard ${commit.slice(0, 8)}~1 (estado antes do step '${step}')`);
   run(`git reset --hard ${commit}~1`);
+  delete report.rolledBackTo;   // avançando de novo: o marcador de rollback deixa de valer
   if (ngMatch) {
     resumeStartVersion = parseInt(ngMatch[1], 10);          // loop de ng update começa aqui
   } else {

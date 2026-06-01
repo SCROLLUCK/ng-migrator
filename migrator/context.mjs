@@ -53,6 +53,37 @@ export const MODERNIZATION_STEPS = [
   'cleanupImports', 'thirdPartyVersions', 'lintFix',
 ];
 
+// Mapeia cada step de modernização para o(s) campo(s) de `report.modernize` que ele preenche,
+// com o valor de "não-feito". Usado pelo --rollback-to para zerar no report os steps posteriores
+// ao ponto de retorno (mantendo o dashboard fiel ao estado real da árvore). Steps sem flag própria
+// (fixMoment, thirdPartyVersions) não aparecem aqui — basta limpar details/buildChecks deles.
+export const MODERNIZATION_STEP_FIELDS = {
+  flexLayout: { flexLayoutMigrated: null },
+  inject: { inject: false },
+  signals: { signals: false },
+  reservedKeywords: { reservedKeywordsFixed: 0 },
+  untypedForms: { untypedFormsFixed: 0 },
+  throwError: { throwErrorFixed: 0 },
+  standalone: { standalone: false },
+  standaloneFixed: { standaloneFixed: 0 },
+  controlFlow: { controlFlow: false },
+  ngClassToClass: { ngClassToClass: false },
+  ngStyleToStyle: { ngStyleToStyle: false },
+  appConfig: { appConfig: false, appRoutes: false, mainSimplified: false },
+  lazyRoutes: { lazyRoutesConverted: 0 },
+  builder: { builder: false },
+  polyfills: { polyfillsInlined: false },
+  tsconfig: { tsconfigModernized: false },
+  pathAliases: { pathAliases: false },
+  eslint: { eslintAdded: false },
+  sass: { sassImports: 0 },
+  modules: { modulesRemoved: 0 },
+  styleUrl: { styleUrlFixed: 0 },
+  selfClosing: { selfClosingTags: false },
+  cleanupImports: { cleanupImports: false },
+  lintFix: { lintFixed: 0 },
+};
+
 // Steps to skip (passed via env var from ng-migrator-ui or --skip-steps CLI)
 export const skipSteps = new Set((process.env.NG_MIGRATOR_SKIP_STEPS ?? '').split(',').filter(Boolean));
 
