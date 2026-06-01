@@ -6,7 +6,8 @@ Comes with a local web dashboard for monitoring progress, inspecting per-step fi
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 18+ (on host to run the dashboard and CLI runner)
+- **Docker** (installed and running) — Strictly required to execute Angular migrations in isolated Node.js containers and prevent host environment pollution.
 - The source project must have a valid `package.json` with `@angular/core`
 
 ## Setup
@@ -45,8 +46,16 @@ node migrate.mjs [source] [options]
 | `--to <version>` | Target Angular major version | `21` |
 | `--from <version>` | Starting version (if auto-detection fails) | auto |
 | `--dest <path>` | Custom output directory | `<source>-ng<target>` |
+| `--split-versions` | Generate separate version-specific folders (e.g. `ng11`, `ng12`, etc.) inside a parent directory named `<project-name>-ng-versions` | off (single folder) |
 | `--dry-run` | Print what would happen without doing anything | off |
 | `--no-modernize` | Skip the modernization steps | off |
+| `--ng-update-checks` | Run `ng build` after each major `ng update` step to surface compilation errors early | off |
+
+**Environment variables:**
+
+| Variable | Description |
+|---|---|
+| `NG_MIGRATOR_SKIP_STEPS` | Comma-separated list of modernization step keys to skip (e.g. `signals,flexLayout`). Used by the dashboard UI; can also be set manually. |
 
 ### Examples
 
@@ -63,6 +72,9 @@ node migrate.mjs ./my-project --from 14
 # Custom output folder
 node migrate.mjs ./my-project --dest ./my-project-migrated
 
+# Generate separate version-specific folders for each incremental major step
+node migrate.mjs ./my-project --split-versions
+
 # Just upgrade, skip modernization
 node migrate.mjs ./my-project --no-modernize
 
@@ -70,7 +82,58 @@ node migrate.mjs ./my-project --no-modernize
 node migrate.mjs ./my-project --dry-run
 ```
 
-The migrated project is created at `<source>-ng<target>` (e.g. `my-project-ng21`). The original is never touched.
+By default, the migrated project is created at `<source>-ng<target>` (e.g. `my-project-ng21`). When `--split-versions` is active, it creates separate folders for each major upgrade step (e.g., `ng11`, `ng12`, `ng13`...) inside a parent directory named `<project-name>-ng-versions` (e.g., `my-project-ng-versions/`). The original project is never touched.
+
+## Node.js Version Isolation (Docker)
+
+To prevent package incompatibilities and avoid modifying or polluting your local host environment, `ng-migrator` runs each step of the Angular upgrade pipeline inside isolated Docker containers using the correct Node.js version mapped to that Angular version:
+
+* **Angular 11-12**: Node.js v14
+* **Angular 13-14**: Node.js v16
+* **Angular 15-16**: Node.js v18
+* **Angular 17-18**: Node.js v20
+* **Angular 19-21**: Node.js v22
+
+### How it works
+1. **Preflight Check**: The CLI checks if Docker is running (`docker ps`). If not, it halts with an error to prevent accidental local execution.
+2. **Container Execution**: Commands (`npm`, `npx`, `node`, `ng`) are run inside short-lived `node:<version>` Docker containers named `ng-migrator-runner` (`docker run --rm --name ng-migrator-runner`).
+3. **Permissions Preservation**: The container matches your host's UID and GID dynamically (`--user uid:gid`), ensuring that all generated files in the destination directory are owned by your host user rather than `root`.
+4. **Caching**: The host `~/.npm` directory is mounted into the container to cache packages and speed up `npm install` runs.
+
+### Configuration (`ng-migrator.config.json`)
+
+You can customize this behavior by creating an `ng-migrator.config.json` file in the current working directory or the source project root.
+
+Example configuration:
+```json
+{
+  "nodeVersionManager": "docker",
+  "nodeVersions": {
+    "11": "14",
+    "12": "14",
+    "13": "16",
+    "14": "16",
+    "15": "18",
+    "16": "18",
+    "17": "20",
+    "18": "20",
+    "19": "22",
+    "20": "22",
+    "21": "22"
+  },
+  "customManagerCommand": ""
+}
+```
+
+#### Configuration Options
+
+* **`nodeVersionManager`**:
+  * `"docker"` (default): Runs Node commands inside isolated Docker containers.
+  * `"auto"`: Auto-detects Docker (exits if Docker is not running).
+  * `"nvm"`, `"fnm"`, `"n"`, `"asdf"`: Local manager fallbacks (use at your own risk; requires the tool to be installed locally).
+  * `"none"`: Disables version isolation entirely and runs all commands using the host's global Node version.
+* **`nodeVersions`**: An object mapping Angular major versions to specific Node.js versions.
+* **`customManagerCommand`**: A custom wrapper command if you use a proprietary or unsupported tool. Supports placeholders `{{version}}` and `{{command}}` (e.g. `"myswitcher run -v {{version}} -- {{command}}"`).
 
 ## What it does
 
@@ -101,7 +164,7 @@ Each step runs as its own git commit, so the history shows exactly what changed 
 | Control flow | Converts `*ngIf`/`*ngFor`/`*ngSwitch` → `@if`/`@for`/`@switch` |
 | `[ngClass]` → `[class]` | Official Angular schematic |
 | `[ngStyle]` → `[style]` | Official Angular schematic |
-| `app.config.ts` | Creates `app.config.ts` with functional providers (`provideRouter`, `provideAnimationsAsync`, etc.) |
+| `app.config.ts` | Creates `app.config.ts` with functional providers (`provideRouter`, `provideAnimations`, etc.) |
 | `app.routes.ts` | Extracts routes from `app-routing.module.ts` |
 | Lazy routes | Converts `loadChildren: () => import('./foo.module')` to `.routes.ts` files |
 | esbuild builder | Switches from Webpack (`browser`) to esbuild/Vite (`application`) |

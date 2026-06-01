@@ -6,6 +6,42 @@ export interface StepDetail {
   h1?: string;
 }
 
+export interface BuildCheck {
+  total: number;
+  new: string[];
+  fixed: string[];
+  errorsByFile?: Record<string, number | string[]>;
+}
+
+export interface PeerPin {
+  name: string;
+  from: string;
+  to: string;
+}
+
+export interface PeerAttempt {
+  iteration: number;
+  kind: 'initial' | 'resolve';
+  added: string[];      // pacotes (com versão resolvida) incluídos nesta tentativa
+  ok: boolean;
+}
+
+export interface PeerLog {
+  strategy: 'resolve' | 'force';
+  prePinned: PeerPin[];        // libs fixadas antes do update (pinCompatibleThirdParty)
+  attempts: PeerAttempt[];     // tentativas de ng update (inicial + retries)
+  forced: boolean;             // houve fallback --force?
+  forcedConflicts: string[];   // pacotes ainda em conflito no momento do --force
+  failedNonPeer?: boolean;     // ng update falhou por motivo NÃO relacionado a peer deps
+  failureTail?: string;        // cauda do output quando failedNonPeer (diagnóstico)
+}
+
+export interface NgUpdateStep {
+  version: number;
+  ok: boolean;
+  peer?: PeerLog;
+}
+
 export interface MigrationData {
   status: 'idle' | 'running' | 'done' | 'error' | 'serving';
   sourceVersion: number | null;
@@ -13,7 +49,7 @@ export interface MigrationData {
   sourcePath: string;
   destPath: string;
   date: string;
-  ngUpdateSteps: { version: number; ok: boolean }[];
+  ngUpdateSteps: NgUpdateStep[];
   modernize: {
     flexLayoutMigrated: { htmlCount: number; tsCount: number } | null;
     inject: boolean;
@@ -43,6 +79,8 @@ export interface MigrationData {
     cleanupImports: boolean;
   };
   details: Record<string, StepDetail[]>;
+  buildChecks?: Record<string, BuildCheck>;
   notes: string[];
+  skippedSteps?: string[];
   filesCreated: string[];
 }

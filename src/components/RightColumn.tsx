@@ -3,14 +3,19 @@ import type { MigrationData } from '../types'
 import { TerminalCard } from './TerminalCard'
 import { ModernizationCard } from './ModernizationCard'
 import { NgUpdateCard } from './NgUpdateCard'
+import { NotesCard } from './NotesCard'
+import { FinalBuildStatus } from './BuildCheckViews'
+import { useTranslation } from '../lib/i18n'
 
 interface Props {
   data: MigrationData
   terminalLines: string[]
+  terminalTotal: number
   onClearTerminal: () => void
 }
 
-export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
+export function RightColumn({ data, terminalLines, terminalTotal, onClearTerminal }: Props) {
+  const { t } = useTranslation()
   const [query, setQuery] = useState('')
 
   const hasDetails = Object.keys(data.details).length > 0
@@ -21,6 +26,7 @@ export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
     <div className="flex flex-col gap-5 overflow-x-hidden">
       <TerminalCard
         lines={terminalLines}
+        totalLines={terminalTotal}
         onClear={onClearTerminal}
       />
 
@@ -31,7 +37,7 @@ export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
           </svg>
           <input
             type="text"
-            placeholder="Filter steps by filename…"
+            placeholder={t('filterByFilename')}
             value={query}
             onChange={e => setQuery(e.target.value)}
             className="flex-1 bg-transparent outline-none text-[0.82rem] text-text placeholder:text-[#3A3A60] font-mono"
@@ -52,6 +58,12 @@ export function RightColumn({ data, terminalLines, onClearTerminal }: Props) {
       )}
       {data.status !== 'idle' && (
         <ModernizationCard data={data} query={query} />
+      )}
+      {data.status !== 'idle' && (
+        <FinalBuildStatus data={data} />
+      )}
+      {data.status !== 'idle' && (
+        <NotesCard data={data} />
       )}
     </div>
   )

@@ -2,14 +2,17 @@ import { useState } from 'react'
 import type { StepDetail } from '../types'
 import { cn } from '@/lib/utils'
 import { parseDiff, highlightPath, DiffPanel, type TabType, type ExpandedState } from './DiffPanel'
+import { useTranslation } from '../lib/i18n'
 
 interface Props {
   files: StepDetail[]
   destPath: string
   query?: string
+  errorsByFile?: Record<string, number | string[]>
 }
 
-export function StepFileList({ files, destPath, query = '' }: Props) {
+export function StepFileList({ files, destPath, query = '', errorsByFile }: Props) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState<Record<string, ExpandedState>>({})
 
   const displayed = query.trim()
@@ -41,7 +44,7 @@ export function StepFileList({ files, destPath, query = '' }: Props) {
   }
 
   if (displayed.length === 0) return (
-    <div className="px-4 py-3 text-[#4A4A70] text-[0.78rem]">Nenhum arquivo encontrado.</div>
+    <div className="px-4 py-3 text-[#4A4A70] text-[0.78rem]">{t('noFilesFound')}</div>
   )
 
   return (
@@ -54,6 +57,18 @@ export function StepFileList({ files, destPath, query = '' }: Props) {
         const absPath = `${destPath}/${f.path}`.replace(/\/+/g, '/')
         const vscodeUrl = `vscode://file/${absPath}:${firstLine}`
         const lineCount = f.lines?.length ?? 0
+
+        const fileErrors = errorsByFile?.[f.path]
+        let errorBadges: string[] = []
+        let errorCount = 0
+        if (fileErrors) {
+          if (Array.isArray(fileErrors)) {
+            errorCount = fileErrors.length
+            errorBadges = Array.from(new Set(fileErrors))
+          } else if (typeof fileErrors === 'number') {
+            errorCount = fileErrors
+          }
+        }
 
         const badge = f.action === 'created'
           ? <span className="shrink-0 text-[0.62rem] font-bold px-[0.3rem] rounded-[3px] bg-green/15 text-green border border-green/30 leading-[1.6]">new</span>
@@ -76,10 +91,33 @@ export function StepFileList({ files, destPath, query = '' }: Props) {
                 {hasDiff ? (isOpen ? '▼' : '▶') : ''}
               </span>
               {badge}
-              <div className="flex-1 min-w-0 overflow-hidden">
-                <code title={f.path} className="font-mono text-[0.78rem] bg-[#0A0A18] px-1.5 py-0.5 rounded-[3px] block whitespace-nowrap text-[#B0B0D0]">
+              <div className="flex-1 min-w-0 overflow-hidden flex items-center gap-2 flex-wrap">
+                <code title={f.path} className="font-mono text-[0.78rem] bg-[#0A0A18] px-1.5 py-0.5 rounded-[3px] block whitespace-nowrap text-[#B0B0D0] truncate">
                   {highlightPath(f.path, query)}
                 </code>
+                {errorBadges.length > 0 ? (
+                  <div className="flex flex-wrap gap-1 items-center shrink-0">
+                    {errorBadges.map((errCode) => {
+                      const occurrences = Array.isArray(fileErrors) ? fileErrors.filter(x => x === errCode).length : 1
+                      return (
+                        <span
+                          key={errCode}
+                          title={`${errCode} (${occurrences} ${occurrences === 1 ? t('errorsCount', { count: 1 }).replace('1 ', '') : t('errorsCount', { count: occurrences }).replace(`${occurrences} `, '')})`}
+                          className="shrink-0 text-[0.62rem] font-bold px-[0.3rem] rounded-[3px] bg-red/15 text-red border border-red/30 leading-[1.6]"
+                        >
+                          ⚠️ {errCode}{occurrences > 1 ? ` (${occurrences})` : ''}
+                        </span>
+                      )
+                    })}
+                  </div>
+                ) : errorCount > 0 ? (
+                  <span
+                    title={t('errorsCount', { count: errorCount })}
+                    className="shrink-0 text-[0.62rem] font-bold px-[0.3rem] rounded-[3px] bg-red/15 text-red border border-red/30 leading-[1.6]"
+                  >
+                    ⚠️ {t('errorsCount', { count: errorCount })}
+                  </span>
+                ) : null}
               </div>
               {lineCount > 0 && (
                 <span className="shrink-0 text-[#4A4A70] text-[0.68rem] font-mono">+{lineCount}</span>
@@ -87,7 +125,7 @@ export function StepFileList({ files, destPath, query = '' }: Props) {
               <a
                 href={vscodeUrl}
                 onClick={e => e.stopPropagation()}
-                title="Open in VS Code"
+                title={t('openVSCode')}
                 className="shrink-0 text-[#3A3A60] no-underline leading-none p-0.5 hover:text-blue transition-colors"
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" className="block">

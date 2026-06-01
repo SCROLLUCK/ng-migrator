@@ -3,6 +3,9 @@ import type { MigrationData, StepDetail } from '../types'
 import { FileModal } from './FileModal'
 import { StepFileList } from './StepFileList'
 import { cn } from '@/lib/utils'
+import { BuildBadge, BuildCheckDetail } from './BuildCheckViews'
+import { PeerBadge, PeerResolutionDetail, hasPeerInfo } from './PeerResolutionView'
+import { useTranslation } from '../lib/i18n'
 
 interface Props {
   data: MigrationData
@@ -10,8 +13,11 @@ interface Props {
 }
 
 export function NgUpdateCard({ data, query = '' }: Props) {
-  const [modal, setModal] = useState<{ title: string; files: StepDetail[] } | null>(null)
+  const { t } = useTranslation()
+  const [modal, setModal] = useState<{ title: string; files: StepDetail[]; errorsByFile?: Record<string, number | string[]> } | null>(null)
   const [expandedStep, setExpandedStep] = useState<string | null>(null)
+
+  const buildChecks = data.buildChecks ?? {}
 
   const totalVersions = data.sourceVersion
     ? data.targetVersion - data.sourceVersion
@@ -38,6 +44,7 @@ export function NgUpdateCard({ data, query = '' }: Props) {
           title={modal.title}
           files={modal.files}
           destPath={data.destPath}
+          errorsByFile={modal.errorsByFile}
           onClose={() => setModal(null)}
         />
       )}
@@ -48,7 +55,7 @@ export function NgUpdateCard({ data, query = '' }: Props) {
             ng update
           </span>
           <span className="ml-auto bg-red/18 text-red border border-red/30 rounded px-1.75 py-px text-[0.68rem] font-semibold">
-            {doneVersions} / {totalVersions} versions
+            {doneVersions} / {t('versions', { count: totalVersions })}
           </span>
         </div>
 
@@ -59,37 +66,41 @@ export function NgUpdateCard({ data, query = '' }: Props) {
               style={{ width: `${pct}%` }}
             />
           </div>
-          <div className="text-[0.72rem] text-[#7070A0] mt-[0.4rem]">{pct}% complete</div>
+          <div className="text-[0.72rem] text-[#7070A0] mt-[0.4rem]">{pct}% {t('complete')}</div>
         </div>
 
         {query.trim() && visibleSteps.length === 0 && (
           <div className="px-4 py-3 text-[#4A4A70] text-[0.78rem]">
-            No ng update steps matched "{query}".
+            {t('noNgUpdateMatched', { query })}
           </div>
         )}
 
         <div className="flex flex-col">
           {visibleSteps.map((step) => {
             const key = `v${step.version}`
-            const allFiles = data.details[`ngUpdate_${step.version}`] ?? []
+            const stepKey = `ngUpdate_${step.version}`
+            const buildCheck = buildChecks[stepKey]
+            const allFiles = data.details[stepKey] ?? []
             const matchFiles = query.trim()
               ? allFiles.filter(f => f.path.toLowerCase().includes(q))
               : allFiles
             const isOpen = expandedStep === key
             const hasFiles = allFiles.length > 0
+            const showPeer = hasPeerInfo(step.peer)
+            const isExpandable = hasFiles || !!buildCheck || showPeer
 
             return (
               <Fragment key={step.version}>
                 <div
-                  onClick={() => hasFiles && toggleStep(key)}
+                  onClick={() => isExpandable && toggleStep(key)}
                   className={cn(
                     'flex items-center gap-2 px-4 py-[0.45rem] border-b border-[#2A2A45] transition-colors',
-                    hasFiles ? 'cursor-pointer' : '',
-                    isOpen ? 'bg-blue/4' : hasFiles ? 'hover:bg-white/3' : '',
+                    isExpandable ? 'cursor-pointer' : '',
+                    isOpen ? 'bg-blue/4' : isExpandable ? 'hover:bg-white/3' : '',
                   )}
                 >
                   <span className="shrink-0 text-[0.58rem] text-[#3A3A60] w-2.5 text-center">
-                    {hasFiles ? (isOpen ? '▼' : '▶') : ''}
+                    {isExpandable ? (isOpen ? '▼' : '▶') : ''}
                   </span>
                   <span className={cn('text-base w-5 text-center shrink-0', step.ok ? 'text-green' : 'text-amber')}>
                     {step.ok ? '✓' : '⚠'}
@@ -97,23 +108,41 @@ export function NgUpdateCard({ data, query = '' }: Props) {
                   <span className={cn('flex-1 text-[0.855rem]', step.ok ? 'text-green' : 'text-amber')}>
                     Angular {step.version}
                   </span>
-                  <span onClick={e => e.stopPropagation()}>
+                  <span className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                    {showPeer && step.peer && <PeerBadge peer={step.peer} />}
+                    {buildCheck && <BuildBadge check={buildCheck} />}
                     {hasFiles ? (
                       <button
-                        onClick={() => setModal({ title: `Angular ${step.version}`, files: allFiles })}
-                        title="Open in modal"
+                        onClick={() => setModal({ title: `Angular ${step.version}`, files: allFiles, errorsByFile: buildCheck?.errorsByFile })}
+                        title={t('openModal')}
                         className="border border-blue/20 rounded-[5px] text-blue text-[0.72rem] cursor-pointer px-2 py-0.5 whitespace-nowrap hover:border-blue hover:bg-blue/7 transition-colors"
                       >
-                        {query.trim() ? `${matchFiles.length} / ${allFiles.length}` : `${allFiles.length}`} file{allFiles.length !== 1 ? 's' : ''}
+                        {query.trim() ? `${matchFiles.length} / ${t('filesCount', { count: allFiles.length })}` : t('filesCount', { count: allFiles.length })}
                       </button>
                     ) : !step.ok ? (
-                      <span className="text-amber text-[0.75rem]">warnings</span>
+                      <span className="text-amber text-[0.75rem]">{t('warnings')}</span>
                     ) : null}
                   </span>
                 </div>
                 {isOpen && (
                   <div className="border-b border-[#2A2A45] bg-[#07070F] overflow-hidden">
-                    <StepFileList files={matchFiles} destPath={data.destPath} query={query} />
+                    {showPeer && step.peer && (
+                      <div className="border-b border-[#2A2A45]">
+                        <PeerResolutionDetail peer={step.peer} />
+                      </div>
+                    )}
+                    {buildCheck && (
+                      <div className="border-b border-[#2A2A45]">
+                        <div className="px-4 pt-2 pb-0.5 text-[0.65rem] font-bold tracking-widest uppercase text-[#3A3A60] flex items-center justify-between">
+                          <span>{t('buildCheck')}</span>
+                          <span className="text-[0.62rem] font-semibold text-[#505080] normal-case tracking-normal">
+                            (Total: {buildCheck.total})
+                          </span>
+                        </div>
+                        <BuildCheckDetail check={buildCheck} />
+                      </div>
+                    )}
+                    {hasFiles && <StepFileList files={matchFiles} destPath={data.destPath} query={query} errorsByFile={buildCheck?.errorsByFile} />}
                   </div>
                 )}
               </Fragment>
