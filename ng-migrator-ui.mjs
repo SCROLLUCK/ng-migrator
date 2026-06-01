@@ -356,7 +356,7 @@ const server = createServer(async (req, res) => {
     }
 
     const body = await parseBody(req);
-    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions, ngUpdateChecks, peerStrategy, resumeFrom } = body;
+    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions, ngUpdateChecks, peerStrategy, resumeFrom, rollbackTo } = body;
 
     if (!source) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -379,8 +379,9 @@ const server = createServer(async (req, res) => {
     if (splitVersions) args.push('--split-versions');
     if (ngUpdateChecks) args.push('--ng-update-checks');
     if (peerStrategy === 'force') args.push('--peer-strategy', 'force');
-    // Retomar de um step: opera no destino existente — nunca limpa a pasta.
+    // Retomar/voltar a um step: operam no destino existente — nunca limpam a pasta.
     if (resumeFrom) args.push('--resume-from', String(resumeFrom));
+    if (rollbackTo) args.push('--rollback-to', String(rollbackTo));
 
     activeSplitVersions = !!splitVersions;
     if (activeSplitVersions) {
@@ -394,8 +395,8 @@ const server = createServer(async (req, res) => {
       ? parentVersionsDir
       : (dest || `${source}-ng${to || 21}`);
 
-    // Delete destination folder if requested (nunca no resume — ele opera no destino existente)
-    if (cleanDest && !resumeFrom && existsSync(destPath)) {
+    // Delete destination folder if requested (nunca no resume/rollback — operam no destino existente)
+    if (cleanDest && !resumeFrom && !rollbackTo && existsSync(destPath)) {
       try {
         rmSync(destPath, { recursive: true, force: true });
         console.log(`[ui] Destination folder deleted: ${destPath}`);

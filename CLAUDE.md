@@ -30,6 +30,7 @@ node migrate.mjs ./proj --peer-strategy force   # pula resolução, --force dire
 # Retomar uma migração existente a partir de um step (sem refazer o que já passou)
 node migrate.mjs ./proj --resume-from ng14       # reset pro estado antes do ng14 e segue
 node migrate.mjs ./proj --resume-from signals    # pula o ng update; modernização a partir de 'signals'
+node migrate.mjs ./proj --rollback-to ng16      # volta o projeto pro estado pós-ng16 (build limpo) e PARA
 ```
 
 ## Stack do dashboard (src/)

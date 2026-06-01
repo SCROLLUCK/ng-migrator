@@ -37,6 +37,10 @@ export const opts = {
   // Faz git reset --hard pro commit ANTES do step no destino e continua dali — sem refazer
   // o que já passou. Útil ao corrigir o migrador e re-rodar só de um ponto.
   resumeFrom:      args.includes('--resume-from') ? args[args.indexOf('--resume-from') + 1] : null,
+  // Volta o destino pro ESTADO de um step (git reset --hard no commit DO step, não no
+  // anterior) + reinstala node_modules, e PARA — recupera um ponto que buildava limpo,
+  // sem re-rodar a migração. Diferente de --resume-from (que reseta antes e re-roda).
+  rollbackTo:      args.includes('--rollback-to') ? args[args.indexOf('--rollback-to') + 1] : null,
 };
 
 // Ordem canônica dos steps de modernização (= ordem em runModernizationMigrations).

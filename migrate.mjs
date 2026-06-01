@@ -63,14 +63,14 @@ checkDocker();
 // --resume-from: retoma uma migração já existente a partir de um step (git reset --hard
 // pro commit antes do step) — sem refazer copy/preflight/git-init nem os steps anteriores.
 const resuming = !!opts.resumeFrom;
-if (resuming && !existsSync(join(destPath, '.git'))) {
-  console.error(`\n❌ --resume-from requer um destino já migrado (com git) em: ${destPath}`);
+if ((resuming || opts.rollbackTo) && !existsSync(join(destPath, '.git'))) {
+  console.error(`\n❌ --resume-from / --rollback-to requerem um destino já migrado (com git) em: ${destPath}`);
   process.exit(1);
 }
 
 // Se em split-versions e o destPath já tem um repositório git, continua de onde parou
-// sem re-copiar o projeto nem reinicializar o git. (resume também pula a cópia/preflight.)
-const continuingFromExisting = (opts.splitVersions && existsSync(join(destPath, '.git'))) || resuming;
+// sem re-copiar o projeto nem reinicializar o git. (resume/rollback também pulam cópia/preflight.)
+const continuingFromExisting = (opts.splitVersions && existsSync(join(destPath, '.git'))) || resuming || !!opts.rollbackTo;
 
 if (continuingFromExisting) {
   console.log(`📁 Continuando de pasta existente: ${destPath}`);
@@ -92,6 +92,41 @@ process.on('uncaughtException', (err) => {
   restoreNpmrc();
   process.exit(1);
 });
+
+// --rollback-to: volta o destino pro ESTADO de um step (commit do próprio step) e PARA —
+// recupera um ponto que buildava limpo, sem re-rodar. Reseta + reinstala node_modules e sai.
+// Roda antes de abrir o diffDb (pra o reset --hard não mexer no .ng-migrator/diffs.db aberto).
+if (opts.rollbackTo) {
+  const step = opts.rollbackTo;
+  const ngMatch = step.match(/^ng(\d+)$/);
+  let commit = capture(`git log -E --grep="\\[ng-migrator-step:${step}\\]" --format=%H -n 1`).trim().split('\n')[0];
+  if (!commit && ngMatch) {
+    commit = capture(`git log -E --grep="^chore: Angular ${ngMatch[1]}$" --format=%H -n 1`).trim().split('\n')[0];
+  }
+  if (!commit) {
+    console.error(`\n❌ Step '${step}' não encontrado no histórico de ${destPath}.`);
+    console.error(`   Válidos: ng12..ng${opts.to}, ${MODERNIZATION_STEPS.join(', ')}.`);
+    process.exit(1);
+  }
+  console.log(`\n⏪ Rollback: git reset --hard ${commit.slice(0, 8)} (estado APÓS o step '${step}')`);
+  run(`git reset --hard ${commit}`);
+  let v = 11;
+  try {
+    const p = readJson(join(destPath, 'package.json'));
+    const cv = p.dependencies?.['@angular/core'] ?? p.devDependencies?.['@angular/core'] ?? '';
+    const mm = String(cv).match(/(\d+)/); if (mm) v = parseInt(mm[1], 10);
+  } catch {}
+  setCurrentAngularVersion(v);
+  console.log(`\n📦 Reinstalando node_modules para o estado restaurado (Angular ${v})...`);
+  const r = npmInstall();
+  if (r.status !== 0 || r.nodeModulesOk === false) {
+    console.error('\n⚠ npm install reportou problemas — confira as dependências antes de buildar.');
+  } else {
+    console.log(`\n✅ Rollback concluído — projeto restaurado ao estado do step '${step}' e dependências reinstaladas.`);
+  }
+  restoreNpmrc();
+  process.exit(0);
+}
 
 // Pasta para arquivos gerados pelo migrador (relatórios, dados, patch)
 mkdirSync(migratorDir, { recursive: true });
