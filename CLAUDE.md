@@ -174,6 +174,10 @@ Regras `@typescript-eslint/quotes` e `@typescript-eslint/dot-notation` foram rem
 
 Quando `autoFixBuildErrors` encontra `NG2012` (NgModule não compilado com Ivy), o símbolo é substituído por `// TODO: [NG2012]` no array `imports` e a linha de `import` ES é comentada. Nunca remove silenciosamente — o desenvolvedor precisa saber o que precisar atualizar.
 
+### TS2305 — import fantasma (símbolo só existe em comentário do .d.ts)
+
+`autoFixBuildErrors` também trata `TS2305` ("Module 'X' has no exported member 'Y'"): remove o `import` inválido e a entrada correspondente no `imports[]`/`declarations[]` do decorator. Surge quando um símbolo é resolvido a partir de algo que **não é export real** — ex: `PageModule` aparece só em **comentário JSDoc de exemplo** no `.d.ts` do `@nebular/theme`, e foi indevidamente importado de lá. Além de limpar o lixo, isso **desbloqueia o build-loop**: erros de TypeScript interrompem o `ng build` antes da fase de template, então resolver os TS2305 deixa o oráculo alcançar e tratar os NG2012/NG8001 seguintes.
+
 ### resolveNodeTypesOverride — previne EOVERRIDE do npm 9+
 
 npm 9+ (Node 18+) rejeita instalações onde um `overrides` define um range incompatível com a dependência direta (`EOVERRIDE`). A função `resolveNodeTypesOverride(targetVersion)` deve ser chamada imediatamente **antes** de cada `ng update` para alinhar o override de `@types/node` com a versão correta de TypeScript disponível em cada step:

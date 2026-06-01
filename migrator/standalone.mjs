@@ -1257,6 +1257,40 @@ export function autoFixBuildErrors() {
       if (fixed2663 > 0) { totalFixed += fixed2663; continue; }
     }
 
+    // TS2305: "Module 'X' has no exported member 'Y'" → import fantasma. Acontece quando
+    // um símbolo é resolvido a partir de algo que NÃO é export real (ex: 'PageModule' que
+    // só aparece em comentário JSDoc de exemplo no .d.ts do @nebular/theme). O compilador é
+    // o oráculo: remove o import inválido e a entrada correspondente no imports[] do decorator.
+    if (out.includes('TS2305')) {
+      let fixed2305 = 0;
+      const blocks = out.split(/(?=✘ \[ERROR\] TS2305:)/);
+      for (const block of blocks) {
+        if (!block.includes('TS2305')) continue;
+        const symMatch = block.match(/has no exported member '([A-Za-z_]\w*)'/);
+        const fileMatch = block.match(/\b(src\/[^\s:'"]+\.ts)/);
+        if (!symMatch || !fileMatch) continue;
+        const sym = symMatch[1];
+        const filePath = join(destPath, fileMatch[1]);
+        if (!existsSync(filePath)) continue;
+        let src = readFileSync(filePath, 'utf8');
+        const before = src;
+        // 1) import dedicado só com o símbolo → remove a linha inteira
+        src = src.replace(new RegExp(`^[ \\t]*import\\s*\\{\\s*${sym}\\s*\\}\\s*from\\s*['"][^'"]+['"];?[ \\t]*\\r?\\n`, 'm'), '');
+        // 2) import múltiplo → remove só o símbolo da lista
+        src = src.replace(new RegExp(`(import\\s*\\{[^}]*?)\\b${sym}\\b\\s*,?\\s*([^}]*\\}\\s*from)`, 'm'), '$1$2');
+        // 3) entrada "bare" do símbolo no imports[]/declarations[] (linha própria)
+        src = src.replace(new RegExp(`^[ \\t]*${sym}\\s*,?[ \\t]*\\r?\\n`, 'm'), '');
+        // 4) limpa vírgulas órfãs que possam sobrar
+        src = src.replace(/\[\s*,/g, '[').replace(/,(\s*,)+/g, ',').replace(/,(\s*[\]\)])/g, '$1');
+        if (src !== before) {
+          writeFileSync(filePath, src);
+          fixed2305++;
+          console.log(`  ↳ ${basename(filePath)}: removido import fantasma '${sym}' (TS2305 — não existe em ${(block.match(/Module '"?([^'"]+)"?'/) || [,'?'])[1]})`);
+        }
+      }
+      if (fixed2305 > 0) { totalFixed += fixed2305; continue; }
+    }
+
     // TS2345: Argument of type 'unknown' not assignable to 'void' — .emit(e) → .emit()
     if (out.includes('TS2345') && out.includes("parameter of type 'void'")) {
       let fixed2345 = 0;
