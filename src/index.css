@@ -124,7 +124,8 @@ body {
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
+  /* --color-muted é o cinza de texto do dashboard (#7070A0, definido no @theme acima);
+     NÃO sobrescrever com var(--muted) do shadcn (que é cor de fundo e fica escura no dark). */
   --color-secondary-foreground: var(--secondary-foreground);
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
@@ -151,8 +152,9 @@ body {
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  /* primary = vermelho da marca (Angular) → checkbox/radio/botão primário ficam on-brand */
+  --primary: var(--color-red);
+  --primary-foreground: #ffffff;
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
