@@ -1,7 +1,31 @@
-import { writeFileSync, existsSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
-import { destPath, report, opts, migratorDir } from './context.mjs';
+import { destPath, sourcePath, report, opts, migratorDir } from './context.mjs';
 import { capture, formatRanges } from './utils.mjs';
+
+// Ao retomar/continuar uma migração existente, o `report` nasce vazio — gravá-lo apagaria do
+// MIGRATION-DATA.json todo o histórico já registrado (ng-update steps, modernizações anteriores,
+// buildChecks, peer, diffs). Esta função hidrata o `report` com o JSON persistido em disco ANTES
+// de qualquer writeReport/writeMigrationData do novo run, preservando o histórico. Os steps que
+// re-rodam a partir do ponto de retomada sobrescrevem apenas as próprias chaves.
+export function hydrateReportFromDisk() {
+  try {
+    const dataPath = join(migratorDir, 'MIGRATION-DATA.json');
+    if (!existsSync(dataPath)) return false;
+    const prev = JSON.parse(readFileSync(dataPath, 'utf8'));
+    const { modernize: prevModernize, ...prevRest } = prev;
+    // Mescla raso, mas faz merge do sub-objeto modernize (preserva flags de steps anteriores).
+    Object.assign(report.modernize, prevModernize ?? {});
+    Object.assign(report, prevRest);
+    // Parâmetros do run ATUAL prevalecem sobre o que estava salvo.
+    report.targetVersion = opts.to;
+    report.destPath = destPath;
+    report.sourcePath = sourcePath;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function writeMigrationData() {
   if (!existsSync(destPath)) return;

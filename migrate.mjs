@@ -35,7 +35,7 @@ import {
   pinCompatibleThirdParty, listConflictPackageNames, captureAngularEcosystem,
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
-import { writeReport, writeMigrationData } from './migrator/report.mjs';
+import { writeReport, writeMigrationData, hydrateReportFromDisk } from './migrator/report.mjs';
 import { buildCheck } from './migrator/build-check.mjs';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -179,6 +179,10 @@ diffDb.exec('CREATE TABLE IF NOT EXISTS diffs (path TEXT, h0 TEXT, h1 TEXT, diff
 setDiffDb(diffDb);
 
 if (continuingFromExisting) {
+  // Preserva o histórico já registrado (ng-update steps, modernizações anteriores, buildChecks,
+  // peer, diffs) — senão o report novo (vazio) sobrescreveria o MIGRATION-DATA.json e o dashboard
+  // perderia tudo antes do ponto de retomada.
+  if (hydrateReportFromDisk()) console.log('  ↳ Histórico anterior carregado (resume preserva os steps já feitos)');
   // Lê o commit HEAD existente como ponto de partida para captureGitDiff
   report.initialCommit = capture('git rev-parse HEAD');
 } else {
@@ -438,7 +442,12 @@ for (let v = startVersion; v <= opts.to; v++) {
   ngUpdatePrevHash = h;
 
   steps.push({ version: v, ok });
+  // Em resume a partir de um ngNN, o report hidratado pode já ter a entrada desta versão —
+  // substitui em vez de duplicar.
+  const existingIdx = report.ngUpdateSteps.findIndex((s) => s.version === v);
+  if (existingIdx >= 0) report.ngUpdateSteps.splice(existingIdx, 1);
   report.ngUpdateSteps.push({ version: v, ok, peer: peerLog });
+  report.ngUpdateSteps.sort((a, b) => a.version - b.version);
   if (opts.ngUpdateChecks) buildCheck(`ngUpdate_${v}`);
   writeMigrationData();
 }
