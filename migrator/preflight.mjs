@@ -25,7 +25,7 @@ export function preflight() {
 
   // Remove pacotes completamente obsoletos
   for (const name of [
-    'codelyzer', 'tslint', 'protractor',
+    'codelyzer', 'protractor',
     '@types/jasminewd2',               // tipagens WebDriver2, exclusivas do Protractor
     'jasmine-spec-reporter',            // reporter do protractor.conf.js, nunca usado pelo Karma
     '@angular/flex-layout',            // descontinuado pelo Google, sem versão Angular 16+
@@ -34,6 +34,20 @@ export function preflight() {
       if (pkg[section]?.[name]) {
         delete pkg[section][name];
         console.log(`  ↳ ${name} removido (obsoleto)`);
+        changed = true;
+      }
+    }
+  }
+
+  // Ecossistema TSLint inteiro está morto desde 2019 e exige TypeScript < 3 (peer dep),
+  // conflitando em TODO step da migração. Remove qualquer pacote tslint* (tslint,
+  // tslint-language-service, tslint-eslint-rules, tslint-config-prettier…). O ESLint
+  // entra depois via addEslint(). Genérico: não depende de nomes específicos.
+  for (const section of ['dependencies', 'devDependencies']) {
+    for (const name of Object.keys(pkg[section] ?? {})) {
+      if (name === 'tslint' || name.startsWith('tslint-')) {
+        delete pkg[section][name];
+        console.log(`  ↳ ${name} removido (TSLint obsoleto)`);
         changed = true;
       }
     }

@@ -132,10 +132,12 @@ A abordagem correta **resolve a versão certa no registry**:
 
 - `resolveCompatibleVersion(pkg, angularMajor)` — busca o packument (`curl <registry>/<pkg>`), itera as versões estáveis em ordem decrescente e retorna a **maior** cujo `peerDependencies['@angular/core']` inclui o major alvo (via `angularVersionInRange()`). Resultado cacheado.
 - `angularVersionInRange(major, peerRange)` — usa **`semver.intersects(peerRange, '>=M.0.0 <M+1.0.0')`**, não regex. O parsing manual anterior falhava em `>= 6.0.0` (espaço após operador), `>=5` (sem minor), `>=14 <16` (range composto) e unions — marcando pacotes compatíveis (ex: `@akveo/ng2-completer` `>=6`, `@asymmetrik/ngx-leaflet` `>=5`) como incompatíveis e gerando notes falsas + resolução desnecessária. `semver` já é dependência transitiva do ecossistema Angular.
-- `pinCompatibleThirdParty(angularMajor)` — roda **antes de cada `ng update`**. Para cada lib de terceiros cujo peer instalado não cobre o major alvo, fixa no `package.json` a versão compatível resolvida. Elimina o conflito na origem, sem `--force`.
-- `extractConflictPackages()` (retry do update) também usa `resolveCompatibleVersion` em vez de `@<major>` para libs de terceiros.
+- `pinCompatibleThirdParty(angularMajor)` — roda **antes de cada `ng update`**, em **dois passos**:
+  - **Passo 1 (âncoras)** — libs que peer-dependem de `@angular/core`. Fixa cada uma na versão compatível resolvida e registra o major-alvo em `anchorMajors` (ex: `@nebular/theme → 17`).
+  - **Passo 2 (companheiros)** — libs que **não** têm peer `@angular/core`, mas peer-dependem de uma âncora (ex: `@nebular/eva-icons` peer-depende de `@nebular/theme`, não do core). `resolveCompanionVersion()` acha a maior versão cujos peers para as âncoras casam o major fixado (eva-icons segue theme: 8→8, 9→9, 17→17). Sem isso, o companheiro travava na versão antiga e forçava `--force`.
+- `extractConflictPackages()` (retry do update) também usa `resolveCompatibleVersion` em vez de `@<major>` para libs de terceiros; quando não há versão compatível, **não injeta** um `@<major>` inexistente (isso fazia o `ng update` abortar com "Package does not exist").
 
-Sem listas hardcoded — funciona para qualquer lib que declare `peerDependencies['@angular/core']`. Se nenhuma versão compatível existir no registry, registra em `report.notes` para correção manual.
+Sem listas hardcoded — funciona para qualquer lib que declare `peerDependencies` (de `@angular/core` ou de outra âncora). Se nenhuma versão compatível existir no registry (ex: lib abandonada como `ng2-smart-table`, sem versão para ng11+), registra em `report.notes` para correção manual — o migrador não troca a lib por um fork (isso seria específico de biblioteca).
 
 **Acesso à rede é premissa do pipeline**, não exceção: todo passo já faz `npm install`/`ng update`. A consulta ao registry (`curl`, via host — `wrapCommand` só embrulha `npm/npx/node` em Docker) segue a mesma premissa. Registry default `https://registry.npmjs.org/`, sobrescrito por `NPM_CONFIG_REGISTRY`.
 
@@ -221,7 +223,7 @@ Se o destino já tem um `.git` (run anterior parou no meio), o pipeline pula có
 0. **Docker Preflight Check**: Executa `checkDocker()` para validar se o Docker está ativo. Se não, interrompe a execução com erro.
 1. **Copia** o projeto para pasta irmã com sufixo `-ng{target}` (ou `--dest`)
 2. Remove lockfiles antigos (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`)
-3. **`preflight()`** — remove `ngcc` dos scripts, remove `codelyzer`/`tslint`/`protractor`/`karma-coverage-istanbul-reporter`/`core-js`; bumpa `@types/jasmine`, `jasmine-core`, `@types/node`, `ts-node`; troca `node-sass` → `sass` (ver "node-sass")
+3. **`preflight()`** — remove `ngcc` dos scripts, remove `codelyzer`/`protractor`/`karma-coverage-istanbul-reporter`/`core-js` e **todo o ecossistema `tslint*`** (`tslint`, `tslint-language-service`, … — morto desde 2019, peer TS < 3 conflita em todo step); bumpa `@types/jasmine`, `jasmine-core`, `@types/node`, `ts-node`; troca `node-sass` → `sass` (ver "node-sass")
 4. **`cleanupLegacyFiles()`** — remove `tslint.json`, projeto e2e do `angular.json`, chama `fixKarmaConf()`
 5. Se source >= v15: `fixLegacyMaterial()` imediatamente
 6. **`git init`** + commit inicial — `ng update` exige repositório git

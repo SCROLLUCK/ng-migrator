@@ -473,6 +473,27 @@ export function resolveCompatibleVersion(pkgName, angularMajor) {
 // cobre o major alvo, fixa no package.json a maior versão compatível encontrada no
 // registry. Elimina o conflito de peer dependency na origem — sem --force.
 // Retorna `[{ name, from, to }]` com as libs que foram fixadas (para rastreio na UI).
+// Resolução transitiva: pacotes companheiros (ex: @nebular/eva-icons) NÃO têm peer
+// @angular/core — eles peer-dependem de OUTRO pacote que estamos fixando (ex: @nebular/theme).
+// Retorna a maior versão de `pkgName` cujos peers para os pacotes-âncora casam o major fixado.
+// `anchorMajors`: { '@nebular/theme': 17, ... }.
+function resolveCompanionVersion(pkgName, anchorMajors) {
+  const packument = fetchPackument(pkgName);
+  if (!packument?.versions) return null;
+  const stable = Object.keys(packument.versions).filter(v => !v.includes('-')).sort(cmpSemverDesc);
+  for (const v of stable) {
+    const peers = packument.versions[v].peerDependencies || {};
+    let matched = false, conflict = false;
+    for (const [peerName, peerRange] of Object.entries(peers)) {
+      if (anchorMajors[peerName] == null) continue;
+      if (angularVersionInRange(anchorMajors[peerName], peerRange)) matched = true;
+      else conflict = true;
+    }
+    if (matched && !conflict) return v;
+  }
+  return null;
+}
+
 export function pinCompatibleThirdParty(angularMajor) {
   const nmDir = join(destPath, 'node_modules');
   const pkgJsonPath = join(destPath, 'package.json');
@@ -480,38 +501,78 @@ export function pinCompatibleThirdParty(angularMajor) {
 
   const pkg = readJson(pkgJsonPath);
   const pinned = [];
+  const anchorMajors = {}; // pacote-âncora → major que terá após este step (p/ companheiros)
 
+  // Lista de [section, name] de todas as libs de terceiros do package.json.
+  const thirdParty = [];
   for (const section of ['dependencies', 'devDependencies']) {
-    const deps = pkg[section];
-    if (!deps) continue;
-
-    for (const name of Object.keys(deps)) {
-      if (THIRD_PARTY_SKIP_PREFIXES.some(p => name.startsWith(p))) continue;
-
-      // Versão instalada (do node_modules) define o peer @angular/core atual.
-      const parts = name.startsWith('@') ? name.split('/').slice(0, 2) : [name];
-      const metaPath = join(nmDir, ...parts, 'package.json');
-      if (!existsSync(metaPath)) continue;
-
-      let peer;
-      try { peer = readJson(metaPath).peerDependencies?.['@angular/core']; }
-      catch { continue; }
-      if (!peer) continue;                                   // não depende do Angular
-      if (angularVersionInRange(angularMajor, peer)) continue; // já compatível
-
-      const target = resolveCompatibleVersion(name, angularMajor);
-      if (!target) {
-        report.notes.push(
-          `[ATENÇÃO] ${name} requer @angular/core "${peer}" — incompatível com Angular ${angularMajor} e nenhuma versão compatível foi encontrada no registry. Atualize manualmente.`,
-        );
-        continue;
-      }
-      const newRange = `^${target}`;
-      if (deps[name] === newRange) continue;
-      console.log(`  ↳ ${name}: ${deps[name]} → ${newRange} (compatível com Angular ${angularMajor}, via registry)`);
-      pinned.push({ name, from: deps[name], to: newRange });
-      deps[name] = newRange;
+    if (!pkg[section]) continue;
+    for (const name of Object.keys(pkg[section])) {
+      if (!THIRD_PARTY_SKIP_PREFIXES.some(p => name.startsWith(p))) thirdParty.push([section, name]);
     }
+  }
+
+  const installedMeta = (name) => {
+    const parts = name.startsWith('@') ? name.split('/').slice(0, 2) : [name];
+    const metaPath = join(nmDir, ...parts, 'package.json');
+    if (!existsSync(metaPath)) return null;
+    try { const m = readJson(metaPath); return { version: m.version, peers: m.peerDependencies || {} }; }
+    catch { return null; }
+  };
+
+  const applyPin = (section, name, target, reason) => {
+    const newRange = `^${target}`;
+    if (pkg[section][name] === newRange) return;
+    console.log(`  ↳ ${name}: ${pkg[section][name]} → ${newRange} (${reason})`);
+    pinned.push({ name, from: pkg[section][name], to: newRange });
+    pkg[section][name] = newRange;
+  };
+
+  // PASSO 1 — âncoras: libs que peer-dependem de @angular/core.
+  for (const [section, name] of thirdParty) {
+    const meta = installedMeta(name);
+    if (!meta) continue;
+    const corePeer = meta.peers['@angular/core'];
+    if (!corePeer) continue; // sem peer angular → é tratado no passo 2 (companheiro)
+    if (angularVersionInRange(angularMajor, corePeer)) {
+      anchorMajors[name] = getMajor(meta.version); // já compatível; registra major p/ companheiros
+      continue;
+    }
+    const target = resolveCompatibleVersion(name, angularMajor);
+    if (!target) {
+      report.notes.push(
+        `[ATENÇÃO] ${name} requer @angular/core "${corePeer}" — incompatível com Angular ${angularMajor} e nenhuma versão compatível foi encontrada no registry. Atualize manualmente.`,
+      );
+      continue;
+    }
+    applyPin(section, name, target, `compatível com Angular ${angularMajor}, via registry`);
+    anchorMajors[name] = getMajor(target);
+  }
+
+  // PASSO 2 — companheiros: libs sem peer @angular/core, mas que peer-dependem de uma âncora.
+  for (const [section, name] of thirdParty) {
+    const meta = installedMeta(name);
+    if (!meta || meta.peers['@angular/core']) continue; // já tratado no passo 1
+
+    // Quais peers apontam para âncoras que fixamos? Já está compatível?
+    const relevant = {};
+    let needsBump = false;
+    for (const [peerName, peerRange] of Object.entries(meta.peers)) {
+      if (anchorMajors[peerName] == null) continue;
+      relevant[peerName] = anchorMajors[peerName];
+      if (!angularVersionInRange(anchorMajors[peerName], peerRange)) needsBump = true;
+    }
+    if (Object.keys(relevant).length === 0 || !needsBump) continue;
+
+    const target = resolveCompanionVersion(name, relevant);
+    if (!target) {
+      const anchors = Object.keys(relevant).join(', ');
+      report.notes.push(
+        `[ATENÇÃO] ${name} acompanha ${anchors} mas nenhuma versão compatível foi encontrada no registry. Atualize manualmente.`,
+      );
+      continue;
+    }
+    applyPin(section, name, target, `acompanha ${Object.keys(relevant).join(', ')}, via registry`);
   }
 
   if (pinned.length) writeJson(pkgJsonPath, pkg);
