@@ -651,6 +651,7 @@ export function copyModuleImportsToComponents() {
       for (const [sym, absFile] of internalExports) {
         if (existing.has(sym) || toAdd.some(x => x.sym === sym)) continue;
         if (BOOTSTRAP_ONLY.has(sym)) continue;
+        if (absFile === compFile) continue; // declarado no MESMO arquivo → não auto-importar
         const rel = relative(dirname(compFile), absFile).replace(/\.ts$/, '');
         toAdd.push({ sym, pkg: rel.startsWith('.') ? rel : `./${rel}` });
       }
@@ -662,6 +663,9 @@ export function copyModuleImportsToComponents() {
         if (BOOTSTRAP_ONLY.has(otherCls)) continue;
         const otherFile = classMap.get(otherCls);
         if (!otherFile) continue;
+        // Várias classes no MESMO arquivo (ex: Tab1Component/Tab2Component/TabsComponent em
+        // tabs.component.ts) já se enxergam — importar de si mesmo gera self-import (TS2440).
+        if (otherFile === compFile) continue;
         const rel = relative(dirname(compFile), otherFile).replace(/\.ts$/, '');
         toAdd.push({ sym: otherCls, pkg: rel.startsWith('.') ? rel : `./${rel}` });
       }

@@ -91,6 +91,8 @@ Ao converter um componente de NgModule para standalone, ele deve importar explic
 
 Implementado em `copyModuleImportsToComponents()` com as 3 camadas. `fixStandaloneImports()` serve como segunda passagem baseada em análise de template.
 
+**Guard de self-import**: quando várias classes são declaradas no **mesmo arquivo** (ex: `Tab1Component`, `Tab2Component`, `TabsComponent` em `tabs.component.ts`), elas já se enxergam — não se deve gerar `import { Tab1Component } from './tabs.component'` (self-import), que causa `TS2440`/`TS2395`/"already declared". As camadas 2 e 3 pulam quando o arquivo de origem do símbolo é o próprio arquivo do componente (`otherFile === compFile`).
+
 ### Detecção de pipes internos no template
 
 Pipes internos do projeto (ex: `TranslatePipe` com `@Pipe({ name: 'translate' })`) são usados em templates como `| translate`. O `buildInternalProjectIndex` indexa todas as declarações standalone do projeto com seu `decoratorType`. O `fixStandaloneImports` usa padrões diferentes por tipo:
