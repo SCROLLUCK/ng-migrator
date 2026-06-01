@@ -549,14 +549,22 @@ export function npmInstall() {
     });
   }
   if (r.status !== 0) {
-    // ENOTEMPTY: npm v8 pode falhar com rename em bind mounts Docker; limpa node_modules e tenta de novo
+    // ENOTEMPTY: npm v8 pode falhar com rename em bind mounts Docker; limpa node_modules e tenta de novo.
+    // Usa runCapture para guardar o output do erro real (diagnóstico) — esta é a última tentativa.
     console.log(
       "  ↳ Limpando node_modules e tentando npm install novamente...",
     );
     try { execSync(`rm -rf "${join(ctx.destPath, "node_modules")}"`, { stdio: "ignore" }); } catch {}
-    r = run("npm install --legacy-peer-deps --no-audit --no-fund", {
-      ignoreError: true,
-    });
+    r = runCapture("npm install --legacy-peer-deps --no-audit --no-fund");
+  }
+  // Sanidade: o install pode retornar 0 mas deixar node_modules vazio (bind-mount Docker),
+  // ou a última tentativa pode ter feito rm -rf e falhado. Verifica que @angular/core existe.
+  const coreOk = existsSync(join(ctx.destPath, "node_modules", "@angular", "core", "package.json"));
+  r.nodeModulesOk = coreOk;
+  if (!coreOk) {
+    if (r.status === 0) r.status = 1;
+    r.output = (r.output || "") +
+      "\n[ng-migrator] node_modules ausente/incompleto após npm install (@angular/core não encontrado).";
   }
   return r;
 }

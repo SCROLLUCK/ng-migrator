@@ -26,6 +26,13 @@ export const opts = {
   modernize:       !args.includes('--no-modernize'),
   splitVersions:   args.includes('--split-versions'),
   ngUpdateChecks:  args.includes('--ng-update-checks'),
+  // Estratégia para conflitos de peer dependency no ng update:
+  //   'resolve' (default) — loop iterativo resolvendo versões compatíveis via registry,
+  //                         --force só como último recurso para libs sem versão compatível.
+  //   'force'             — pula a resolução; usa --force assim que o update falha.
+  peerStrategy:    (args.includes('--peer-strategy')
+                     ? args[args.indexOf('--peer-strategy') + 1]
+                     : 'resolve') === 'force' ? 'force' : 'resolve',
 };
 
 // Steps to skip (passed via env var from ng-migrator-ui or --skip-steps CLI)

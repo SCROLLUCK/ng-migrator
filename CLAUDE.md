@@ -23,6 +23,9 @@ node migrate.mjs ./proj --from 14
 
 # Simular sem executar nada
 node migrate.mjs --dry-run
+
+# Estratégia de conflitos de peer dependency (default: resolve)
+node migrate.mjs ./proj --peer-strategy force   # pula resolução, --force direto
 ```
 
 ## Stack do dashboard (src/)
@@ -121,9 +124,22 @@ As opções mapeiam para:
 
 A função `extractRouterWithFeatures()` em `app-config.mjs` extrai essas opções do routing module **antes** de deletá-lo.
 
-### Detecção genérica de incompatibilidades de terceiros
+### Resolução genérica de versões compatíveis de terceiros (em vez de --force)
 
-`patchThirdPartyVersions()` não tem listas hardcoded de bibliotecas. Escaneia `node_modules/<pkg>/package.json` de todos os pacotes instalados, verifica `peerDependencies['@angular/core']` contra a versão alvo usando `angularVersionInRange()`, e reporta incompatibilidades no `report.notes`. O desenvolvedor é responsável por atualizar as versões — o migrador não tem como saber qual versão nova é compatível sem acesso à rede.
+O `ng update` falha com `Incompatible peer dependencies found` quando uma lib de terceiros não suporta o major Angular alvo. A reação antiga era chutar `pkg@<angularMajor>` (errado: o major da lib raramente coincide com o do Angular — `@nebular/theme@12` é da era ng16, `@swimlane/ngx-charts@12` é de 2018/ng6) e, ao falhar, cair em `--force` — empurrando versões incompatíveis silenciosamente.
+
+A abordagem correta **resolve a versão certa no registry**:
+
+- `resolveCompatibleVersion(pkg, angularMajor)` — busca o packument (`curl <registry>/<pkg>`), itera as versões estáveis em ordem decrescente e retorna a **maior** cujo `peerDependencies['@angular/core']` inclui o major alvo (via `angularVersionInRange()`). Resultado cacheado.
+- `angularVersionInRange(major, peerRange)` — usa **`semver.intersects(peerRange, '>=M.0.0 <M+1.0.0')`**, não regex. O parsing manual anterior falhava em `>= 6.0.0` (espaço após operador), `>=5` (sem minor), `>=14 <16` (range composto) e unions — marcando pacotes compatíveis (ex: `@akveo/ng2-completer` `>=6`, `@asymmetrik/ngx-leaflet` `>=5`) como incompatíveis e gerando notes falsas + resolução desnecessária. `semver` já é dependência transitiva do ecossistema Angular.
+- `pinCompatibleThirdParty(angularMajor)` — roda **antes de cada `ng update`**. Para cada lib de terceiros cujo peer instalado não cobre o major alvo, fixa no `package.json` a versão compatível resolvida. Elimina o conflito na origem, sem `--force`.
+- `extractConflictPackages()` (retry do update) também usa `resolveCompatibleVersion` em vez de `@<major>` para libs de terceiros.
+
+Sem listas hardcoded — funciona para qualquer lib que declare `peerDependencies['@angular/core']`. Se nenhuma versão compatível existir no registry, registra em `report.notes` para correção manual.
+
+**Acesso à rede é premissa do pipeline**, não exceção: todo passo já faz `npm install`/`ng update`. A consulta ao registry (`curl`, via host — `wrapCommand` só embrulha `npm/npx/node` em Docker) segue a mesma premissa. Registry default `https://registry.npmjs.org/`, sobrescrito por `NPM_CONFIG_REGISTRY`.
+
+`patchThirdPartyVersions()` continua existindo como **auditoria final** (passo 12): reporta no `report.notes` qualquer incompatibilidade remanescente que a resolução não cobriu.
 
 ### removeUnusedModules — verificar nome de classe, não só path
 
@@ -205,7 +221,7 @@ Se o destino já tem um `.git` (run anterior parou no meio), o pipeline pula có
 0. **Docker Preflight Check**: Executa `checkDocker()` para validar se o Docker está ativo. Se não, interrompe a execução com erro.
 1. **Copia** o projeto para pasta irmã com sufixo `-ng{target}` (ou `--dest`)
 2. Remove lockfiles antigos (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`)
-3. **`preflight()`** — remove `ngcc` dos scripts, remove `codelyzer`/`tslint`/`protractor`/`karma-coverage-istanbul-reporter`; bumpa `@types/jasmine`, `jasmine-core`, `@types/node`, `ts-node`
+3. **`preflight()`** — remove `ngcc` dos scripts, remove `codelyzer`/`tslint`/`protractor`/`karma-coverage-istanbul-reporter`/`core-js`; bumpa `@types/jasmine`, `jasmine-core`, `@types/node`, `ts-node`; troca `node-sass` → `sass` (ver "node-sass")
 4. **`cleanupLegacyFiles()`** — remove `tslint.json`, projeto e2e do `angular.json`, chama `fixKarmaConf()`
 5. Se source >= v15: `fixLegacyMaterial()` imediatamente
 6. **`git init`** + commit inicial — `ng update` exige repositório git
@@ -213,7 +229,8 @@ Se o destino já tem um `.git` (run anterior parou no meio), o pipeline pula có
 8. Loop `startVersion → targetVersion` (cada iteração executa comandos de Node/npm isolados via container Docker para a respectiva versão do Angular, monitorada via `currentAngularVersion`):
    - Antes do v17: `fixLegacyMaterial()` (converte `MatLegacy*` → `Mat*`)
    - `resolveNodeTypesOverride(v)` — alinha override `@types/node` para evitar EOVERRIDE
-   - `npx ng update @angular/core@v @angular/cli@v [material@v] --allow-dirty --force`
+   - `pinCompatibleThirdParty(v)` — (só na estratégia `resolve`) fixa versões compatíveis de libs de terceiros antes do update
+   - `npx ng update @angular/core@v @angular/cli@v [material@v] --allow-dirty` + loop de resolução de peer deps (ver "Estratégia de conflitos de peer dependency")
    - `syncVersions(v)` — força `@angular/*` atrasados para `^v.0.0`, rxjs 6→7, zone.js
    - `npm install`
    - `git commit "chore: Angular vN"`
@@ -264,13 +281,41 @@ Para evitar incompatibilidades de pacotes/Node.js locais e prevenir a modificaç
 - `captureGitDiff(h0, h1)` — usa `git diff --name-status` + `git diff` por arquivo para extrair paths e linhas adicionadas (`parseAddedLines` / `formatRanges`)
 - Cada step de modernização faz `git add -A && git commit` individualmente para isolar o diff
 
-### Pacotes extras por versão
+### Ecossistema Angular detectado em runtime (sem lista hardcoded)
 
-A função `extraPackages(version)` decide quais pacotes adicionais incluir no `ng update` de cada versão:
-- `@angular/material` e `@angular/cdk` — acompanham a mesma versão se presentes
-- `@nguniversal/express-engine` — apenas até v16 (a partir do v17 vira `@angular/ssr`)
+Os pacotes oficiais do escopo `@angular/*` (material, cdk, google-maps, youtube-player, localize, elements, service-worker, framework…) versionam em **lockstep** com o `@angular/core`. Se um ficar para trás, no step seguinte o `ng update` aborta com *"Updating multiple major versions of '@angular/X' at once is not supported. Please migrate each major version individually."* — falha **não relacionada a peer deps** (não resolvida por `--force`). Foi o que segurava `@angular/google-maps` em v11 num projeto real.
+
+Em vez de uma lista hardcoded (que não escala e exige manutenção a cada release), o conjunto é **detectado em runtime**:
+
+- `captureAngularEcosystem()` — chamado **uma vez no início** (após o npm install, com `node_modules` populado): varre `node_modules/@angular/*` e congela os pacotes cujo **major instalado == major do core**. É o sinal genérico de "versiona junto": pacotes de terceiros que só usam o escopo `@angular/` (ex: `@angular/fire`) ficam num major diferente e são naturalmente excluídos.
+- O conjunto é **congelado no início, não redetectado por step** — senão um pacote que ficasse para trás deixaria de casar o major e seria excluído (reproduzindo o bug). Frozen no v11, `google-maps@11 == core@11` → entra → é forçado a `@v` em todo step.
+- `extraPackages(v)` inclui cada um como `@pkg@v`, mas só se `publishesMajor(pkg, v)` (registry) — assim um pacote deprecado que parou de publicar (ex: `@angular/flex-layout@16` inexistente) sai do conjunto sozinho, sem hardcode.
+- `syncVersions` também sincroniza esse conjunto (`ANGULAR_PKGS` ∪ ecossistema detectado) como rede de segurança.
+
+`@nguniversal/express-engine` (fora do escopo `@angular/`) continua tratado à parte em `extraPackages` — apenas até v16 (a partir do v17 vira `@angular/ssr`).
 
 ### Por que --allow-dirty e --force?
 
 - `--allow-dirty`: bypassa a verificação de uncommitted changes (necessário pois fizemos `git init` e o working tree nunca está limpo entre passos)
 - `--force`: bypassa verificações de peer dependency compatibility entre versões intermediárias
+
+### Estratégia de conflitos de peer dependency (`--peer-strategy`)
+
+O usuário escolhe como o `ng update` lida com `Incompatible peer dependencies found` (CLI `--peer-strategy`, UI checkbox "Forçar peer deps"):
+
+- **`resolve`** (default) — antes do update, `pinCompatibleThirdParty(v)` fixa versões compatíveis (ver seção "Resolução genérica de versões compatíveis"). Se o update ainda falhar, entra um **loop iterativo** (`MAX_RESOLVE_ITERATIONS = 6`): cada iteração extrai os pacotes conflitantes do output (`extractConflictPackages`, que resolve a versão certa via registry) e re-tenta o `ng update` incluindo-os. Conflitos secundários (que só aparecem depois de resolver os primeiros — ex: `@nebular/eva-icons` casado com `@nebular/theme`) são absorvidos pelas iterações seguintes. `--force` só roda como **último recurso**, e apenas para o que sobrou irresolvível (ex: libs abandonadas como `ng2-smart-table`, sem nenhuma versão compatível publicada).
+
+  **`--force` é condicionado a haver conflito de peer dependency real** (`listConflictPackageNames(output).length > 0`). O `--force` do `ng update` *só* bypassa a checagem de peer deps — então, se a falha não for de peer (erro de schematic/migração, etc.), forçar não resolveria nada. Nesse caso o migrador **não força**: marca `peer.failedNonPeer` e guarda a cauda do output (`peer.failureTail`) para diagnóstico na UI; `syncVersions` + `--migrate-only` cuidam do bump da versão. Isso evita o "tudo forçado" causado por tratar qualquer saída não-zero como motivo para `--force`.
+- **`force`** — pula `pinCompatibleThirdParty` e o loop; ao primeiro erro do `ng update`, aplica `--force` imediatamente. Mais rápido, porém empurra versões incompatíveis silenciosamente. Útil quando o usuário aceita o risco para ganhar velocidade.
+
+O motivo de o loop ser iterativo, e não um único retry: o `ng update` reporta os conflitos de peer dependency **em camadas** — resolver os primeiros revela os próximos.
+
+### node-sass — trocar por dart-sass no preflight
+
+`node-sass` é um módulo **nativo**: compila libsass via `node-gyp`, que exige **Python + toolchain de build**. As imagens Docker `node:NN` usadas no isolamento não têm Python. No boundary onde o Node troca de major (ex: ng12 node:14 → ng13 node:16), o `node-sass` tenta **recompilar** o binário nativo, não encontra Python (`Can't find Python executable "python"`), e o `npm install` falha **inteiro** — deixando o `node_modules` incompleto. `node-sass` está deprecado; `preflight()` o troca por `sass` (dart-sass, JS puro, sem build nativo — o que o Angular CLI já usa). Fix genérico: vale para qualquer projeto que ainda dependa de `node-sass`.
+
+### npm install no loop não pode falhar silenciosamente
+
+`npmInstall()` retorna `{ status, output, nodeModulesOk }`. A última tentativa usa `runCapture` (guarda o output do erro real) e há um **sanity check**: confirma que `node_modules/@angular/core` existe — porque em bind-mounts Docker o `npm install` pode retornar 0 mas deixar `node_modules` vazio, ou a tentativa final (`rm -rf node_modules` + reinstall) pode falhar deixando a pasta deletada.
+
+No loop de `ng update`, o resultado do `npmInstall()` é **checado**: se falhar ou `node_modules` ficar inválido, registra uma nota `[CRÍTICO]` com a cauda do erro (filtrada de ruído npm), grava o relatório e **aborta** (`process.exit(1)`). Sem isso, uma instalação que destrói o `node_modules` passava batido — os steps seguintes rodavam com "Found 0 dependencies", `pinCompatibleThirdParty` congelava as libs (ex: nebular preso na versão de um major antigo) e o resultado quebrado saía disfarçado de "done". Falha de instalação é sempre fatal e diagnosticável, nunca silenciosa.

@@ -2,8 +2,9 @@ import {
   readFileSync, writeFileSync, existsSync, readdirSync, statSync,
 } from 'fs';
 import { join } from 'path';
+import semver from 'semver';
 import { destPath, SKIP_DIRS, report } from './context.mjs';
-import { readJson, writeJson } from './utils.mjs';
+import { readJson, writeJson, capture } from './utils.mjs';
 import { getMajor, hasPackage } from './packages.mjs';
 import { fixTsconfigLocations } from './preflight.mjs';
 
@@ -39,9 +40,12 @@ export function syncVersions(targetVersion) {
     '@angular-eslint/template-parser', '@angular-eslint/utils',
   ];
 
+  // Pacotes framework/devkit fixos + ecossistema detectado em runtime (material, cdk,
+  // google-maps…) — para que nenhum @angular/* oficial fique pra trás no package.json.
+  const syncTargets = [...new Set([...ANGULAR_PKGS, ...getAngularEcosystem()])];
   for (const section of ['dependencies', 'devDependencies']) {
     if (!pkg[section]) continue;
-    for (const name of ANGULAR_PKGS) {
+    for (const name of syncTargets) {
       if (!pkg[section][name]) continue;
       const current = getEffectiveMajor(pkg[section][name]);
       if (current > 0 && current < targetVersion) {
@@ -58,8 +62,10 @@ export function syncVersions(targetVersion) {
 
   // TypeScript: ng update às vezes falha antes de atualizar o TS (ex: v12 com npm >6).
   // Garante versão mínima compatível para evitar conflito de peer deps no npm install.
-  const TS_FLOOR  = { 12:'4.2',13:'4.4',14:'4.6',15:'4.8',16:'4.9',17:'5.2',18:'5.3',19:'5.5',20:'5.5',21:'5.8' };
-  const TS_TARGET = { 12:'~4.3.5',13:'~4.6.0',14:'~4.7.0',15:'~4.9.0',16:'~5.0.0',17:'~5.2.0',18:'~5.4.0',19:'~5.6.0',20:'~5.7.0',21:'~5.8.0' };
+  // Angular N exige uma faixa específica de TS; o compiler aborta se estiver abaixo.
+  // ng20 → TS >=5.8; ng21 → TS >=5.9 (e <6.1). Manter alinhado a cada release.
+  const TS_FLOOR  = { 12:'4.2',13:'4.4',14:'4.6',15:'4.8',16:'4.9',17:'5.2',18:'5.3',19:'5.5',20:'5.8',21:'5.9' };
+  const TS_TARGET = { 12:'~4.3.5',13:'~4.6.0',14:'~4.7.0',15:'~4.9.0',16:'~5.0.0',17:'~5.2.0',18:'~5.4.0',19:'~5.6.0',20:'~5.8.0',21:'~5.9.0' };
   // For Angular v22+, fall back to the v21 floor/target until the maps are updated
   const tsFloor  = TS_FLOOR[targetVersion]  ?? (targetVersion > 21 ? TS_FLOOR[21]  : null);
   const tsTgt    = TS_TARGET[targetVersion] ?? (targetVersion > 21 ? TS_TARGET[21] : null);
@@ -283,18 +289,54 @@ export function resolveNodeTypesOverride(targetVersion) {
   if (changed) writeJson(pkgPath, pkg);
 }
 
-// Pacotes do ecossistema Angular que seguem o mesmo versionamento major.
-const ANGULAR_ECOSYSTEM = [
-  '@angular/material',
-  '@angular/cdk',
-  '@angular/pwa',
-  '@angular/service-worker',
-];
+// ─── Ecossistema Angular detectado em runtime (sem lista hardcoded) ───────────
+// Pacotes do escopo @angular/* que versionam em lockstep com o @angular/core (mesmo
+// time: material, cdk, google-maps, youtube-player, localize, elements, service-worker…).
+// Sinal genérico: estão instalados no MESMO major que o core. Pacotes de terceiros que
+// apenas usam o escopo @angular/ (ex: @angular/fire) ficam num major diferente → fora.
+//
+// O conjunto é CONGELADO no início (captureAngularEcosystem), quando tudo está em
+// lockstep. Detectar a cada step seria errado: um pacote que ficasse pra trás deixaria
+// de casar o major e seria excluído — exatamente o bug "Updating multiple major versions
+// at once is not supported" que isto previne (foi o que segurou @angular/google-maps em v11).
+let _frozenEcosystem = null;
+
+export function captureAngularEcosystem() {
+  const scopeDir = join(destPath, 'node_modules', '@angular');
+  const corePath = join(scopeDir, 'core', 'package.json');
+  const found = [];
+  if (existsSync(corePath) && existsSync(scopeDir)) {
+    const coreMajor = getMajor(readJson(corePath).version);
+    for (const name of readdirSync(scopeDir)) {
+      if (name === 'core' || name === 'cli') continue; // já no comando base (core@v cli@v)
+      const metaPath = join(scopeDir, name, 'package.json');
+      if (!existsSync(metaPath)) continue;
+      try {
+        if (getMajor(readJson(metaPath).version) === coreMajor) found.push(`@angular/${name}`);
+      } catch { /* package.json ilegível — ignora */ }
+    }
+  }
+  _frozenEcosystem = found.sort();
+  console.log(`  ↳ ecossistema Angular (lockstep) detectado: ${found.join(', ') || '(nenhum)'}`);
+  return _frozenEcosystem;
+}
+
+export function getAngularEcosystem() {
+  return _frozenEcosystem ?? [];
+}
+
+// Há alguma versão publicada de `pkgName` no major alvo? Evita incluir `@pkg@v`
+// inexistente (ex: pacote deprecado que parou de publicar) — ele sai do conjunto sozinho.
+function publishesMajor(pkgName, major) {
+  const p = fetchPackument(pkgName);
+  if (!p?.versions) return true; // registry indisponível → não bloqueia (ng update tenta)
+  return Object.keys(p.versions).some(ver => getMajor(ver) === major);
+}
 
 export function extraPackages(v) {
   const extra = [];
-  for (const pkg of ANGULAR_ECOSYSTEM) {
-    if (hasPackage(pkg)) extra.push(`${pkg}@${v}`);
+  for (const pkg of getAngularEcosystem()) {
+    if (hasPackage(pkg) && publishesMajor(pkg, v)) extra.push(`${pkg}@${v}`);
   }
   if (v < 17 && hasPackage('@nguniversal/express-engine'))
     extra.push(`@nguniversal/express-engine@${v}`);
@@ -306,26 +348,18 @@ export function extraPackages(v) {
 // de @angular/core são satisfeitos pela versão Angular alvo.
 // Sem listas hardcoded: funciona para qualquer projeto.
 
+// O peer range é compatível com o major Angular alvo se o range INTERSECTA a faixa
+// inteira daquele major (>=M.0.0 <M+1.0.0). Usar semver evita os bugs do parsing por
+// regex: espaço após operador ("&gt;= 6.0.0"), versão sem minor ("&gt;=5"), ranges
+// compostos ("&gt;=14 &lt;16") e unions ("^13 || ^14").
 function angularVersionInRange(angularMajor, peerRange) {
-  // Divide por || para ranges union: "^13.0.0 || ^14.0.0"
-  for (const segment of peerRange.split('||').map(s => s.trim())) {
-    const tokens = [...segment.matchAll(/([><=^~]*)(\d+)\.\d+/g)];
-    for (const t of tokens) {
-      const op = t[1].trim();
-      const major = parseInt(t[2]);
-      if (op === '^' || op === '~' || op === '' || op === '=') {
-        if (major === angularMajor) return true;
-      } else if (op === '>=' || op === '>') {
-        const threshold = op === '>' ? major + 1 : major;
-        if (angularMajor >= threshold) {
-          // Verifica se existe upper bound explícito menor que a versão alvo
-          const upper = segment.match(/<\s*(\d+)\.\d+/);
-          if (!upper || angularMajor < parseInt(upper[1])) return true;
-        }
-      }
-    }
+  if (!peerRange) return false;
+  const band = `>=${angularMajor}.0.0 <${angularMajor + 1}.0.0`;
+  try {
+    return semver.intersects(peerRange, band, { includePrerelease: true });
+  } catch {
+    return false; // range não-semver (ex: tag git, "*" tratado abaixo)
   }
-  return false;
 }
 
 export function patchThirdPartyVersions(angularMajor) {
@@ -376,8 +410,126 @@ export function patchThirdPartyVersions(angularMajor) {
   }
 }
 
+// ─── Resolução de versão compatível via npm registry ─────────────────────────
+// Em vez de chutar `pkg@<angularMajor>` (o major do Angular raramente coincide com
+// o major da lib de terceiros) e cair em --force, consulta o packument no registry
+// e escolhe a MAIOR versão publicada cujo peerDependencies['@angular/core'] inclui
+// o major Angular alvo. Genérico, sem listas hardcoded.
+
+const NPM_REGISTRY = (process.env.NPM_CONFIG_REGISTRY || 'https://registry.npmjs.org/')
+  .replace(/\/?$/, '/');
+
+// Pacotes do ecossistema cujas versões já são geridas por syncVersions/extraPackages.
+const THIRD_PARTY_SKIP_PREFIXES = [
+  '@angular/', '@angular-devkit/', '@angular-eslint/',
+  '@typescript-eslint/', '@types/',
+];
+
+const _packumentCache = new Map();
+
+function fetchPackument(pkgName) {
+  if (_packumentCache.has(pkgName)) return _packumentCache.get(pkgName);
+  let packument = null;
+  try {
+    // Scoped packages: a barra precisa ser encodada (@nebular%2Ftheme).
+    const url = NPM_REGISTRY + pkgName.replace('/', '%2F');
+    const raw = capture(`curl -sfL "${url}"`);
+    if (raw) packument = JSON.parse(raw);
+  } catch { /* registry indisponível / pacote privado — degrada para null */ }
+  _packumentCache.set(pkgName, packument);
+  return packument;
+}
+
+function cmpSemverDesc(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pb[i] || 0) !== (pa[i] || 0)) return (pb[i] || 0) - (pa[i] || 0);
+  }
+  return 0;
+}
+
+// Maior versão estável de `pkgName` cujo peer @angular/core inclui `angularMajor`.
+// Retorna a string de versão (ex: "20.1.0") ou null se nenhuma servir / sem rede.
+const _resolveCache = new Map();
+export function resolveCompatibleVersion(pkgName, angularMajor) {
+  const key = `${pkgName}@ng${angularMajor}`;
+  if (_resolveCache.has(key)) return _resolveCache.get(key);
+
+  const packument = fetchPackument(pkgName);
+  let best = null;
+  if (packument?.versions) {
+    const stable = Object.keys(packument.versions).filter(v => !v.includes('-'));
+    for (const v of stable.sort(cmpSemverDesc)) {
+      const peer = packument.versions[v].peerDependencies?.['@angular/core'];
+      if (peer && angularVersionInRange(angularMajor, peer)) { best = v; break; }
+    }
+  }
+  _resolveCache.set(key, best);
+  return best;
+}
+
+// Antes de cada ng update: para cada lib de terceiros cujo peer @angular/core NÃO
+// cobre o major alvo, fixa no package.json a maior versão compatível encontrada no
+// registry. Elimina o conflito de peer dependency na origem — sem --force.
+// Retorna `[{ name, from, to }]` com as libs que foram fixadas (para rastreio na UI).
+export function pinCompatibleThirdParty(angularMajor) {
+  const nmDir = join(destPath, 'node_modules');
+  const pkgJsonPath = join(destPath, 'package.json');
+  if (!existsSync(pkgJsonPath)) return [];
+
+  const pkg = readJson(pkgJsonPath);
+  const pinned = [];
+
+  for (const section of ['dependencies', 'devDependencies']) {
+    const deps = pkg[section];
+    if (!deps) continue;
+
+    for (const name of Object.keys(deps)) {
+      if (THIRD_PARTY_SKIP_PREFIXES.some(p => name.startsWith(p))) continue;
+
+      // Versão instalada (do node_modules) define o peer @angular/core atual.
+      const parts = name.startsWith('@') ? name.split('/').slice(0, 2) : [name];
+      const metaPath = join(nmDir, ...parts, 'package.json');
+      if (!existsSync(metaPath)) continue;
+
+      let peer;
+      try { peer = readJson(metaPath).peerDependencies?.['@angular/core']; }
+      catch { continue; }
+      if (!peer) continue;                                   // não depende do Angular
+      if (angularVersionInRange(angularMajor, peer)) continue; // já compatível
+
+      const target = resolveCompatibleVersion(name, angularMajor);
+      if (!target) {
+        report.notes.push(
+          `[ATENÇÃO] ${name} requer @angular/core "${peer}" — incompatível com Angular ${angularMajor} e nenhuma versão compatível foi encontrada no registry. Atualize manualmente.`,
+        );
+        continue;
+      }
+      const newRange = `^${target}`;
+      if (deps[name] === newRange) continue;
+      console.log(`  ↳ ${name}: ${deps[name]} → ${newRange} (compatível com Angular ${angularMajor}, via registry)`);
+      pinned.push({ name, from: deps[name], to: newRange });
+      deps[name] = newRange;
+    }
+  }
+
+  if (pinned.length) writeJson(pkgJsonPath, pkg);
+  return pinned;
+}
+
+// Nomes (sem versão) dos pacotes que ainda têm conflito de peer dependency no output —
+// usado para mostrar na UI o que sobrou irresolvível antes de um --force.
+export function listConflictPackageNames(output) {
+  const re = /Package "(@?[\w/-]+)" has an incompatible peer dependency/g;
+  const names = new Set();
+  let m;
+  while ((m = re.exec(output)) !== null) names.add(m[1]);
+  return [...names];
+}
+
 // Extrai todos os pacotes que causaram peer dependency conflict no output do ng update
-// e tenta incluí-los no próximo run com a versão alvo.
+// e tenta incluí-los no próximo run com a versão compatível resolvida via registry.
 // Packages whose versions are managed by syncVersions or by dedicated modernization steps.
 const SYNC_MANAGED_PREFIXES = ['@angular-eslint/', '@typescript-eslint/'];
 
@@ -388,7 +540,19 @@ export function extractConflictPackages(output, v, alreadyIncluded) {
   while ((m = re.exec(output)) !== null) {
     const pkg = m[1];
     if (SYNC_MANAGED_PREFIXES.some(p => pkg.startsWith(p))) continue;
-    const versioned = `${pkg}@${v}`;
+    // Pacotes @angular/* oficiais existem em @v. Para libs de terceiros, o major raramente
+    // bate com o do Angular — resolve a versão compatível no registry.
+    let targetVer;
+    if (pkg.startsWith('@angular/') || pkg.startsWith('@angular-devkit/')) {
+      targetVer = String(v);
+    } else {
+      targetVer = resolveCompatibleVersion(pkg, v);
+      // Sem versão compatível (ex: @nebular/eva-icons, que peer-depende de @nebular/theme e
+      // não de @angular/core): NÃO injeta um @<major> inventado — isso faz o ng update abortar
+      // com "Package does not exist". Deixa o conflito genuíno cair no --force.
+      if (!targetVer) continue;
+    }
+    const versioned = `${pkg}@${targetVer}`;
     if (!alreadyIncluded.includes(versioned)) extra.push(versioned);
   }
   return [...new Set(extra)];

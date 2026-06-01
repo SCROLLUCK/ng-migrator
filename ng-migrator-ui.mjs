@@ -356,7 +356,7 @@ const server = createServer(async (req, res) => {
     }
 
     const body = await parseBody(req);
-    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions, ngUpdateChecks } = body;
+    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions, ngUpdateChecks, peerStrategy } = body;
 
     if (!source) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -378,6 +378,7 @@ const server = createServer(async (req, res) => {
     if (modernize === false) args.push('--no-modernize');
     if (splitVersions) args.push('--split-versions');
     if (ngUpdateChecks) args.push('--ng-update-checks');
+    if (peerStrategy === 'force') args.push('--peer-strategy', 'force');
 
     activeSplitVersions = !!splitVersions;
     if (activeSplitVersions) {

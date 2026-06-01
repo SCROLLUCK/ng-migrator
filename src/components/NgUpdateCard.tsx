@@ -4,6 +4,7 @@ import { FileModal } from './FileModal'
 import { StepFileList } from './StepFileList'
 import { cn } from '@/lib/utils'
 import { BuildBadge, BuildCheckDetail } from './BuildCheckViews'
+import { PeerBadge, PeerResolutionDetail, hasPeerInfo } from './PeerResolutionView'
 import { useTranslation } from '../lib/i18n'
 
 interface Props {
@@ -85,7 +86,8 @@ export function NgUpdateCard({ data, query = '' }: Props) {
               : allFiles
             const isOpen = expandedStep === key
             const hasFiles = allFiles.length > 0
-            const isExpandable = hasFiles || !!buildCheck
+            const showPeer = hasPeerInfo(step.peer)
+            const isExpandable = hasFiles || !!buildCheck || showPeer
 
             return (
               <Fragment key={step.version}>
@@ -107,6 +109,7 @@ export function NgUpdateCard({ data, query = '' }: Props) {
                     Angular {step.version}
                   </span>
                   <span className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                    {showPeer && step.peer && <PeerBadge peer={step.peer} />}
                     {buildCheck && <BuildBadge check={buildCheck} />}
                     {hasFiles ? (
                       <button
@@ -123,6 +126,11 @@ export function NgUpdateCard({ data, query = '' }: Props) {
                 </div>
                 {isOpen && (
                   <div className="border-b border-[#2A2A45] bg-[#07070F] overflow-hidden">
+                    {showPeer && step.peer && (
+                      <div className="border-b border-[#2A2A45]">
+                        <PeerResolutionDetail peer={step.peer} />
+                      </div>
+                    )}
                     {buildCheck && (
                       <div className="border-b border-[#2A2A45]">
                         <div className="px-4 pt-2 pb-0.5 text-[0.65rem] font-bold tracking-widest uppercase text-[#3A3A60] flex items-center justify-between">

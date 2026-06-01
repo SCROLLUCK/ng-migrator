@@ -46,6 +46,22 @@ export function preflight() {
     changed = true;
   }
 
+  // node-sass é módulo NATIVO (compila via node-gyp, exige Python + toolchain). As imagens
+  // Docker node:NN não têm Python → o `npm install` quebra inteiro ("Can't find Python")
+  // ao recompilar no boundary de troca de Node, deixando node_modules incompleto. node-sass
+  // está deprecado há anos; o substituto é dart-sass (`sass`) — JS puro, sem build nativo,
+  // já usado pelo Angular CLI. Troca genérica e recomendada pelo próprio time do Sass.
+  for (const section of ['dependencies', 'devDependencies']) {
+    if (pkg[section]?.['node-sass']) {
+      delete pkg[section]['node-sass'];
+      if (!pkg.dependencies?.sass && !pkg.devDependencies?.sass) {
+        (pkg.devDependencies ??= {}).sass = '^1.77.0';
+      }
+      console.log('  ↳ node-sass → sass (dart-sass; remove build nativo node-gyp/Python)');
+      changed = true;
+    }
+  }
+
   // Script e2e usa Protractor, removido do Angular no v15
   if (pkg.scripts?.e2e) {
     delete pkg.scripts.e2e;

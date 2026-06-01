@@ -52,6 +52,8 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   const [runAfter, setRunAfter] = useState(() => localStorage.getItem('ng-migrator.runAfter') === 'true')
   const [splitVersions, setSplitVersions] = useState(() => localStorage.getItem('ng-migrator.splitVersions') === 'true')
   const [ngUpdateChecks, setNgUpdateChecks] = useState(() => localStorage.getItem('ng-migrator.ngUpdateChecks') === 'true')
+  // 'resolve' (default): resolve compatible versions via registry; 'force': skip resolution, use --force
+  const [forcePeerDeps, setForcePeerDeps] = useState(() => localStorage.getItem('ng-migrator.forcePeerDeps') === 'true')
   const [stepsOpen, setStepsOpen] = useState(false)
   const [selectedSteps, setSelectedSteps] = useState<Set<string>>(new Set(ALL_STEPS))
   const [error, setError] = useState<string | null>(null)
@@ -67,6 +69,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   useEffect(() => { localStorage.setItem('ng-migrator.runAfter', String(runAfter)) }, [runAfter])
   useEffect(() => { localStorage.setItem('ng-migrator.splitVersions', String(splitVersions)) }, [splitVersions])
   useEffect(() => { localStorage.setItem('ng-migrator.ngUpdateChecks', String(ngUpdateChecks)) }, [ngUpdateChecks])
+  useEffect(() => { localStorage.setItem('ng-migrator.forcePeerDeps', String(forcePeerDeps)) }, [forcePeerDeps])
   useEffect(() => { localStorage.setItem('ng-migrator.loadPath', loadPath) }, [loadPath])
 
   const handleBrowse = async () => {
@@ -145,6 +148,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           runAfter,
           splitVersions,
           ngUpdateChecks,
+          peerStrategy: forcePeerDeps ? 'force' : 'resolve',
         }),
       })
       const json = await res.json()
@@ -262,6 +266,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           { id: 'cleanDest', label: t('deleteDestFolder'), checked: cleanDest, onChange: setCleanDest },
           { id: 'runAfter', label: t('installServe'), checked: runAfter, onChange: setRunAfter },
           { id: 'ngUpdateChecks', label: t('ngUpdateChecks'), checked: ngUpdateChecks, onChange: setNgUpdateChecks },
+          { id: 'forcePeerDeps', label: t('forcePeerDeps'), checked: forcePeerDeps, onChange: setForcePeerDeps },
         ].map(({ id, label, checked, onChange }) => (
           <div key={id} className="flex items-center gap-2">
             <input

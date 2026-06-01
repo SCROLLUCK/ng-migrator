@@ -31,6 +31,7 @@ import { preflight, cleanupLegacyFiles } from './migrator/preflight.mjs';
 import {
   fixLegacyMaterial, verifyTsconfigPaths, syncVersions,
   resolveNodeTypesOverride, extraPackages, extractConflictPackages,
+  pinCompatibleThirdParty, listConflictPackageNames, captureAngularEcosystem,
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
 import { writeReport, writeMigrationData } from './migrator/report.mjs';
@@ -137,6 +138,10 @@ if (!continuingFromExisting) {
   buildCheck(`ngUpdate_${detectedVersion || 11}`);
 }
 
+// Congela o conjunto de pacotes @angular/* em lockstep com o core (detecção em runtime,
+// com node_modules já instalado) — usado por extraPackages/syncVersions em todos os steps.
+captureAngularEcosystem();
+
 // 5. ng update incremental
 const startVersion = (detectedVersion || 11) + 1;
 const steps = [];
@@ -193,29 +198,63 @@ for (let v = startVersion; v <= opts.to; v++) {
 
   verifyTsconfigPaths();
   resolveNodeTypesOverride(v);  // evita EOVERRIDE no npm install do ng update
+  // Resolve versões compatíveis de libs de terceiros ANTES do ng update, para que
+  // os peer deps já estejam satisfeitos e o update não precise de --force.
+  // Log de resolução de peer deps deste step — rastreável na UI (como os diffs).
+  const peerLog = { strategy: opts.peerStrategy, prePinned: [], attempts: [], forced: false, forcedConflicts: [], failedNonPeer: false, failureTail: '' };
+  // Pré-resolução de versões compatíveis só faz sentido na estratégia 'resolve'.
+  if (opts.peerStrategy === 'resolve') peerLog.prePinned = pinCompatibleThirdParty(v);
   // Usa --package para ser explícito sobre o pacote E o binário a executar (ng).
   // Sem isso, npm 6 (Node 14) pode resolver "npx @angular/cli@12 update" para o
   // pacote npm "update" (colisão de cache em _npx/) em vez do Angular CLI.
   const ngCli = `npx --yes --package=@angular/cli@${v} ng`;
-  // 1ª tentativa: sem --force
   let packageList = packages.split(' ');
+  // 1ª tentativa: sem --force (vale para ambas as estratégias)
   let result = runCapture(`${ngCli} update ${packages} --allow-dirty`);
+  peerLog.attempts.push({ iteration: 0, kind: 'initial', added: [], ok: result.status === 0 });
 
-  // 2ª tentativa: detectar pacotes conflitantes do output e incluí-los no comando
-  if (result.status !== 0) {
-    const conflictPkgs = extractConflictPackages(result.output, v, packageList);
-    if (conflictPkgs.length > 0) {
-      const allPkgs = [...packageList, ...conflictPkgs].join(' ');
-      console.warn(`\n  ⚠ ng update v${v} peer conflict — retentando com: ${conflictPkgs.join(' ')}`);
-      packageList = allPkgs.split(' ');
-      result = runCapture(`${ngCli} update ${allPkgs} --allow-dirty`);
+  if (opts.peerStrategy === 'force') {
+    // Estratégia 'force': ao primeiro erro, --force imediato — sem resolver versões.
+    if (result.status !== 0) {
+      console.warn(`\n  ⚠ ng update v${v} falhou — --force imediato (peer-strategy=force)...`);
+      peerLog.forcedConflicts = listConflictPackageNames(result.output);
+      result = run(`${ngCli} update ${packageList.join(' ')} --allow-dirty --force`, { ignoreError: true });
+      peerLog.forced = true;
     }
-  }
-
-  // 3ª tentativa: fallback com --force
-  if (result.status !== 0) {
-    console.warn(`\n  ⚠ ng update v${v} ainda falhou — tentando com --force...`);
-    result = run(`${ngCli} update ${packageList.join(' ')} --allow-dirty --force`, { ignoreError: true });
+  } else {
+    // Estratégia 'resolve' (default): loop iterativo resolvendo versões compatíveis via
+    // registry. Cada iteração pode revelar conflitos secundários que só surgem após
+    // resolver os primeiros — por isso o loop, não um único retry.
+    const MAX_RESOLVE_ITERATIONS = 6;
+    for (let iter = 0; result.status !== 0 && iter < MAX_RESOLVE_ITERATIONS; iter++) {
+      const conflictPkgs = extractConflictPackages(result.output, v, packageList);
+      if (conflictPkgs.length === 0) break;  // nada novo a resolver → cai pro fallback
+      packageList = [...packageList, ...conflictPkgs];
+      console.warn(`\n  ⚠ ng update v${v} peer conflict (iter ${iter + 1}) — incluindo: ${conflictPkgs.join(' ')}`);
+      result = runCapture(`${ngCli} update ${packageList.join(' ')} --allow-dirty`);
+      peerLog.attempts.push({ iteration: iter + 1, kind: 'resolve', added: conflictPkgs, ok: result.status === 0 });
+    }
+    // Fallback final: --force SÓ se a falha for de peer dependency — é exatamente (e
+    // somente) isso que o --force bypassa. Se a falha não é de peer, forçar não ajuda:
+    // registra o motivo e segue; syncVersions + --migrate-only fazem o bump da versão.
+    if (result.status !== 0) {
+      const conflicts = listConflictPackageNames(result.output);
+      if (conflicts.length > 0) {
+        console.warn(`\n  ⚠ ng update v${v} — peer conflict irresolvível (${conflicts.join(', ')}) — fallback --force...`);
+        peerLog.forcedConflicts = conflicts;
+        result = run(`${ngCli} update ${packageList.join(' ')} --allow-dirty --force`, { ignoreError: true });
+        peerLog.forced = true;
+      } else {
+        console.warn(`\n  ⚠ ng update v${v} falhou por motivo NÃO relacionado a peer deps — não vou forçar (--force não resolveria). syncVersions/--migrate-only assumem.`);
+        peerLog.failedNonPeer = true;
+        // Filtra o ruído de npm (warn/notice/deprecated/gyp) para que o erro real não
+        // seja afogado — caso contrário a cauda mostra só "npm warn deprecated ...".
+        const meaningful = (result.output || '')
+          .split('\n')
+          .filter(l => l.trim() && !/npm (warn|notice|WARN|http)|deprecated|gyp (info|http|verb)|idealTree|reify/i.test(l));
+        peerLog.failureTail = meaningful.slice(-18).join('\n');
+      }
+    }
   }
   const ok = result.status === 0;
 
@@ -225,7 +264,25 @@ for (let v = startVersion; v <= opts.to; v++) {
   console.log(`\n  🔄 Sincronizando versões para v${v}...`);
   syncVersions(v);
 
-  npmInstall();
+  // Falha de npm install NÃO pode ser silenciosa: se o node_modules não instalar, todos
+  // os steps seguintes rodam sem deps (ng update "Found 0 dependencies", pinCompatibleThirdParty
+  // congela libs) e o resultado final fica quebrado disfarçado de "done". Aborta com diagnóstico.
+  const installResult = npmInstall();
+  if (installResult.status !== 0 || installResult.nodeModulesOk === false) {
+    const tail = (installResult.output || '')
+      .split('\n').filter(l => l.trim() && !/npm (warn|notice|WARN|http)|deprecated|gyp (info|http|verb)/i.test(l))
+      .slice(-25).join('\n');
+    report.notes.push(
+      `[CRÍTICO] npm install falhou no Angular ${v} — node_modules não foi instalado. Migração abortada para não gerar resultado inválido.` +
+      (tail ? `\nÚltimas linhas do erro:\n${tail}` : ''),
+    );
+    writeReport();
+    writeMigrationData();
+    console.error(`\n❌ npm install falhou no Angular ${v} e o node_modules ficou ausente/incompleto.`);
+    console.error(`   Abortando — continuar produziria um projeto quebrado (deps não instaladas).`);
+    if (tail) console.error(`\n--- erro do npm install ---\n${tail}\n`);
+    process.exit(1);
+  }
 
   // 4ª tentativa: se ng update falhou completamente, roda schematics via --migrate-only.
   // Usa a CLI local (node_modules) — NÃO via npx --package=@angular/cli@v — para evitar
@@ -249,7 +306,7 @@ for (let v = startVersion; v <= opts.to; v++) {
   ngUpdatePrevHash = h;
 
   steps.push({ version: v, ok });
-  report.ngUpdateSteps.push({ version: v, ok });
+  report.ngUpdateSteps.push({ version: v, ok, peer: peerLog });
   if (opts.ngUpdateChecks) buildCheck(`ngUpdate_${v}`);
   writeMigrationData();
 }
