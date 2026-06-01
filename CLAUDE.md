@@ -136,6 +136,7 @@ A abordagem correta **resolve a versão certa no registry**:
   - **Passo 1 (âncoras)** — libs que peer-dependem de `@angular/core`. Fixa cada uma na versão compatível resolvida e registra o major-alvo em `anchorMajors` (ex: `@nebular/theme → 17`).
   - **Passo 2 (companheiros)** — libs que **não** têm peer `@angular/core`, mas peer-dependem de uma âncora (ex: `@nebular/eva-icons` peer-depende de `@nebular/theme`, não do core). `resolveCompanionVersion()` acha a maior versão cujos peers para as âncoras casam o major fixado (eva-icons segue theme: 8→8, 9→9, 17→17). Sem isso, o companheiro travava na versão antiga e forçava `--force`.
 - `extractConflictPackages()` (retry do update) também usa `resolveCompatibleVersion` em vez de `@<major>` para libs de terceiros; quando não há versão compatível, **não injeta** um `@<major>` inexistente (isso fazia o `ng update` abortar com "Package does not exist").
+- **Reconciliação do node_modules após o pin**: o pin altera o `package.json`, mas o `node_modules` ainda tem a versão antiga; o `ng update` aborta com `invalid: pkg@<versão antiga>` (árvore inconsistente). Após `pinCompatibleThirdParty`, o pipeline roda `npm install <só os pacotes pinados>@<versão> --legacy-peer-deps` (instalação parcial, não full) para reconciliar a árvore antes do `ng update`.
 
 Sem listas hardcoded — funciona para qualquer lib que declare `peerDependencies` (de `@angular/core` ou de outra âncora). Se nenhuma versão compatível existir no registry (ex: lib abandonada como `ng2-smart-table`, sem versão para ng11+), registra em `report.notes` para correção manual — o migrador não troca a lib por um fork (isso seria específico de biblioteca).
 
@@ -257,7 +258,7 @@ Se o destino já tem um `.git` (run anterior parou no meio), o pipeline pula có
    6. `modernizeTsconfig()` — ES2022, `moduleResolution: "bundler"`, `useDefineForClassFields: false` + re-run `fixTs2663SignalAccess`
    6b. `addTsconfigPathAliases()` — aliases para diretórios existentes em `src/app/`
    6c. `addEslint()` — `ng add @angular/eslint`
-   7. `fixSassImports()` — `@import` → `@use … as *`
+   7. `fixSassImports()` — `@import` → `@use … as *` (conservador: mantém `@import` em arquivos que usam mixin sem namespace — ver "fixSassImports conservador")
    8. `removeUnusedModules()` — remove `.module.ts` não referenciados + segundo pass standalone se necessário
    9. `fixStyleUrls()` — `styleUrls: []` → `styleUrl` singular
    10. `self-closing-tag` schematic
@@ -315,6 +316,12 @@ O motivo de o loop ser iterativo, e não um único retry: o `ng update` reporta 
 ### node-sass — trocar por dart-sass no preflight
 
 `node-sass` é um módulo **nativo**: compila libsass via `node-gyp`, que exige **Python + toolchain de build**. As imagens Docker `node:NN` usadas no isolamento não têm Python. No boundary onde o Node troca de major (ex: ng12 node:14 → ng13 node:16), o `node-sass` tenta **recompilar** o binário nativo, não encontra Python (`Can't find Python executable "python"`), e o `npm install` falha **inteiro** — deixando o `node_modules` incompleto. `node-sass` está deprecado; `preflight()` o troca por `sass` (dart-sass, JS puro, sem build nativo — o que o Angular CLI já usa). Fix genérico: vale para qualquer projeto que ainda dependa de `node-sass`.
+
+### fixSassImports conservador — não quebrar mixins de theming
+
+A migração `@import` → `@use` é correta, mas o **`@use` não repassa membros transitivos** como o `@import` fazia: se A faz `@use 'tema' as *` e o tema faz `@use 'lib'`, os mixins/funções de `lib` **não** ficam disponíveis em A (faltaria `@forward`). Em sistemas de theming (Nebular, Bootstrap, Material) isso quebra o build com `Undefined mixin` (ex: `@include nb-install-component()`).
+
+Regra conservadora em `fixSassImports()`: se o arquivo `.scss` chama um **mixin sem namespace** (`@include nome(...)` sem `.`), ele provavelmente depende de membros vindos via `@import` → **mantém `@import`** (removendo só o `~`, que o esbuild builder não suporta) em vez de converter para `@use`. O dart-sass ainda aceita `@import` (com deprecation warning até o Sass 3.0). Registra `report.notes` com a contagem e orienta usar `@forward` se quiser migrar. Material é tratado à parte (convertido **com namespace** `mat` + reescrita das chamadas), então não cai nessa regra. Reescrever a cadeia de `@forward` de uma lib específica fica fora do escopo (seria fix específico de biblioteca).
 
 ### npm install no loop não pode falhar silenciosamente
 

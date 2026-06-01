@@ -436,6 +436,7 @@ function removeM2TypographyBlocks(src) {
 
 export function fixSassImports() {
   let count = 0;
+  let keptMixinFiles = 0; // .scss mantidos em @import por usarem mixins de theming
   const srcDir = join(destPath, 'src');
 
   if (existsSync(srcDir)) walkFiles(srcDir, e => e.endsWith('.scss'), (full) => {
@@ -445,9 +446,23 @@ export function fixSassImports() {
       // @angular/material/theming was merged into @angular/material in v15
       out = out.replace(/@angular\/material\/theming/g, '@angular/material');
 
-      // @import "~pkg" / @import "path" → @use "path" as *  (strips tilde prefix)
-      out = out.replace(/@import\s+(['"])(~?)([^'"]+)\1\s*;/g,
-        (_, q, _tilde, path) => `@use ${q}${path}${q} as *;`);
+      // @use NÃO repassa membros transitivos como o @import fazia. Se o arquivo chama um
+      // mixin "bare" (@include nome(...) sem namespace), ele provavelmente vem de um @import
+      // (theming tipo Nebular: nb-install-component) — converter pra @use o quebraria
+      // ("Undefined mixin"). Conservador: mantém @import nesses arquivos (dart-sass ainda
+      // aceita @import, só com deprecation warning até Sass 3.0), removendo apenas o ~ (não
+      // suportado pelo esbuild builder). Material é tratado à parte adiante, com namespace.
+      const usesBareMixin = /@include\s+[\w-]+\s*[(;]/.test(out);
+      let keptHere = false;
+      out = out.replace(/@import\s+(['"])(~?)([^'"]+)\1\s*;/g, (full, q, _tilde, path) => {
+        const isMaterial = /@angular\/material/.test(path);
+        if (!isMaterial && usesBareMixin) {
+          keptHere = true;
+          return `@import ${q}${path}${q};`; // mantém @import, remove só o ~
+        }
+        return `@use ${q}${path}${q} as *;`;
+      });
+      if (keptHere) keptMixinFiles++;
 
       // url("~pkg/...") → url("pkg/...") — webpack ~ prefix not supported by esbuild
       out = out.replace(/url\(\s*(['"]?)~([^'")\s]+)\1\s*\)/g,
@@ -621,6 +636,12 @@ export function fixSassImports() {
     if (out !== src) { writeFileSync(full, out); count++; }
   });
   if (count > 0) console.log(`  ↳ SCSS @import → @use + tilde fix: ${count} arquivo(s)`);
+  if (keptMixinFiles > 0) {
+    console.log(`  ↳ ${keptMixinFiles} .scss mantido(s) em @import (usam mixins de theming sem namespace)`);
+    report.notes.push(
+      `[ATENÇÃO] ${keptMixinFiles} arquivo(s) .scss foram mantidos em @import porque usam mixins de theming sem namespace (ex: @include nb-install-component). Converter para @use quebraria esses mixins ("Undefined mixin"). O dart-sass aceita @import (com deprecation warning até o Sass 3.0). Para migrar para @use, adicione @forward na cadeia de temas da biblioteca.`,
+    );
+  }
   return count;
 }
 

@@ -203,7 +203,17 @@ for (let v = startVersion; v <= opts.to; v++) {
   // Log de resolução de peer deps deste step — rastreável na UI (como os diffs).
   const peerLog = { strategy: opts.peerStrategy, prePinned: [], attempts: [], forced: false, forcedConflicts: [], failedNonPeer: false, failureTail: '' };
   // Pré-resolução de versões compatíveis só faz sentido na estratégia 'resolve'.
-  if (opts.peerStrategy === 'resolve') peerLog.prePinned = pinCompatibleThirdParty(v);
+  if (opts.peerStrategy === 'resolve') {
+    peerLog.prePinned = pinCompatibleThirdParty(v);
+    // Reconcilia o node_modules SÓ com os pacotes pinados (não full install): o pin altera
+    // o package.json, mas o node_modules ainda tem a versão antiga — sem isso o ng update
+    // aborta com "invalid: pkg@<versão antiga>" (árvore inconsistente). Instala só o necessário.
+    if (peerLog.prePinned.length > 0) {
+      const specs = peerLog.prePinned.map(p => `'${p.name}@${p.to}'`).join(' ');
+      console.log(`\n  🔄 Reconciliando node_modules (pinados): ${peerLog.prePinned.map(p => p.name).join(', ')}`);
+      run(`npm install ${specs} --legacy-peer-deps --no-audit --no-fund`, { ignoreError: true });
+    }
+  }
   // Usa --package para ser explícito sobre o pacote E o binário a executar (ng).
   // Sem isso, npm 6 (Node 14) pode resolver "npx @angular/cli@12 update" para o
   // pacote npm "update" (colisão de cache em _npx/) em vez do Angular CLI.
