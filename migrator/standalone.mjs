@@ -194,9 +194,12 @@ function buildDynamicNgRegistry() {
     allDeps = { ...(p.dependencies ?? {}), ...(p.devDependencies ?? {}) };
   } catch { return _dynamicNgRegistry; }
 
+  // Pacotes de FRAMEWORK Angular já são cobertos pelos TMPL maps / standalone.
+  // Mas pacotes-produto do escopo @angular/ (google-maps, youtube-player, material, cdk)
+  // PROVÊM elementos (<google-map>, <youtube-player>, <mat-card>) e precisam ser escaneados.
+  const ANGULAR_FRAMEWORK = /^@angular\/(core|common|forms|router|platform-browser|platform-browser-dynamic|platform-server|animations|compiler|compiler-cli|elements|localize|service-worker|ssr|build|language-service)$/;
   for (const pkgName of Object.keys(allDeps)) {
-    // @angular/* já coberto pelos TMPL maps; @types/* não tem runtime
-    if (pkgName.startsWith('@types/') || pkgName.startsWith('@angular/') || pkgName.startsWith('@angular-devkit/')) continue;
+    if (pkgName.startsWith('@types/') || pkgName.startsWith('@angular-devkit/') || ANGULAR_FRAMEWORK.test(pkgName)) continue;
     const pkgParts = pkgName.startsWith('@') ? pkgName.split('/') : [pkgName];
     const pkgDir = join(nmDir, ...pkgParts);
     if (!existsSync(pkgDir)) continue;
@@ -1099,11 +1102,18 @@ export function fixCircularStandaloneImports() {
 
       if (!changed) continue;
 
-      if (!src.includes('forwardRef')) {
-        src = src.replace(
-          /^(import\s+\{)([^}]+)(\}\s+from\s+['"]@angular\/core['"])/m,
-          (_, open, names, close) => `${open}${names.trimEnd()}, forwardRef${close}`,
-        );
+      // Checa se forwardRef já está IMPORTADO (não só presente no texto — acabamos de
+      // inserir `forwardRef(() => c)`, então src.includes('forwardRef') seria sempre true).
+      if (!/import\s+\{[^}]*\bforwardRef\b[^}]*\}\s+from\s+['"]@angular\/core['"]/.test(src)) {
+        if (/^import\s+\{[^}]+\}\s+from\s+['"]@angular\/core['"]/m.test(src)) {
+          src = src.replace(
+            /^(import\s+\{)([^}]+)(\}\s+from\s+['"]@angular\/core['"])/m,
+            (_, open, names, close) => `${open}${names.trimEnd()}, forwardRef${close}`,
+          );
+        } else {
+          // Sem import de @angular/core ainda → adiciona um
+          src = `import { forwardRef } from '@angular/core';\n${src}`;
+        }
       }
 
       writeFileSync(fixFile, src);
@@ -1141,6 +1151,45 @@ export function autoFixBuildErrors() {
     return map;
   }
 
+  // Índice símbolo → pacote a partir dos .d.ts dos pacotes instalados (classes/const/fn
+  // exportados). Usado para resolver TS2304 "Cannot find name 'X'" quando NENHUM arquivo do
+  // projeto importa X (ex: NbAuthComponent, NbToastrModule referenciados no app.config/routes
+  // gerados, mas sem o import ES). Cacheado.
+  let _extIndex = null;
+  function buildExternalSymbolIndex() {
+    if (_extIndex) return _extIndex;
+    _extIndex = new Map();
+    const nmDir = join(destPath, 'node_modules');
+    const pkgJsonPath = join(destPath, 'package.json');
+    if (!existsSync(nmDir) || !existsSync(pkgJsonPath)) return _extIndex;
+    let deps = {};
+    try { const p = JSON.parse(readFileSync(pkgJsonPath, 'utf8')); deps = { ...(p.dependencies ?? {}), ...(p.devDependencies ?? {}) }; } catch {}
+    for (const pkgName of Object.keys(deps)) {
+      if (pkgName.startsWith('@types/')) continue;
+      const parts = pkgName.startsWith('@') ? pkgName.split('/') : [pkgName];
+      const pkgDir = join(nmDir, ...parts);
+      if (!existsSync(pkgDir)) continue;
+      let dts = '';
+      try {
+        const meta = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+        const t = meta.typings ?? meta.types;
+        const cands = [t && join(pkgDir, t), join(pkgDir, 'index.d.ts'), join(pkgDir, 'public-api.d.ts')].filter(Boolean);
+        for (const f of cands) { if (existsSync(f)) { dts = readFileSync(f, 'utf8'); break; } }
+      } catch {}
+      if (!dts) continue;
+      // classes/funções/consts exportadas (declare class X / export declare class X / export { X })
+      for (const m of dts.matchAll(/(?:export\s+)?declare\s+(?:abstract\s+)?(?:class|function|const|enum)\s+([A-Z]\w*)/g)) {
+        if (!_extIndex.has(m[1])) _extIndex.set(m[1], pkgName);
+      }
+      for (const m of dts.matchAll(/export\s*\{([^}]+)\}/g)) {
+        for (const sym of m[1].split(',').map(s => s.replace(/\s+as\s+\w+/, '').trim()).filter(s => /^[A-Z]\w*$/.test(s))) {
+          if (!_extIndex.has(sym)) _extIndex.set(sym, pkgName);
+        }
+      }
+    }
+    return _extIndex;
+  }
+
   // Detect available build configuration by reading angular.json — avoids launching
   // a full build process just to check if 'development' config exists.
   const ngBuildCmd = (() => {
@@ -1162,7 +1211,9 @@ export function autoFixBuildErrors() {
   let projectEsMap = buildProjectEsMap();
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
-    const out = capture(ngBuildCmd);
+    // Remove códigos ANSI de cor — senão o split por "✘ [ERROR] NGxxxx:" não casa
+    // (os escapes quebram o literal) e só o primeiro erro de cada tipo é parseado.
+    const out = capture(ngBuildCmd).replace(/\x1b\[[0-9;]*m/g, '');
     if (!out) break;
     if (!out.includes('ERROR')) break;
 
@@ -1182,7 +1233,8 @@ export function autoFixBuildErrors() {
     const esbuildBlocks = out.split(/(?=✘ \[ERROR\] NG(?:800[14]|2012|6008|6004):)/);
     for (const block of esbuildBlocks) {
       let name = null; let type = null;
-      const ng8001 = block.match(/NG8001[^']*'<([^>]+)>'/);
+      // Angular ≤16 emitia "'<nb-card>'"; Angular 17+ emite "'nb-card'" (sem <>). Aceita ambos.
+      const ng8001 = block.match(/NG8001[^']*'<?([^'<>]+)>?'/);
       const ng8004 = block.match(/NG8004[^']*'([^']+)'/);
       const ng2012 = block.match(/NG2012[^\n]*/);
       if (ng8001) { name = ng8001[1]; type = 'element'; }
@@ -1228,6 +1280,61 @@ export function autoFixBuildErrors() {
           break;
         }
       }
+    }
+
+    // TS2304: "Cannot find name 'X'" → símbolo usado sem import (ex: NbSidebarModule no
+    // app.config, NbAuthComponent no app.routes, forwardRef). Resolve via imports do projeto
+    // + índice dos .d.ts instalados e adiciona o import ES. (TS2663, com "Did you mean
+    // instance member", é tratado à parte abaixo — aqui só os que precisam de import.)
+    if (out.includes('TS2304')) {
+      let fixed2304 = 0;
+      const extIndex = buildExternalSymbolIndex();
+      const blocks = out.split(/(?=✘ \[ERROR\] TS2304:)/);
+      for (const block of blocks) {
+        if (!block.includes('TS2304')) continue;
+        const symMatch = block.match(/Cannot find name '(\w+)'/);
+        const fileMatch = block.match(/\b(src\/[^\s:'"]+\.ts)/);
+        if (!symMatch || !fileMatch) continue;
+        const sym = symMatch[1];
+        const filePath = join(destPath, fileMatch[1]);
+        if (!existsSync(filePath)) continue;
+        let src = readFileSync(filePath, 'utf8');
+        if (new RegExp(`import\\s*\\{[^}]*\\b${sym}\\b`).test(src)) continue; // já importado
+        const pkg = projectEsMap.get(sym) || extIndex.get(sym);
+        if (!pkg) continue; // não resolvível → não é caso de import faltante (erro real)
+        const lastIm = [...src.matchAll(/^import\s+.+;[ \t]*$/gm)].pop();
+        const pos = lastIm ? lastIm.index + lastIm[0].length : 0;
+        src = src.slice(0, pos) + `\nimport { ${sym} } from '${pkg}';` + src.slice(pos);
+        writeFileSync(filePath, src);
+        fixed2304++;
+        console.log(`  ↳ ${basename(filePath)}: + import { ${sym} } from '${pkg}' (TS2304)`);
+      }
+      if (fixed2304 > 0) { totalFixed += fixed2304; continue; }
+    }
+
+    // TS2341: "Property 'X' is private and only accessible within class 'Y'" → o membro é
+    // acessado no template, e templates Angular (estritos no 14+) não acessam membros private.
+    // Torna o membro public (remove o modificador `private` da declaração).
+    if (out.includes('TS2341')) {
+      let fixed2341 = 0;
+      const blocks = out.split(/(?=✘ \[ERROR\] TS2341:)/);
+      for (const block of blocks) {
+        if (!block.includes('TS2341')) continue;
+        const m = block.match(/Property '(\w+)' is private/);
+        const fileM = block.match(/\b(src\/[^\s:'"]+\.(?:ts|html))/);
+        if (!m || !fileM) continue;
+        const prop = m[1];
+        const filePath = join(destPath, fileM[1].replace(/\.html$/, '.ts'));
+        if (!existsSync(filePath)) continue;
+        let src = readFileSync(filePath, 'utf8');
+        const re = new RegExp(`(^[ \\t]*(?:@[\\w.]+\\([^)]*\\)\\s*)?)private(\\s+(?:readonly\\s+)?${prop}\\b)`, 'm');
+        if (!re.test(src)) continue;
+        src = src.replace(re, '$1$2');
+        writeFileSync(filePath, src);
+        fixed2341++;
+        console.log(`  ↳ ${basename(filePath)}: '${prop}' private → public (TS2341 — usado no template)`);
+      }
+      if (fixed2341 > 0) { totalFixed += fixed2341; continue; }
     }
 
     // TS2663: "Cannot find name 'X'. Did you mean instance member 'this.X'?" → add `this.`

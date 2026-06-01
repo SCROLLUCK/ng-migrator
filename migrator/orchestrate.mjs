@@ -366,6 +366,16 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 build error fix  (resolução genérica de imports faltantes)...`);
     const buildFixed = autoFixBuildErrors();
     if (buildFixed > 0) commitStep('cleanupImports', 'build error import fixes');
+
+    // Segundo cleanup-unused-imports — AGORA que o autoFixBuildErrors resolveu os erros
+    // que impediam o programa TS de compilar (TS2305, NG8001…). O primeiro cleanup (antes
+    // do autoFix) não removia nada porque o schematic precisa de um programa compilável.
+    // Este passe remove os imports excedentes que o copyModuleImportsToComponents adiciona
+    // (irmãos/pai co-declarados não usados no template) — que criam ciclos → NG0919 em runtime.
+    console.log(`\n  🔄 cleanup unused imports (2º passe, pós build-fix — quebra ciclos NG0919)...`);
+    run('npx ng generate @angular/core:cleanup-unused-imports', { ignoreError: true });
+    run('git add -A');
+    run('git commit -m "refactor: cleanup unused imports (pós build-fix)" --allow-empty', { ignoreError: true });
   }
 
   // Atualiza versões de libs de terceiros para compatibilidade com a versão Angular alvo
