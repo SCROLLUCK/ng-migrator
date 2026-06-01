@@ -33,7 +33,21 @@ export const opts = {
   peerStrategy:    (args.includes('--peer-strategy')
                      ? args[args.indexOf('--peer-strategy') + 1]
                      : 'resolve') === 'force' ? 'force' : 'resolve',
+  // Retoma uma migração existente a partir de um step (ex: 'ng14', 'signals', 'builder').
+  // Faz git reset --hard pro commit ANTES do step no destino e continua dali — sem refazer
+  // o que já passou. Útil ao corrigir o migrador e re-rodar só de um ponto.
+  resumeFrom:      args.includes('--resume-from') ? args[args.indexOf('--resume-from') + 1] : null,
 };
+
+// Ordem canônica dos steps de modernização (= ordem em runModernizationMigrations).
+// Usada por --resume-from para saber o que pular ao retomar de um step.
+export const MODERNIZATION_STEPS = [
+  'flexLayout', 'inject', 'signals', 'reservedKeywords', 'untypedForms', 'throwError',
+  'fixMoment', 'standalone', 'standaloneFixed', 'controlFlow', 'ngClassToClass',
+  'ngStyleToStyle', 'appConfig', 'lazyRoutes', 'builder', 'polyfills', 'tsconfig',
+  'pathAliases', 'eslint', 'sass', 'modules', 'styleUrl', 'selfClosing',
+  'cleanupImports', 'thirdPartyVersions', 'lintFix',
+];
 
 // Steps to skip (passed via env var from ng-migrator-ui or --skip-steps CLI)
 export const skipSteps = new Set((process.env.NG_MIGRATOR_SKIP_STEPS ?? '').split(',').filter(Boolean));

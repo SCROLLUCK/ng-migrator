@@ -44,7 +44,8 @@ export function runModernizationMigrations() {
   // Grava o passo atual no git, captura o diff vs passo anterior e atualiza o relatório
   function commitStep(key, label) {
     run('git add -A');
-    run(`git commit --allow-empty -m "refactor: ${label ?? key}"`, { ignoreError: true });
+    // Trailer [ng-migrator-step:<key>] torna o commit localizável por --resume-from.
+    run(`git commit --allow-empty -m "refactor: ${label ?? key}" -m "[ng-migrator-step:${key}]"`, { ignoreError: true });
     const h = capture('git rev-parse HEAD');
     report.details[key] = captureGitDiff(prevHash, h);
     prevHash = h;

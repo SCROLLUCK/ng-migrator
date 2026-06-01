@@ -21,10 +21,11 @@ import Database from 'better-sqlite3';
 
 import {
   sourcePath, destPath, opts, report, migratorDir, setDiffDb, setCurrentAngularVersion, setDestPath,
+  MODERNIZATION_STEPS, skipSteps,
 } from './migrator/context.mjs';
 import {
   checkDocker, copyDir, run, capture, captureGitDiff, npmInstall, runCapture,
-  setupTempNpmrc, restoreNpmrc
+  setupTempNpmrc, restoreNpmrc, readJson,
 } from './migrator/utils.mjs';
 import { getInstalledMajor } from './migrator/packages.mjs';
 import { preflight, cleanupLegacyFiles } from './migrator/preflight.mjs';
@@ -59,9 +60,17 @@ if (opts.dryRun) {
 // 1.5 Verifica se o Docker está em execução antes de começar
 checkDocker();
 
+// --resume-from: retoma uma migração já existente a partir de um step (git reset --hard
+// pro commit antes do step) — sem refazer copy/preflight/git-init nem os steps anteriores.
+const resuming = !!opts.resumeFrom;
+if (resuming && !existsSync(join(destPath, '.git'))) {
+  console.error(`\n❌ --resume-from requer um destino já migrado (com git) em: ${destPath}`);
+  process.exit(1);
+}
+
 // Se em split-versions e o destPath já tem um repositório git, continua de onde parou
-// sem re-copiar o projeto nem reinicializar o git.
-const continuingFromExisting = opts.splitVersions && existsSync(join(destPath, '.git'));
+// sem re-copiar o projeto nem reinicializar o git. (resume também pula a cópia/preflight.)
+const continuingFromExisting = (opts.splitVersions && existsSync(join(destPath, '.git'))) || resuming;
 
 if (continuingFromExisting) {
   console.log(`📁 Continuando de pasta existente: ${destPath}`);
@@ -119,17 +128,55 @@ if (continuingFromExisting) {
   report.initialCommit = capture('git rev-parse HEAD');
 }
 
+// --resume-from: reseta o destino pro estado ANTES do step alvo e define o ponto de entrada.
+let resumeStartVersion = null;
+if (resuming) {
+  const step = opts.resumeFrom;
+  const ngMatch = step.match(/^ng(\d+)$/);
+  let commit = capture(`git log -E --grep="\\[ng-migrator-step:${step}\\]" --format=%H -n 1`).trim().split('\n')[0];
+  if (!commit && ngMatch) {
+    commit = capture(`git log -E --grep="^chore: Angular ${ngMatch[1]}$" --format=%H -n 1`).trim().split('\n')[0];
+  }
+  if (!commit) {
+    console.error(`\n❌ Step '${step}' não encontrado no histórico de ${destPath}.`);
+    console.error(`   Válidos: ng12..ng${opts.to}, ${MODERNIZATION_STEPS.join(', ')}.`);
+    console.error(`   (Destinos migrados antes do suporte a --resume-from só têm o marcador em runs novos — retome de um 'ngNN' ou re-rode uma vez.)`);
+    process.exit(1);
+  }
+  console.log(`\n⏪ Resume: git reset --hard ${commit.slice(0, 8)}~1 (estado antes do step '${step}')`);
+  run(`git reset --hard ${commit}~1`);
+  if (ngMatch) {
+    resumeStartVersion = parseInt(ngMatch[1], 10);          // loop de ng update começa aqui
+  } else {
+    const idx = MODERNIZATION_STEPS.indexOf(step);
+    if (idx === -1) { console.error(`\n❌ step de modernização desconhecido: '${step}'`); process.exit(1); }
+    for (let i = 0; i < idx; i++) skipSteps.add(MODERNIZATION_STEPS[i]); // pula os steps anteriores
+    resumeStartVersion = opts.to + 1;                       // pula o loop de ng update inteiro
+  }
+  report.initialCommit = capture('git rev-parse HEAD');
+}
+
 // 4. Instala dependências da versão atual
-const detectedVersion = opts.from ?? getInstalledMajor('@angular/core');
+const detectedVersion = resuming
+  ? (() => {                       // no resume, a versão vem do package.json já resetado
+      try {
+        const p = readJson(join(destPath, 'package.json'));
+        const v = p.dependencies?.['@angular/core'] ?? p.devDependencies?.['@angular/core'] ?? '';
+        const m = String(v).match(/(\d+)/);
+        return m ? parseInt(m[1], 10) : 11;
+      } catch { return 11; }
+    })()
+  : (opts.from ?? getInstalledMajor('@angular/core'));
 report.sourceVersion = detectedVersion || null;
 writeMigrationData();
-console.log(`\n📦 Versão detectada: Angular ${detectedVersion || '?'}`);
+console.log(`\n📦 Versão ${resuming ? 'do destino (resume)' : 'detectada'}: Angular ${detectedVersion || '?'}`);
 
 // Define o contexto de versão do Angular inicial para as execuções do Node
 setCurrentAngularVersion(detectedVersion || 11);
 
-if (!continuingFromExisting) {
-  console.log('📦 Instalando dependências...');
+// Resume precisa reinstalar (o node_modules não é commitado e o reset mudou o package.json).
+if (!continuingFromExisting || resuming) {
+  console.log(resuming ? '📦 Reinstalando dependências (resume)...' : '📦 Instalando dependências...');
   if (npmInstall().status !== 0) {
     console.error('\n❌ npm install falhou. Verifique o package.json e tente novamente.');
     process.exit(1);
@@ -142,8 +189,8 @@ if (!continuingFromExisting) {
 // com node_modules já instalado) — usado por extraPackages/syncVersions em todos os steps.
 captureAngularEcosystem();
 
-// 5. ng update incremental
-const startVersion = (detectedVersion || 11) + 1;
+// 5. ng update incremental (no resume, começa no step pedido — ou pula o loop se for modernização)
+const startVersion = resuming ? resumeStartVersion : (detectedVersion || 11) + 1;
 const steps = [];
 let ngUpdatePrevHash = capture('git rev-parse HEAD');
 
@@ -309,7 +356,7 @@ for (let v = startVersion; v <= opts.to; v++) {
   }
 
   run('git add -A');
-  run(`git commit -m "chore: Angular ${v}" --allow-empty`);
+  run(`git commit -m "chore: Angular ${v}" -m "[ng-migrator-step:ng${v}]" --allow-empty`);
 
   const h = capture('git rev-parse HEAD');
   report.details[`ngUpdate_${v}`] = captureGitDiff(ngUpdatePrevHash, h);

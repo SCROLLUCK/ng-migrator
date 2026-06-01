@@ -26,6 +26,10 @@ node migrate.mjs --dry-run
 
 # Estratégia de conflitos de peer dependency (default: resolve)
 node migrate.mjs ./proj --peer-strategy force   # pula resolução, --force direto
+
+# Retomar uma migração existente a partir de um step (sem refazer o que já passou)
+node migrate.mjs ./proj --resume-from ng14       # reset pro estado antes do ng14 e segue
+node migrate.mjs ./proj --resume-from signals    # pula o ng update; modernização a partir de 'signals'
 ```
 
 ## Stack do dashboard (src/)
@@ -239,6 +243,17 @@ TS2663 ("Cannot find name 'prop'. Did you mean 'this.prop'?") surge quando o sch
 - `cp -al node_modules newDest` — hard-link instantâneo, sem reinstalar
 
 Se o destino já tem um `.git` (run anterior parou no meio), o pipeline pula cópia, preflight, git init e npm install — continua de onde parou.
+
+### --resume-from — retomar de um step específico
+
+Como **cada step é commitado** no git do destino, dá pra retomar de qualquer ponto sem refazer o que já passou (útil ao corrigir o migrador e re-rodar só de um ponto — evita repetir o lento loop de `ng update`).
+
+- Cada commit leva um trailer **`[ng-migrator-step:<key>]`** (`commitStep` na modernização; `[ng-migrator-step:ng<v>]` no `ng update`) → torna o step localizável.
+- `--resume-from <step>` (ex: `ng14`, `signals`, `builder`):
+  1. Localiza o commit do step (pelo trailer; fallback por mensagem `chore: Angular N` para `ngNN` em destinos antigos), faz **`git reset --hard <commit>~1`** (estado **antes** do step — descarta os commits posteriores) e **reinstala** o `node_modules` (não é commitado; a versão de Node vem do `@angular/core` do `package.json` resetado).
+  2. **Entrada**: se `ngNN` → o loop de `ng update` começa em NN, depois modernização; se for key de modernização → **pula o loop inteiro** e adiciona ao `skipSteps` todas as keys **anteriores** ao alvo (rodando a modernização a partir dele).
+- Ordem canônica das keys em `MODERNIZATION_STEPS` (context.mjs) = ordem em `runModernizationMigrations`.
+- Destinos migrados **antes** deste suporte só têm o trailer em runs novos — para esses, retome de um `ngNN` (fallback por mensagem) ou re-rode uma vez.
 
 ---
 
