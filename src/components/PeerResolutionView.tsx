@@ -64,7 +64,7 @@ export function PeerResolutionDetail({ peer }: { peer: PeerLog }) {
           <div className="text-[#7070A0] mb-1">{t('peerPrePinned')}</div>
           <ul className="flex flex-col gap-0.5">
             {peer.prePinned.map(p => (
-              <li key={p.name} className="font-mono text-[0.72rem] text-foreground flex items-center gap-1.5 flex-wrap">
+              <li key={p.name} className="font-mono text-[0.72rem] text-text flex items-center gap-1.5 flex-wrap">
                 <span className="text-blue">{p.name}</span>
                 <span className="text-[#4A4A70]">{p.from}</span>
                 <span className="text-[#4A4A70]">→</span>

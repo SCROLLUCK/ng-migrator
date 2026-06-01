@@ -56,7 +56,7 @@ export function NotesCard({ data }: { data: MigrationData }) {
           {notes.map((n, i) => (
             <div key={i} className={cn('border rounded-md px-3 py-2 text-[0.8rem] leading-snug flex gap-2', STYLES[n.kind])}>
               <span className="shrink-0 leading-none mt-px">{ICON[n.kind]}</span>
-              <span className="text-foreground whitespace-pre-wrap break-words">{n.text}</span>
+              <span className="text-text whitespace-pre-wrap wrap-break-word">{n.text}</span>
             </div>
           ))}
         </div>
