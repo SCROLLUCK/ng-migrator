@@ -751,9 +751,12 @@ export function addTsconfigPathAliases() {
     }
   }
 
+  // paths com alvos não-relativos ("src/app/*") exigem baseUrl — senão o TS 5.x +
+  // moduleResolution:bundler avisa "Non-relative path ... is not allowed when baseUrl is not set".
+  if (!tsconfig.compilerOptions.baseUrl) tsconfig.compilerOptions.baseUrl = '.';
   tsconfig.compilerOptions.paths = paths;
   writeJson(tsconfigPath, tsconfig);
-  console.log(`  ↳ path aliases: ${Object.keys(paths).join(', ')}`);
+  console.log(`  ↳ path aliases (baseUrl: "."): ${Object.keys(paths).join(', ')}`);
 }
 
 // ─── styleUrls (array) → styleUrl (singular) ─────────────────────────────────
