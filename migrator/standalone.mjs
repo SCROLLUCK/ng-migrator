@@ -194,9 +194,12 @@ function buildDynamicNgRegistry() {
     allDeps = { ...(p.dependencies ?? {}), ...(p.devDependencies ?? {}) };
   } catch { return _dynamicNgRegistry; }
 
+  // Pacotes de FRAMEWORK Angular já são cobertos pelos TMPL maps / standalone.
+  // Mas pacotes-produto do escopo @angular/ (google-maps, youtube-player, material, cdk)
+  // PROVÊM elementos (<google-map>, <youtube-player>, <mat-card>) e precisam ser escaneados.
+  const ANGULAR_FRAMEWORK = /^@angular\/(core|common|forms|router|platform-browser|platform-browser-dynamic|platform-server|animations|compiler|compiler-cli|elements|localize|service-worker|ssr|build|language-service)$/;
   for (const pkgName of Object.keys(allDeps)) {
-    // @angular/* já coberto pelos TMPL maps; @types/* não tem runtime
-    if (pkgName.startsWith('@types/') || pkgName.startsWith('@angular/') || pkgName.startsWith('@angular-devkit/')) continue;
+    if (pkgName.startsWith('@types/') || pkgName.startsWith('@angular-devkit/') || ANGULAR_FRAMEWORK.test(pkgName)) continue;
     const pkgParts = pkgName.startsWith('@') ? pkgName.split('/') : [pkgName];
     const pkgDir = join(nmDir, ...pkgParts);
     if (!existsSync(pkgDir)) continue;
@@ -1162,7 +1165,9 @@ export function autoFixBuildErrors() {
   let projectEsMap = buildProjectEsMap();
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
-    const out = capture(ngBuildCmd);
+    // Remove códigos ANSI de cor — senão o split por "✘ [ERROR] NGxxxx:" não casa
+    // (os escapes quebram o literal) e só o primeiro erro de cada tipo é parseado.
+    const out = capture(ngBuildCmd).replace(/\x1b\[[0-9;]*m/g, '');
     if (!out) break;
     if (!out.includes('ERROR')) break;
 
@@ -1182,7 +1187,8 @@ export function autoFixBuildErrors() {
     const esbuildBlocks = out.split(/(?=✘ \[ERROR\] NG(?:800[14]|2012|6008|6004):)/);
     for (const block of esbuildBlocks) {
       let name = null; let type = null;
-      const ng8001 = block.match(/NG8001[^']*'<([^>]+)>'/);
+      // Angular ≤16 emitia "'<nb-card>'"; Angular 17+ emite "'nb-card'" (sem <>). Aceita ambos.
+      const ng8001 = block.match(/NG8001[^']*'<?([^'<>]+)>?'/);
       const ng8004 = block.match(/NG8004[^']*'([^']+)'/);
       const ng2012 = block.match(/NG2012[^\n]*/);
       if (ng8001) { name = ng8001[1]; type = 'element'; }
