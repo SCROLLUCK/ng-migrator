@@ -123,6 +123,7 @@ export const report = {
   date: new Date().toISOString().slice(0, 10),
   sourceVersion: null,
   targetVersion: opts.to,
+  splitVersions: opts.splitVersions,   // resume/rollback (git por step) não se aplica a split-versions
   sourcePath,
   destPath,
   initialCommit: null,

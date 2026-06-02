@@ -84,4 +84,5 @@ export interface MigrationData {
   skippedSteps?: string[];
   filesCreated: string[];
   rolledBackTo?: { step: string; at: string };
+  splitVersions?: boolean;
 }

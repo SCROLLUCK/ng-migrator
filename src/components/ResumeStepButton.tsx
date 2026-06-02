@@ -26,6 +26,12 @@ export function ResumeStepButton({ data, step, stepLabel, buildCheck, disabled }
   const [busy, setBusy] = useState<Mode | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Resume/rollback usam o git por step de uma migração single-folder. Em --split-versions cada
+  // versão é uma pasta com git próprio (snapshot + 1 commit), sem histórico linear de steps — e o
+  // destino single-folder (`<src>-ng<to>`) calculado pelo servidor seria OUTRO projeto. Não oferece.
+  // (Guard depois dos hooks: regras do React exigem hooks incondicionais.)
+  if (data.splitVersions || data.destPath?.includes('-ng-versions')) return null
+
   const buildState: 'clean' | 'errors' | 'unknown' =
     buildCheck == null ? 'unknown' : buildCheck.total === 0 ? 'clean' : 'errors'
   const stateBox = {
