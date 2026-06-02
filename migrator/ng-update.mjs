@@ -42,6 +42,7 @@ export function syncVersions(targetVersion) {
 
   // Pacotes framework/devkit fixos + ecossistema detectado em runtime (material, cdk,
   // google-maps…) — para que nenhum @angular/* oficial fique pra trás no package.json.
+  const frameworkSet = new Set(ANGULAR_PKGS);
   const syncTargets = [...new Set([...ANGULAR_PKGS, ...getAngularEcosystem()])];
   for (const section of ['dependencies', 'devDependencies']) {
     if (!pkg[section]) continue;
@@ -49,12 +50,20 @@ export function syncVersions(targetVersion) {
       if (!pkg[section][name]) continue;
       const current = getEffectiveMajor(pkg[section][name]);
       if (current > 0 && current < targetVersion) {
-        // Pacotes com esquema 0.NNxx.y precisam de formato especial
-        const targetStr = DEVKIT_ZERO_VERSIONED.has(name)
-          ? `~0.${targetVersion}00.0`
-          : `^${targetVersion}.0.0`;
+        let targetStr;
+        if (frameworkSet.has(name)) {
+          // Framework/devkit: sempre estável. Devkit usa esquema 0.NNxx.y.
+          targetStr = DEVKIT_ZERO_VERSIONED.has(name) ? `~0.${targetVersion}00.0` : `^${targetVersion}.0.0`;
+        } else {
+          // Ecossistema runtime: pode ser beta-only (flex-layout) → resolve o spec real no registry.
+          targetStr = resolveEcosystemSpec(name, targetVersion);
+          if (!targetStr) {
+            console.log(`  ↳ ${name}: sem versão publicada para o major ${targetVersion} — mantido (tratado à parte)`);
+            continue;
+          }
+        }
         pkg[section][name] = targetStr;
-        console.log(`  ↳ ${name}: ${current} → ${targetVersion} (forçado)`);
+        console.log(`  ↳ ${name}: ${current} → ${targetStr} (forçado)`);
         changed = true;
       }
     }
@@ -333,10 +342,27 @@ function publishesMajor(pkgName, major) {
   return Object.keys(p.versions).some(ver => getMajor(ver) === major);
 }
 
+// Resolve o spec de versão correto para um pacote do ecossistema no major alvo. A maioria publica
+// estável → `^v.0.0`. Mas alguns só publicam PRÉ-RELEASES (ex: @angular/flex-layout, que nunca teve
+// um `12.0.0` estável, só `12.0.0-beta.35`) — aí `^12.0.0` dá ETARGET no npm install. Nesses casos
+// fixa a MAIOR versão exata daquele major. Retorna null se não há versão para o major (ex: flex-
+// layout no v16 — tratado à parte pela conversão para Tailwind no gate v16).
+function resolveEcosystemSpec(name, major) {
+  const p = fetchPackument(name);
+  if (!p?.versions) return `^${major}.0.0`;                 // registry indisponível → tenta o padrão
+  const matching = Object.keys(p.versions).filter(v => getMajor(v) === major);
+  if (!matching.length) return null;
+  if (matching.some(v => !semver.prerelease(v))) return `^${major}.0.0`; // existe estável
+  return matching.sort(semver.compare).pop();               // só pré-releases → fixa a maior exata
+}
+
 export function extraPackages(v) {
   const extra = [];
   for (const pkg of getAngularEcosystem()) {
-    if (hasPackage(pkg) && publishesMajor(pkg, v)) extra.push(`${pkg}@${v}`);
+    if (!hasPackage(pkg) || !publishesMajor(pkg, v)) continue;
+    // Beta-only (flex-layout) precisa da versão EXATA no `ng update pkg@<ver>` — `@v` não resolve.
+    const spec = resolveEcosystemSpec(pkg, v);
+    extra.push(!spec || spec.startsWith('^') ? `${pkg}@${v}` : `${pkg}@${spec}`);
   }
   if (v < 17 && hasPackage('@nguniversal/express-engine'))
     extra.push(`@nguniversal/express-engine@${v}`);
