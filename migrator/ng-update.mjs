@@ -466,17 +466,11 @@ function fetchPackument(pkgName) {
   return packument;
 }
 
-function cmpSemverDesc(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((pb[i] || 0) !== (pa[i] || 0)) return (pb[i] || 0) - (pa[i] || 0);
-  }
-  return 0;
-}
-
-// Maior versão estável de `pkgName` cujo peer @angular/core inclui `angularMajor`.
-// Retorna a string de versão (ex: "20.1.0") ou null se nenhuma servir / sem rede.
+// Maior versão de `pkgName` cujo peer @angular/core inclui `angularMajor`. Retorna a string de
+// versão (ex: "20.1.0") ou null se nenhuma servir / sem rede. Preferimos ESTÁVEL (não pegar um
+// beta aleatório de terceiros); só caímos para PRÉ-RELEASE se nenhuma estável casar — cobre libs
+// beta/rc-only (mesmo problema do @angular/flex-layout, mas no caminho de terceiros). Usa
+// semver.rcompare (ordena pré-releases corretamente; o compare manual quebrava em `-beta`).
 const _resolveCache = new Map();
 export function resolveCompatibleVersion(pkgName, angularMajor) {
   const key = `${pkgName}@ng${angularMajor}`;
@@ -485,10 +479,16 @@ export function resolveCompatibleVersion(pkgName, angularMajor) {
   const packument = fetchPackument(pkgName);
   let best = null;
   if (packument?.versions) {
-    const stable = Object.keys(packument.versions).filter(v => !v.includes('-'));
-    for (const v of stable.sort(cmpSemverDesc)) {
+    const matches = (v) => {
       const peer = packument.versions[v].peerDependencies?.['@angular/core'];
-      if (peer && angularVersionInRange(angularMajor, peer)) { best = v; break; }
+      return peer && angularVersionInRange(angularMajor, peer);
+    };
+    const valid = Object.keys(packument.versions).filter(v => semver.valid(v));
+    const stable = valid.filter(v => !semver.prerelease(v)).sort(semver.rcompare);
+    for (const v of stable) { if (matches(v)) { best = v; break; } }
+    if (!best) {
+      const pre = valid.filter(v => semver.prerelease(v)).sort(semver.rcompare);
+      for (const v of pre) { if (matches(v)) { best = v; break; } }
     }
   }
   _resolveCache.set(key, best);
@@ -506,8 +506,13 @@ export function resolveCompatibleVersion(pkgName, angularMajor) {
 function resolveCompanionVersion(pkgName, anchorMajors) {
   const packument = fetchPackument(pkgName);
   if (!packument?.versions) return null;
-  const stable = Object.keys(packument.versions).filter(v => !v.includes('-')).sort(cmpSemverDesc);
-  for (const v of stable) {
+  // Estável primeiro (desc), depois pré-releases (desc) — cobre companheiros beta-only.
+  const valid = Object.keys(packument.versions).filter(v => semver.valid(v));
+  const order = [
+    ...valid.filter(v => !semver.prerelease(v)).sort(semver.rcompare),
+    ...valid.filter(v => semver.prerelease(v)).sort(semver.rcompare),
+  ];
+  for (const v of order) {
     const peers = packument.versions[v].peerDependencies || {};
     let matched = false, conflict = false;
     for (const [peerName, peerRange] of Object.entries(peers)) {
