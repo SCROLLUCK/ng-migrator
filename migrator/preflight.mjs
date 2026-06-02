@@ -7,6 +7,38 @@ import { destPath, SKIP_DIRS } from './context.mjs';
 import { readJson, writeJson, scanForContent } from './utils.mjs';
 import { getMajor } from './packages.mjs';
 
+// Remove imports órfãos de 'protractor' em src/ (após o protractor ser removido do package.json).
+// protractor é e2e-only; um import dele em código de app é morto (não funciona fora do e2e) e fica
+// órfão → TS2307. Conservador: só remove a linha se NENHUM símbolo importado é usado no arquivo
+// (se for usado, é código genuinamente quebrado — não mexemos, vira erro visível pro dev resolver).
+function stripDeadProtractorImports() {
+  const importRe = /^[ \t]*import\s+(?:\{([^}]*)\}|\*\s+as\s+(\w+)|(\w+))\s+from\s+['"]protractor['"]\s*;?[ \t]*\r?\n?/gm;
+  const walk = (dir) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(full); continue; }
+      if (!e.name.endsWith('.ts') || !e.name.includes('.')) continue;
+      const src = readFileSync(full, 'utf8');
+      if (!/from\s+['"]protractor['"]/.test(src)) continue;
+      const out = src.replace(importRe, (line, named, ns, def) => {
+        const ids = named
+          ? named.split(',').map(s => s.trim().split(/\s+as\s+/).pop().trim()).filter(Boolean)
+          : [ns || def].filter(Boolean);
+        const body = src.split(line).join('');               // arquivo sem esta linha de import
+        const used = ids.some(id => new RegExp(`\\b${id}\\b`).test(body));
+        return used ? line : '';
+      });
+      if (out !== src) {
+        writeFileSync(full, out);
+        console.log(`  ↳ import órfão de 'protractor' removido em ${relative(destPath, full)}`);
+      }
+    }
+  };
+  walk(join(destPath, 'src'));
+}
+
 export function preflight() {
   const pkgPath = join(destPath, 'package.json');
   const pkg = readJson(pkgPath);
@@ -40,6 +72,12 @@ export function preflight() {
       }
     }
   }
+
+  // Removeu o protractor (e2e) → limpa imports órfãos dele no código de aplicação. Mesmo princípio
+  // do flex-layout: removeu o pacote, limpa o código. Um `import {element} from 'protractor'` perdido
+  // num componente (auto-import acidental do IDE — `element`/`browser`/`by`) ficaria órfão → TS2307
+  // quebra o build em TODA versão. Conservador: só remove a linha se o símbolo não é usado no arquivo.
+  stripDeadProtractorImports();
 
   // Ecossistema TSLint inteiro está morto desde 2019 e exige TypeScript < 3 (peer dep),
   // conflitando em TODO step da migração. Remove qualquer pacote tslint* (tslint,
