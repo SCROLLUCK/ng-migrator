@@ -53,6 +53,22 @@ export function preflight() {
     }
   }
 
+  // @angular-eslint/* desatualizado peer-depende de @angular-devkit/architect e @angular/cli
+  // de uma versão antiga (ex: @angular-eslint@1 da era ng10/11 trava em ~0.1100), fazendo o
+  // `ng update` ABORTAR com "Incompatible peer dependencies" em TODO step → fallback --force.
+  // E é churn inútil: o addEslint() roda `ng add @angular/eslint` no fim e re-instala a versão
+  // certa. Então removemos o toolchain @angular-eslint no preflight (mesma lógica do TSLint).
+  // Os .eslintrc/eslint.config ficam — o addEslint() cuida da config no fim.
+  for (const section of ['dependencies', 'devDependencies']) {
+    for (const name of Object.keys(pkg[section] ?? {})) {
+      if (name.startsWith('@angular-eslint/')) {
+        delete pkg[section][name];
+        console.log(`  ↳ ${name} removido (re-adicionado por addEslint no fim; evita --force em todo ng update)`);
+        changed = true;
+      }
+    }
+  }
+
   // core-js não é necessário em Angular 12+ com evergreen browsers
   if (pkg.dependencies?.['core-js']) {
     delete pkg.dependencies['core-js'];

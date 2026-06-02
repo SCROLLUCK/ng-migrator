@@ -177,6 +177,10 @@ Angular 17+ introduziu `@angular/build` (esbuild/Vite builder). Deve estar em `A
 
 Regras `@typescript-eslint/quotes` e `@typescript-eslint/dot-notation` foram removidas no `@typescript-eslint` v8 — movidas para o ESLint core (`quotes`, `dot-notation`).
 
+### @angular-eslint removido no preflight (re-adicionado no fim)
+
+`@angular-eslint/*` desatualizado (ex: `@angular-eslint@1`, era ng10/11) peer-depende de `@angular-devkit/architect`/`@angular/cli` antigos (`~0.1100`, `>=12 <13`…). Isso faz o `ng update` **abortar com `Incompatible peer dependencies`** e cair em `--force` em **todo step** — churn inútil, porque o `addEslint()` (step `eslint`) roda `ng add @angular/eslint` no fim e re-instala a versão correta. Por isso o `preflight()` **remove todo o toolchain `@angular-eslint/*`** (mesma lógica do TSLint — lint é dev-only, não afeta build/runtime). Os arquivos de config (`.eslintrc`/`eslint.config`) ficam; o `addEslint()` cuida da config no final. `eslint`/`@typescript-eslint/*` **não** são removidos (não peer-dependem de pacotes Angular, então não disparam conflito por versão; o `ng-update.mjs` já alinha as versões deles).
+
 ### NG2012 — NgModules incompatíveis com Ivy
 
 Quando `autoFixBuildErrors` encontra `NG2012` (NgModule não compilado com Ivy), o símbolo é substituído por `// TODO: [NG2012]` no array `imports` e a linha de `import` ES é comentada. Nunca remove silenciosamente — o desenvolvedor precisa saber o que precisar atualizar.
@@ -263,7 +267,7 @@ Como **cada step é commitado** no git do destino, dá pra retomar de qualquer p
 0. **Docker Preflight Check**: Executa `checkDocker()` para validar se o Docker está ativo. Se não, interrompe a execução com erro.
 1. **Copia** o projeto para pasta irmã com sufixo `-ng{target}` (ou `--dest`)
 2. Remove lockfiles antigos (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`)
-3. **`preflight()`** — remove `ngcc` dos scripts, remove `codelyzer`/`protractor`/`karma-coverage-istanbul-reporter`/`core-js` e **todo o ecossistema `tslint*`** (`tslint`, `tslint-language-service`, … — morto desde 2019, peer TS < 3 conflita em todo step); bumpa `@types/jasmine`, `jasmine-core`, `@types/node`, `ts-node`; troca `node-sass` → `sass` (ver "node-sass")
+3. **`preflight()`** — remove `ngcc` dos scripts, remove `codelyzer`/`protractor`/`karma-coverage-istanbul-reporter`/`core-js` e **todo o ecossistema `tslint*`** (`tslint`, `tslint-language-service`, … — morto desde 2019, peer TS < 3 conflita em todo step) e **`@angular-eslint/*`** (peer Angular antigo força `--force` em todo step — re-adicionado por `addEslint()`; ver "@angular-eslint removido no preflight"); bumpa `@types/jasmine`, `jasmine-core`, `@types/node`, `ts-node`; troca `node-sass` → `sass` (ver "node-sass")
 4. **`cleanupLegacyFiles()`** — remove `tslint.json`, projeto e2e do `angular.json`, chama `fixKarmaConf()`
 5. Se source >= v15: `fixLegacyMaterial()` imediatamente
 6. **`git init`** + commit inicial — `ng update` exige repositório git
