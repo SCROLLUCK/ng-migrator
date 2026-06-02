@@ -106,12 +106,14 @@ export function syncVersions(targetVersion) {
       console.log(`  ↳ overrides["@types/node"] = ${nodeTypesTarget} (TS-compat para Angular ${targetVersion})`);
       changed = true;
     }
-    // Também fix direto em dependencies/devDependencies se presente em versão incompatível
+    // Dep direto DEVE bater EXATAMENTE com o override (mesma string), senão npm 9+ dá EOVERRIDE
+    // ("Override for @types/node@X conflicts with direct dependency"). Alinha sempre que diferir —
+    // não só quando o major difere (cobre dep `16.18.0` exato vs override `^16.18.0`).
     for (const section of ['dependencies', 'devDependencies']) {
       const cur = pkg[section]?.['@types/node'];
-      if (cur && getMajor(cur) > getMajor(nodeTypesTarget)) {
+      if (cur && cur !== nodeTypesTarget) {
         pkg[section]['@types/node'] = nodeTypesTarget;
-        console.log(`  ↳ @types/node: ${cur} → ${nodeTypesTarget} (TS-compat)`);
+        console.log(`  ↳ @types/node: ${cur} → ${nodeTypesTarget} (TS-compat, alinhado ao override)`);
         changed = true;
       }
     }
@@ -267,12 +269,13 @@ export function resolveNodeTypesOverride(targetVersion) {
   const pkg = readJson(pkgPath);
   let changed = false;
 
-  // EXATO, sem `^`: `^16.18.0` deixa o npm pegar o último patch da linha (ex: 16.18.126), cujo
-  // `.d.ts` (http2 genérico) usa sintaxe de um TS mais novo que o do step → erros de parse. O
-  // skipLibCheck cobre isso, mas pinar exato também evita a deriva e mantém a instalação reprodutível.
+  // Mantém `^` (caret): o npm 9+ exige que o valor do override BATA com o spec do dep direto, senão
+  // EOVERRIDE. O `^16.18.0` casa com o dep direto (alinhado abaixo); o problema de `.d.ts` do último
+  // patch (16.18.x novo demais p/ o TS do step) é coberto pelo skipLibCheck (ligado cedo), não por
+  // pinar exato aqui (que quebraria o match override↔dep). Pin exato só p/ libs normais (applyPin).
   const nodeTypesTarget =
-    targetVersion <= 12 ? '14.18.0'
-    : targetVersion <= 16 ? '16.18.0'
+    targetVersion <= 12 ? '^14.18.0'
+    : targetVersion <= 16 ? '^16.18.0'
     : null;
 
   if (nodeTypesTarget !== null) {
@@ -284,7 +287,7 @@ export function resolveNodeTypesOverride(targetVersion) {
     }
     for (const section of ['dependencies', 'devDependencies']) {
       const cur = pkg[section]?.['@types/node'];
-      if (cur && getMajor(cur) !== getMajor(nodeTypesTarget)) {
+      if (cur && cur !== nodeTypesTarget) {  // string idêntica ao override → evita EOVERRIDE
         pkg[section]['@types/node'] = nodeTypesTarget;
         changed = true;
       }
