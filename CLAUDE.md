@@ -147,6 +147,14 @@ A abordagem correta **resolve a versão certa no registry**:
 
 Sem listas hardcoded — funciona para qualquer lib que declare `peerDependencies` (de `@angular/core` ou de outra âncora). Se nenhuma versão compatível existir no registry (ex: lib abandonada como `ng2-smart-table`, sem versão para ng11+), registra em `report.notes` para correção manual — o migrador não troca a lib por um fork (isso seria específico de biblioteca).
 
+`resolveCompatibleVersion` **prefere a versão cujo major == Angular alvo** (lib que versiona junto, ex: `ngx-mask@16` para ng16 — o build Ivy *daquele* Angular), caindo para a maior estável com peer compatível, depois pré-release. Evita pegar a `latest` (ex: `@18`, build de ng18) que por forward-compat não roda no ng16.
+
+### upgradeThirdPartyForIvy — subir libs View Engine no gate v16 (ngcc removido)
+
+O `ngcc` foi **removido no Angular 16**. Libs de terceiros em major **antigo** (compiladas em View Engine / pré-Ivy — ex: `ngx-mask@11`, `ngx-toastr@13` de 2021) não são mais consumíveis → `NG6002 "does not appear to be an NgModule class"` em cascata por todos os módulos que as importam. O `pinCompatibleThirdParty` **não** as sobe porque o peer é **frouxo** (`>=10` cobre 16). Mas elas **versionam junto com o Angular** (existe `ngx-mask@16` etc.).
+
+`upgradeThirdPartyForIvy(v)` roda **no loop, gate `v >= 16`** (segue o princípio "subir só onde quebra" — abaixo do v16 as libs funcionam via ngcc, então `11→15` não sofre churn): para cada lib de terceiros com major instalado < alvo, resolve a versão Ivy (`resolveCompatibleVersion` → `highestStableWithMajor` para libs sem peer mas que trackeiam, ex: `ngx-echarts`) e **pina exato**. Reporta em `report.notes` **quem subiu** (mudança de API a revisar — a maioria das libs é estável entre majors; ngx-mask é a exceção) e **quem é irresolvível** (`ngx-currency` pulou 3→19 sem ng16; `ngx-swiper-wrapper` abandonada → troca manual). O migrador **não** conserta uso de API específico da lib (seria específico de biblioteca) — sobe a versão e reporta.
+
 **Acesso à rede é premissa do pipeline**, não exceção: todo passo já faz `npm install`/`ng update`. A consulta ao registry (`curl`, via host — `wrapCommand` só embrulha `npm/npx/node` em Docker) segue a mesma premissa. Registry default `https://registry.npmjs.org/`, sobrescrito por `NPM_CONFIG_REGISTRY`.
 
 `patchThirdPartyVersions()` continua existindo como **auditoria final** (passo 12): reporta no `report.notes` qualquer incompatibilidade remanescente que a resolução não cobriu.

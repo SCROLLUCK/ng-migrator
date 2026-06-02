@@ -5,7 +5,7 @@ import { join } from 'path';
 import semver from 'semver';
 import { destPath, SKIP_DIRS, report } from './context.mjs';
 import { readJson, writeJson, capture } from './utils.mjs';
-import { getMajor, hasPackage } from './packages.mjs';
+import { getMajor, hasPackage, getInstalledMajor } from './packages.mjs';
 import { fixTsconfigLocations } from './preflight.mjs';
 
 // @angular-devkit/architect e build-optimizer usam 0.NNxx.y (ex: v12 = 0.1200.7), não ^12.0.0.
@@ -498,7 +498,14 @@ export function resolveCompatibleVersion(pkgName, angularMajor) {
     };
     const valid = Object.keys(packument.versions).filter(v => semver.valid(v));
     const stable = valid.filter(v => !semver.prerelease(v)).sort(semver.rcompare);
-    for (const v of stable) { if (matches(v)) { best = v; break; } }
+    // 0. PREFERE a versão cujo MAJOR == angularMajor (lib que versiona junto com o Angular, ex:
+    //    ngx-mask@16 p/ ng16) — é o build Ivy "daquele" Angular. Evita pegar a latest (ex: @18,
+    //    build de ng18) que por forward-compat não roda em ng16.
+    const sameMajor = stable.filter(v => getMajor(v) === angularMajor);
+    for (const v of sameMajor) { if (matches(v)) { best = v; break; } }
+    // 1. estável (qualquer major) cujo peer inclui o alvo
+    if (!best) for (const v of stable) { if (matches(v)) { best = v; break; } }
+    // 2. pré-release (libs beta/rc-only)
     if (!best) {
       const pre = valid.filter(v => semver.prerelease(v)).sort(semver.rcompare);
       for (const v of pre) { if (matches(v)) { best = v; break; } }
@@ -506,6 +513,52 @@ export function resolveCompatibleVersion(pkgName, angularMajor) {
   }
   _resolveCache.set(key, best);
   return best;
+}
+
+// Maior versão estável de `pkgName` cujo MAJOR == `major` (para libs que versionam junto com o
+// Angular mas têm peer frouxo/ausente — ex: ngx-mask peer `>=10`, ou ngx-currency sem peer).
+function highestStableWithMajor(pkgName, major) {
+  const p = fetchPackument(pkgName);
+  if (!p?.versions) return null;
+  const same = Object.keys(p.versions).filter(v => semver.valid(v) && !semver.prerelease(v) && getMajor(v) === major);
+  return same.length ? same.sort(semver.rcompare)[0] : null;
+}
+
+// No gate v16+ (ngcc removido): libs de terceiros em major ANTIGO (View Engine/pré-Ivy) viram
+// NG6002 ("does not appear to be an NgModule class"). Sobe cada lib de terceiros cujo major
+// instalado < alvo para a versão Ivy compatível (preferindo major == alvo). Não força quem não
+// tem versão resolvível (abandonada) — reporta em notes para troca manual. Reporta quem subiu
+// (mudança de API a revisar). Abaixo do v16, NÃO roda (libs legadas funcionam via ngcc).
+export function upgradeThirdPartyForIvy(angularMajor) {
+  const pkgPath = join(destPath, 'package.json');
+  if (!existsSync(pkgPath)) return [];
+  const pkg = readJson(pkgPath);
+  const pinned = [], unresolved = [];
+  for (const section of ['dependencies', 'devDependencies']) {
+    for (const name of Object.keys(pkg[section] || {})) {
+      if (THIRD_PARTY_SKIP_PREFIXES.some(p => name.startsWith(p))) continue;
+      if (name === 'rxjs' || name === 'zone.js' || name === 'typescript' || name === 'tslib') continue;
+      const installedMajor = getInstalledMajor(name) || getMajor(pkg[section][name]);
+      if (!installedMajor || installedMajor >= angularMajor) continue; // já no major (ou acima)
+      const target = resolveCompatibleVersion(name, angularMajor) || highestStableWithMajor(name, angularMajor);
+      if (target && getMajor(target) > installedMajor) {
+        const from = pkg[section][name];
+        pkg[section][name] = target;            // EXATO (sem ^) — trava na versão Ivy resolvida
+        pinned.push({ name, from, to: target });
+      } else if (!target && installedMajor < 13) {
+        unresolved.push(name);                  // View Engine sem versão Ivy resolvível
+      }
+    }
+  }
+  if (pinned.length) {
+    writeJson(pkgPath, pkg);
+    console.log(`  ↳ Libs de terceiros → Ivy (ng${angularMajor}): ${pinned.map(p => `${p.name} ${p.from}→${p.to}`).join(', ')}`);
+    report.notes.push(`[ng${angularMajor}] Libs de terceiros subidas de major para Ivy (ngcc removido) — revise mudanças de API: ${pinned.map(p => `${p.name} ${p.from} → ${p.to}`).join(', ')}`);
+  }
+  if (unresolved.length) {
+    report.notes.push(`[ng${angularMajor}] Libs de terceiros SEM versão Ivy compatível (View Engine, quebram com ngcc removido) — troque/remova manualmente: ${unresolved.join(', ')}`);
+  }
+  return pinned;
 }
 
 // Antes de cada ng update: para cada lib de terceiros cujo peer @angular/core NÃO

@@ -33,6 +33,7 @@ import {
   fixLegacyMaterial, verifyTsconfigPaths, syncVersions,
   resolveNodeTypesOverride, extraPackages, extractConflictPackages,
   pinCompatibleThirdParty, listConflictPackageNames, captureAngularEcosystem,
+  upgradeThirdPartyForIvy,
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
 import { migrateFlexLayoutToTailwind } from './migrator/flex-layout.mjs';
@@ -352,6 +353,11 @@ for (let v = startVersion; v <= opts.to; v++) {
     console.log(`\n  🔄 Migrando Material legacy → MDC...`);
     fixLegacyMaterial();
   }
+
+  // v16+: o ngcc foi removido → libs de terceiros em major antigo (View Engine) viram NG6002.
+  // Sobe as que versionam junto com o Angular para a versão Ivy; reporta as irresolvíveis.
+  // Abaixo do v16, intocadas (funcionam via ngcc) — "subir só onde quebra".
+  if (v >= 16) upgradeThirdPartyForIvy(v);
 
   verifyTsconfigPaths();
   resolveNodeTypesOverride(v);  // evita EOVERRIDE no npm install do ng update
