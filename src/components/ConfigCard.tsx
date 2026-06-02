@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import type { MigrationData } from '../types'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '../lib/i18n'
-import { FolderOpen, ChevronDown, ChevronUp } from 'lucide-react'
+import { FolderOpen, ChevronDown, ChevronUp, LoaderCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -63,6 +63,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   const [stepsOpen, setStepsOpen] = useState(false)
   const [selectedSteps, setSelectedSteps] = useState<Set<string>>(new Set(ALL_STEPS))
   const [error, setError] = useState<string | null>(null)
+  const [starting, setStarting] = useState(false)
   const [browsing, setBrowsing] = useState(false)
   const [loadPath, setLoadPath] = useState(() => localStorage.getItem('ng-migrator.loadPath') ?? '')
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -141,6 +142,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
 
     const skippedSteps = ALL_STEPS.filter((s) => !selectedSteps.has(s))
 
+    setStarting(true)
     try {
       const res = await fetch('/api/migrate', {
         method: 'POST',
@@ -165,6 +167,8 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
       onStart()
     } catch {
       setError(t('failedConnectServer'))
+    } finally {
+      setStarting(false)
     }
   }
 
@@ -318,10 +322,15 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
         {!isRunning ? (
           <Button
             onClick={handleStart}
+            disabled={starting}
             size="lg"
-            className="w-full bg-linear-to-br from-[#2E7D32] to-green text-white font-semibold hover:opacity-90"
+            className="w-full bg-linear-to-br from-[#2E7D32] to-green text-white font-semibold hover:opacity-90 disabled:opacity-70"
           >
-            {t('startMigration')}
+            {starting ? (
+              <><LoaderCircle className="size-4 animate-spin" /> {t('startingMigration')}</>
+            ) : (
+              t('startMigration')
+            )}
           </Button>
         ) : (
           <Button
