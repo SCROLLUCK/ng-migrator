@@ -36,7 +36,7 @@ import {
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
 import { migrateFlexLayoutToTailwind } from './migrator/flex-layout.mjs';
-import { fixMangledSassNamespaceDefs, fixJsonNamedImports } from './migrator/transforms.mjs';
+import { fixMangledSassNamespaceDefs, fixJsonNamedImports, ensureSkipLibCheck } from './migrator/transforms.mjs';
 import { writeReport, writeMigrationData, hydrateReportFromDisk, markRollbackInReport } from './migrator/report.mjs';
 import { buildCheck } from './migrator/build-check.mjs';
 
@@ -207,6 +207,8 @@ if (continuingFromExisting) {
   // Angular 12+ barra named import de *.json (`import { version } from '../package.json'`) →
   // converte para default import + destructuring (quebra já no 1º update). One-shot no início.
   fixJsonNamedImports();
+  // skipLibCheck cedo: evita erros de .d.ts de terceiros/@types nos builds intermediários.
+  ensureSkipLibCheck();
 
   // Se o projeto já tem imports legacy (source >= v15), migra agora
   if ((opts.from ?? getInstalledMajor('@angular/core')) >= 15) {

@@ -1002,6 +1002,25 @@ export function fixSubjectEmit() {
 // remove o prefixo `NS.` desse nome em TODO o arquivo (definição + chamadas), restaurando a função
 // custom (sem colidir com o Material real, que mantém o `mat.` namespaced em outras chamadas).
 // Roda no loop após cada ng update (o do Material é quem mangleia). Idempotente; no-op se nada.
+// Liga `skipLibCheck` no tsconfig.json ANTES do loop. Sem ele, os `.d.ts` de terceiros e do
+// @types/node (cujo último patch costuma usar sintaxe de um TS mais novo que o do Angular daquele
+// step — ex: @types/node@16.18.x com http2 genérico quebra o TS 4.6 do ng13) emitem dezenas de
+// erros de parse/tipo nos builds intermediários. skipLibCheck é type-check only (não muda emit/
+// runtime), é prática padrão do Angular, e o modernizeTsconfig já o liga — mas tarde. Idempotente.
+export function ensureSkipLibCheck() {
+  const tsconfigPath = join(destPath, 'tsconfig.json');
+  if (!existsSync(tsconfigPath)) return false;
+  try {
+    const tc = readJson(tsconfigPath);
+    tc.compilerOptions ??= {};
+    if (tc.compilerOptions.skipLibCheck === true) return false;
+    tc.compilerOptions.skipLibCheck = true;
+    writeJson(tsconfigPath, tc);
+    console.log('  ↳ tsconfig.json: skipLibCheck = true (ignora ruído de .d.ts de terceiros/@types)');
+    return true;
+  } catch { return false; }
+}
+
 // Angular 12+ trata arquivos `.json` como módulo de DEFAULT export e barra o named import
 // (`import { version } from '../package.json'`) com:
 //   "Should not import the named export 'version' ... from default-exporting module".
