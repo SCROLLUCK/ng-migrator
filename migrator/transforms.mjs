@@ -270,17 +270,38 @@ export function fixSubjectVoid() {
       .replace(/new\s+Subject\s*<unknown>\s*\(\)/g, 'new Subject<void>()')
       .replace(
         /((?:private|protected|public|readonly)\s+)?(\w+)(\$?)\s*(?:=\s*)new\s+Subject\s*\(\)/g,
-        (match, _mod, name, dollar) => {
-          // Converte para Subject<void> se: nome típico de destroy/unsubscribe, OU se há
-          // chamada `.next()` SEM argumento (RxJS 7+: Subject<unknown>.next() exige 1 arg → TS2554).
-          const nextNoArg = new RegExp(`\\b${name}\\${dollar || ''}\\s*\\.next\\(\\s*\\)`).test(src);
-          return /(?:unsubscribe|destroy|teardown|stop|complete|close)/i.test(name) || nextNoArg
+        (match, _mod, name) => {
+          // Converte para Subject<void> APENAS Subjects de ciclo de vida (destroy/unsubscribe…), que
+          // nunca recebem valor. NÃO converte por "tem `.next()` argless": um Subject pode receber
+          // valor em OUTRO componente, e <void> quebraria `.next(valor)`. As chamadas argless são
+          // tratadas por fixSubjectNextArgless (`.next(undefined as any)`), seguro p/ qualquer tipo.
+          return /(?:unsubscribe|destroy|teardown|stop|complete|close)/i.test(name)
             ? match.replace('new Subject()', 'new Subject<void>()') : match;
         },
       );
     if (out !== src) { writeFileSync(full, out); count++; }
   });
   if (count > 0) console.log(`  ↳ Subject<void>: ${count} arquivo(s)`);
+  return count;
+}
+
+// RxJS 6 permitia `subject.next()` SEM argumento (value era opcional); RxJS 7 exige 1 arg → TS2554
+// nos builds a partir do ng13 (onde o rxjs vira 7). O projeto buildava limpo no ng11. Fix UNIVERSAL
+// e seguro, independente do tipo do Subject (void/boolean/custom): passa `undefined as any` na
+// chamada argless — replica o comportamento do RxJS 6 (emitia undefined), preserva o tipo (chamadas
+// `.next(valor)` continuam válidas) e não exige análise cross-file do tipo. Idempotente (só casa
+// parênteses vazios). Harmless para `.next()` de iteradores (value é opcional lá).
+export function fixSubjectNextArgless() {
+  let count = 0;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!/\.next\(\s*\)/.test(src)) return;
+    const out = src.replace(/\.next\(\s*\)/g, '.next(undefined as any)');
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
+  if (count > 0) console.log(`  ↳ .next() argless → .next(undefined as any): ${count} arquivo(s)`);
   return count;
 }
 

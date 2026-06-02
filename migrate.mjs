@@ -38,7 +38,7 @@ import { runModernizationMigrations } from './migrator/orchestrate.mjs';
 import { migrateFlexLayoutToTailwind } from './migrator/flex-layout.mjs';
 import {
   fixMangledSassNamespaceDefs, fixJsonNamedImports, ensureSkipLibCheck,
-  fixThrowError, fixSubjectVoid, fixRxjsInternalCompat,
+  fixThrowError, fixSubjectVoid, fixSubjectNextArgless, fixRxjsInternalCompat,
 } from './migrator/transforms.mjs';
 import { writeReport, writeMigrationData, hydrateReportFromDisk, markRollbackInReport } from './migrator/report.mjs';
 import { buildCheck } from './migrator/build-check.mjs';
@@ -477,6 +477,7 @@ for (let v = startVersion; v <= opts.to; v++) {
     console.log(`\n  🔄 RxJS 7 compat (throwError factory + Subject.next + internal-compatibility)...`);
     report.modernize.throwErrorFixed = fixThrowError();
     fixSubjectVoid();
+    fixSubjectNextArgless();
     fixRxjsInternalCompat();
     report.modernize._rxjsCompatBoundary = true;
   }

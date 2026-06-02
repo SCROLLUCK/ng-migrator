@@ -15,7 +15,7 @@ import { convertLazyModulesToRoutes, convertRemainingRoutingModules, removeUnuse
 import { patchThirdPartyVersions } from './ng-update.mjs';
 import {
   fixUntypedForms, fixReservedKeywordVariables, fixThrowError, fixTsCompat,
-  fixMomentImport, fixSubjectVoid, fixVoidOutputEmit, fixReadonlySignalInputAssignments,
+  fixMomentImport, fixSubjectVoid, fixSubjectNextArgless, fixVoidOutputEmit, fixReadonlySignalInputAssignments,
   fixReadonlySignalQueryAssignments,
   fixSignalPropertyAccess, fixSubjectEmit, fixDoubleCommas, fixTs2663SignalAccess,
   fixSassImports, fixStyleUrls, inlinePolyfills,
@@ -123,6 +123,7 @@ export function runModernizationMigrations() {
     console.log(`\n  🔄 throwError  (RxJS 7 factory function)...`);
     report.modernize.throwErrorFixed = fixThrowError() || report.modernize.throwErrorFixed;
     fixSubjectVoid();
+    fixSubjectNextArgless();
     fixTsCompat();
     commitStep('throwError', 'throwError factory + RxJS/TS fixes');
     buildCheck('throwError');
