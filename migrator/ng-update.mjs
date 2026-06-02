@@ -382,7 +382,12 @@ function angularVersionInRange(angularMajor, peerRange) {
   if (!peerRange) return false;
   const band = `>=${angularMajor}.0.0 <${angularMajor + 1}.0.0`;
   try {
-    return semver.intersects(peerRange, band, { includePrerelease: true });
+    // includePrerelease SÓ quando o peer tem pré-release (`-`). Com versões PARCIAIS (`>=14` sem
+    // `.0.0`), `includePrerelease: true` faz o semver casar a band adjacente por engano —
+    // `intersects(">=14", ">=13.0.0 <14.0.0", {includePrerelease:true})` retorna `true` (BUG):
+    // foi o que deu ngx-pipes@3.2.2 (peer `>=14`) como "compatível com Angular 13".
+    const opts = peerRange.includes('-') ? { includePrerelease: true } : undefined;
+    return semver.intersects(peerRange, band, opts);
   } catch {
     return false; // range não-semver (ex: tag git, "*" tratado abaixo)
   }
