@@ -116,10 +116,12 @@ export function runModernizationMigrations() {
     buildCheck('untypedForms');
   }
 
-  // 2c. throwError() → factory function (RxJS 7)
+  // 2c. throwError() → factory function (RxJS 7). Os fixes RxJS já podem ter rodado no boundary
+  // rxjs→7 (loop) — aqui é idempotente + cobre o fixTsCompat (renames de Material v15, só seguros
+  // no fim). `||` preserva a contagem do boundary se nada novo for encontrado aqui.
   if (!skipSteps.has('throwError')) {
     console.log(`\n  🔄 throwError  (RxJS 7 factory function)...`);
-    report.modernize.throwErrorFixed = fixThrowError();
+    report.modernize.throwErrorFixed = fixThrowError() || report.modernize.throwErrorFixed;
     fixSubjectVoid();
     fixTsCompat();
     commitStep('throwError', 'throwError factory + RxJS/TS fixes');

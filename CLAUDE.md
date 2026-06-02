@@ -194,6 +194,9 @@ Regra: cada item sai **no ponto onde de fato quebra**, e **só se a migração c
 | **`@angular/flex-layout`** | sem versão **v16+** | gate `v === 16` no loop |
 | **Material `legacy-*`** | removido no **v17** | gate `v === 17` no loop (`fixLegacyMaterial`) |
 | **`core-js`** (polyfills legados) | só no **builder esbuild (v17)** | `inlinePolyfills()` (step do builder) — `preflight()` **não** remove |
+| **RxJS 6→7** (`throwError`/`Subject.next`/`internal-compatibility`) | quando o **rxjs vira 7** (tipicamente ng13) | boundary no loop (`getInstalledMajor('rxjs') >= 7`), não só no fim |
+
+**Modernizações tied a uma dependência rodam no boundary da dependência, não no fim.** Os fixes de **RxJS 6→7** (`fixThrowError` → factory, `fixSubjectVoid` → `Subject.next()` com arg, `fixRxjsInternalCompat` → `rxjs/internal-compatibility` removido no 7) são **transforms de texto puro** atrelados ao rxjs, não schematics do Angular. O rxjs vira 7 já no **ng13** (o `ng update` resolve), mas a modernização rodava no fim → os erros (`TS2554` em `.next()`, `TS2307` em `internal-compatibility`, `throwError(valor)`) quebravam os builds intermediários. Por isso rodam **no loop, no boundary `rxjs >= 7`** (one-shot via `report.modernize._rxjsCompatBoundary`). O `fixTsCompat()` (que tem **renames de Material v15**, NÃO seguros no ng13) **fica no fim** — só o `fixRxjsInternalCompat` foi extraído dele para o boundary. Os schematics de modernização do Angular (standalone, signals, control-flow) **seguem no fim** (maturidade do schematic — ver "rodar intercalado bagunça"). O step `throwError` da modernização vira rede de segurança idempotente (`|| ` preserva a contagem do boundary).
 
 ### flex-layout → Tailwind no gate v16 (não eager, não em alvo < 16)
 

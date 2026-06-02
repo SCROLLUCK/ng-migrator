@@ -114,23 +114,37 @@ export function fixReservedKeywordVariables() {
 
 // ─── Fix TypeScript/RxJS compatibility issues ────────────────────────────────
 
+// rxjs/internal-compatibility foi removido no RxJS 7. Transform de texto puro, SEGURO no boundary
+// rxjs→7 (ng13) — separado do fixTsCompat (que tem renames de Material v15, não-seguros no ng13).
+// Trata o `isObject` (caso comum) reescrevendo o uso pra check nativo e remove o import; remove os
+// imports de outros símbolos (se usados, viram TS2304 visível pro dev — substituição é por símbolo).
+export function fixRxjsInternalCompat() {
+  let count = 0;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+  walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
+    const src = readFileSync(full, 'utf8');
+    if (!src.includes('rxjs/internal-compatibility')) return;
+    let out = src;
+    out = out.replace(/import\s*\{[^}]*\bisObject\b[^}]*\}\s*from\s*['"]rxjs\/internal-compatibility['"]\s*;?\n?/g, '');
+    out = out.replace(/\bisObject\s*\(([^)]+)\)/g, '($1 !== null && typeof $1 === \'object\')');
+    out = out.replace(/import\s*\{[^}]*\}\s*from\s*['"]rxjs\/internal-compatibility['"]\s*;?\n?/g, '');
+    if (out !== src) { writeFileSync(full, out); count++; }
+  });
+  if (count > 0) console.log(`  ↳ rxjs/internal-compatibility removido: ${count} arquivo(s)`);
+  return count;
+}
+
 export function fixTsCompat() {
   let count = 0;
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return 0;
 
+  fixRxjsInternalCompat(); // idempotente (também roda no boundary rxjs→7)
+
   walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
     let src = readFileSync(full, 'utf8');
     let out = src;
-
-      // rxjs/internal-compatibility was removed in RxJS 7
-      if (out.includes('rxjs/internal-compatibility')) {
-        out = out.replace(
-          /import\s*\{[^}]*\bisObject\b[^}]*\}\s*from\s*['"]rxjs\/internal-compatibility['"]\s*;?\n?/g, '');
-        out = out.replace(/\bisObject\s*\(([^)]+)\)/g, '($1 !== null && typeof $1 === \'object\')');
-        out = out.replace(
-          /import\s*\{[^}]*\}\s*from\s*['"]rxjs\/internal-compatibility['"]\s*;?\n?/g, '');
-      }
 
       // _countGroupLabelsBeforeLegacyOption → _countGroupLabelsBeforeOption (Material v15)
       out = out.replace(/_countGroupLabelsBeforeLegacyOption/g, '_countGroupLabelsBeforeOption');

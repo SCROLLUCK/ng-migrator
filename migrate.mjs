@@ -36,7 +36,10 @@ import {
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
 import { migrateFlexLayoutToTailwind } from './migrator/flex-layout.mjs';
-import { fixMangledSassNamespaceDefs, fixJsonNamedImports, ensureSkipLibCheck } from './migrator/transforms.mjs';
+import {
+  fixMangledSassNamespaceDefs, fixJsonNamedImports, ensureSkipLibCheck,
+  fixThrowError, fixSubjectVoid, fixRxjsInternalCompat,
+} from './migrator/transforms.mjs';
 import { writeReport, writeMigrationData, hydrateReportFromDisk, markRollbackInReport } from './migrator/report.mjs';
 import { buildCheck } from './migrator/build-check.mjs';
 
@@ -465,6 +468,18 @@ for (let v = startVersion; v <= opts.to; v++) {
   // O schematic do Material (no ng update) pode manglear `@function`/`@mixin` custom que shadowam
   // nomes do Material em `@function mat.define-X(` (Sass inválido). Desfaz antes do build deste step.
   fixMangledSassNamespaceDefs();
+
+  // RxJS 6→7 quebra `throwError(valor)`, `Subject.next()` (sem arg) e `rxjs/internal-compatibility`
+  // JÁ quando o rxjs vira 7 (tipicamente no ng13) — não só no fim. São transforms de texto puro
+  // tied à DEPENDÊNCIA (não schematics do Angular), então rodam com segurança neste boundary. Os
+  // schematics de modernização (standalone/signals) seguem no fim (maturidade). One-shot via flag.
+  if (!report.modernize._rxjsCompatBoundary && getInstalledMajor('rxjs') >= 7) {
+    console.log(`\n  🔄 RxJS 7 compat (throwError factory + Subject.next + internal-compatibility)...`);
+    report.modernize.throwErrorFixed = fixThrowError();
+    fixSubjectVoid();
+    fixRxjsInternalCompat();
+    report.modernize._rxjsCompatBoundary = true;
+  }
 
   run('git add -A');
   run(`git commit -m "chore: Angular ${v}" -m "[ng-migrator-step:ng${v}]" --allow-empty`);
