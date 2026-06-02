@@ -1031,7 +1031,25 @@ export function fixJsonNamedImports() {
       if (out !== content) { writeFileSync(full, out); fixed++; }
     });
   } catch { /* ignore */ }
-  if (fixed) console.log(`  ↳ named import de *.json → default import em ${fixed} arquivo(s) (Angular 12+)`);
+
+  // O default import de um módulo JSON (`export =`) exige `allowSyntheticDefaultImports` no tsconfig,
+  // senão dá TS1259. Garante a flag (type-check only — não muda emit/runtime; o bundler já resolve o
+  // default do JSON como o objeto). Só mexe no tsconfig se de fato convertemos algo.
+  if (fixed) {
+    try {
+      const tsconfigPath = join(destPath, 'tsconfig.json');
+      if (existsSync(tsconfigPath)) {
+        const tc = readJson(tsconfigPath);
+        tc.compilerOptions ??= {};
+        if (!tc.compilerOptions.allowSyntheticDefaultImports) {
+          tc.compilerOptions.allowSyntheticDefaultImports = true;
+          writeJson(tsconfigPath, tc);
+          console.log('  ↳ tsconfig.json: allowSyntheticDefaultImports = true (default import de JSON)');
+        }
+      }
+    } catch { /* ignore */ }
+    console.log(`  ↳ named import de *.json → default import em ${fixed} arquivo(s) (Angular 12+)`);
+  }
   return fixed;
 }
 
