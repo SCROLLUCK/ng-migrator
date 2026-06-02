@@ -267,9 +267,12 @@ export function resolveNodeTypesOverride(targetVersion) {
   const pkg = readJson(pkgPath);
   let changed = false;
 
+  // EXATO, sem `^`: `^16.18.0` deixa o npm pegar o último patch da linha (ex: 16.18.126), cujo
+  // `.d.ts` (http2 genérico) usa sintaxe de um TS mais novo que o do step → erros de parse. O
+  // skipLibCheck cobre isso, mas pinar exato também evita a deriva e mantém a instalação reprodutível.
   const nodeTypesTarget =
-    targetVersion <= 12 ? '^14.18.0'
-    : targetVersion <= 16 ? '^16.18.0'
+    targetVersion <= 12 ? '14.18.0'
+    : targetVersion <= 16 ? '16.18.0'
     : null;
 
   if (nodeTypesTarget !== null) {
@@ -559,7 +562,10 @@ export function pinCompatibleThirdParty(angularMajor) {
   };
 
   const applyPin = (section, name, target, reason) => {
-    const newRange = `^${target}`;
+    // EXATO, sem `^`: a versão resolvida é a MAIOR compatível com ESTE major. Com `^${target}` o
+    // npm pode subir para um minor mais novo INCOMPATÍVEL — ex: `^3.0.0` deixa instalar ngx-pipes
+    // 3.2.0 (peer `14 - 15`), reintroduzindo o erro. Pinar exato trava na versão compatível.
+    const newRange = target;
     if (pkg[section][name] === newRange) return;
     console.log(`  ↳ ${name}: ${pkg[section][name]} → ${newRange} (${reason})`);
     pinned.push({ name, from: pkg[section][name], to: newRange });
