@@ -90,14 +90,14 @@ export function syncVersions(targetVersion) {
     }
   }
 
-  // @types/node: versão compatível com o TypeScript de cada passo da migração.
-  // @types/node@18.7+ usa `export type { type X }` (requer TS 4.5+).
-  // @types/node@20.4+ usa Symbol.dispose/asyncDispose (requer TS 5.2+).
-  // Upgrades progressivos via overrides conforme o TS evolui a cada ng update.
+  // @types/node: versão compatível com o TypeScript de cada passo da migração. EXATO (sem `^`): o
+  // último patch da linha (ex: 16.18.126) usa sintaxe nova demais p/ o TS do step → erro de PARSE em
+  // node_modules/@types/node/*.d.ts (que o skipLibCheck NÃO cobre). Override e dep direto idênticos
+  // (alinhamento abaixo) → sem EOVERRIDE.
   const nodeTypesTarget =
-    targetVersion <= 12 ? '^14.18.0'   // TS 4.1-4.3: pré-4.5 syntax
-    : targetVersion <= 16 ? '^16.18.0' // TS 4.4-4.9: seguro, sem Disposable
-    : null;                             // Angular 17+: remover override (TS 5.2+ suporta 20+)
+    targetVersion <= 12 ? '14.18.0'   // TS 4.1-4.3
+    : targetVersion <= 16 ? '16.18.0' // TS 4.4-4.9
+    : null;                            // Angular 17+: remover override (TS 5.2+ suporta 20+)
 
   if (nodeTypesTarget !== null) {
     if (!pkg.overrides) pkg.overrides = {};
@@ -269,13 +269,13 @@ export function resolveNodeTypesOverride(targetVersion) {
   const pkg = readJson(pkgPath);
   let changed = false;
 
-  // Mantém `^` (caret): o npm 9+ exige que o valor do override BATA com o spec do dep direto, senão
-  // EOVERRIDE. O `^16.18.0` casa com o dep direto (alinhado abaixo); o problema de `.d.ts` do último
-  // patch (16.18.x novo demais p/ o TS do step) é coberto pelo skipLibCheck (ligado cedo), não por
-  // pinar exato aqui (que quebraria o match override↔dep). Pin exato só p/ libs normais (applyPin).
+  // EXATO, sem `^`: `^16.18.0` deixa o npm pegar o último patch (16.18.126), cujo `.d.ts` (http/http2
+  // genérico) usa sintaxe NOVA DEMAIS para o TS do step → erro de PARSE (TS1005/TS1109). skipLibCheck
+  // NÃO cobre isso (pula type-check de .d.ts, não o parse). Pinar exato (16.18.0) trava num patch que
+  // o TS 4.6 (ng13) parseia. Não dá EOVERRIDE porque o dep direto é alinhado ao MESMO valor exato.
   const nodeTypesTarget =
-    targetVersion <= 12 ? '^14.18.0'
-    : targetVersion <= 16 ? '^16.18.0'
+    targetVersion <= 12 ? '14.18.0'
+    : targetVersion <= 16 ? '16.18.0'
     : null;
 
   if (nodeTypesTarget !== null) {
