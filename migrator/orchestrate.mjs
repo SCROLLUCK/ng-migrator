@@ -53,8 +53,9 @@ export function runModernizationMigrations() {
   }
 
   // 0. @angular/flex-layout → Tailwind CSS
-  if (!skipSteps.has('flexLayout') && (hasPackage('@angular/flex-layout') || (() => {
-    // Verifica se há atributos fx* nos templates (o pacote já foi removido do package.json no preflight)
+  // Normalmente já foi feito ANTES do loop (migrate.mjs), pra não deixar imports órfãos durante o
+  // ng update. Aqui é rede de segurança: só roda se ainda não foi migrado E o projeto ainda usa flex.
+  if (!skipSteps.has('flexLayout') && !report.modernize.flexLayoutMigrated && (hasPackage('@angular/flex-layout') || (() => {
     const hasFx = (dir) => {
       try {
         for (const e of readdirSync(dir)) {

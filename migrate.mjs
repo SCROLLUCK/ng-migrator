@@ -35,6 +35,7 @@ import {
   pinCompatibleThirdParty, listConflictPackageNames, captureAngularEcosystem,
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
+import { migrateFlexLayoutToTailwind } from './migrator/flex-layout.mjs';
 import { writeReport, writeMigrationData, hydrateReportFromDisk, markRollbackInReport } from './migrator/report.mjs';
 import { buildCheck } from './migrator/build-check.mjs';
 
@@ -266,6 +267,17 @@ if (!continuingFromExisting || resuming) {
   if (npmInstall().status !== 0) {
     console.error('\n❌ npm install falhou. Verifique o package.json e tente novamente.');
     process.exit(1);
+  }
+
+  // flex-layout → Tailwind ANTES do loop (em runs frescos). @angular/flex-layout não tem versão
+  // Angular 16+ e precisa sair antes do loop; convertê-lo aqui (código + pacote juntos) evita
+  // imports órfãos (TS2307 → cascata) durante todo o ng update. No-op se o projeto não usa flex.
+  if (!continuingFromExisting) {
+    const fl = migrateFlexLayoutToTailwind();
+    if (fl.htmlCount || fl.tsCount) {
+      report.modernize.flexLayoutMigrated = fl;
+      run('git add -A && git commit -m "refactor: @angular/flex-layout → Tailwind (pré-loop)" -m "[ng-migrator-step:flexLayout]" --allow-empty', { ignoreError: true });
+    }
   }
 
   buildCheck(`ngUpdate_${detectedVersion || 11}`);

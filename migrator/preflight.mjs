@@ -28,7 +28,9 @@ export function preflight() {
     'codelyzer', 'protractor',
     '@types/jasminewd2',               // tipagens WebDriver2, exclusivas do Protractor
     'jasmine-spec-reporter',            // reporter do protractor.conf.js, nunca usado pelo Karma
-    '@angular/flex-layout',            // descontinuado pelo Google, sem versão Angular 16+
+    // NÃO remover @angular/flex-layout aqui: o código (FlexLayoutModule/fx*) ainda o usa. Removê-lo
+    // cedo deixa imports órfãos → TS2307 no SharedModule → cascata de NG6002/NG8001 por todo o app.
+    // A migrateFlexLayoutToTailwind() (rodada antes do loop) converte o código E remove o pacote.
   ]) {
     for (const section of ['dependencies', 'devDependencies']) {
       if (pkg[section]?.[name]) {

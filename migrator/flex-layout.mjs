@@ -7,6 +7,16 @@ import { run } from './utils.mjs';
 
 export function migrateFlexLayoutToTailwind() {
   const srcDir = join(destPath, 'src');
+  const pkgPath = join(destPath, 'package.json');
+
+  // Guard: só age se o projeto realmente depende de @angular/flex-layout. Sem isso, esta função
+  // instalaria Tailwind e criaria tailwind.config em QUALQUER projeto migrado (indesejado).
+  let usesFlex = false;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    usesFlex = !!(pkg.dependencies?.['@angular/flex-layout'] || pkg.devDependencies?.['@angular/flex-layout']);
+  } catch { /* ignore */ }
+  if (!usesFlex) return { htmlCount: 0, tsCount: 0 };
 
   // ── fxLayout → Tailwind ──────────────────────────────────────────────────
 
@@ -186,6 +196,20 @@ module.exports = {
     }
     break;
   }
+
+  // Remove o pacote @angular/flex-layout do package.json (auto-contido: o preflight não mexe mais
+  // nisso). Lê fresco — o `npm install -D tailwind` acima já reescreveu o package.json em disco.
+  try {
+    const fresh = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    let removed = false;
+    for (const sec of ['dependencies', 'devDependencies']) {
+      if (fresh[sec]?.['@angular/flex-layout']) { delete fresh[sec]['@angular/flex-layout']; removed = true; }
+    }
+    if (removed) {
+      writeFileSync(pkgPath, JSON.stringify(fresh, null, 2) + '\n');
+      console.log('  ↳ @angular/flex-layout removido do package.json (convertido para Tailwind)');
+    }
+  } catch { /* ignore */ }
 
   console.log(`  ↳ flex-layout → Tailwind: ${htmlCount} template(s), ${tsCount} TypeScript(s)`);
   return { htmlCount, tsCount };
