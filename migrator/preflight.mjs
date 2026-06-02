@@ -71,12 +71,11 @@ export function preflight() {
     }
   }
 
-  // core-js não é necessário em Angular 12+ com evergreen browsers
-  if (pkg.dependencies?.['core-js']) {
-    delete pkg.dependencies['core-js'];
-    console.log('  ↳ core-js removido (desnecessário em Angular 12+)');
-    changed = true;
-  }
+  // core-js NÃO é removido aqui de propósito: ele não quebra nenhum `ng update` (não é peer do
+  // Angular) — só os imports legados de polyfills.ts (core-js/es6|es7) atrapalham o builder esbuild
+  // (v17). Removê-lo cedo deixaria imports órfãos no loop e estragaria migrações de alvo < 17 que
+  // ainda usam core-js. A limpeza acontece no inlinePolyfills() (step do builder). Ver princípio
+  // "remover só quando realmente quebra" no CLAUDE.md.
 
   // node-sass é módulo NATIVO (compila via node-gyp, exige Python + toolchain). As imagens
   // Docker node:NN não têm Python → o `npm install` quebra inteiro ("Can't find Python")

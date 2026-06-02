@@ -269,17 +269,6 @@ if (!continuingFromExisting || resuming) {
     process.exit(1);
   }
 
-  // flex-layout → Tailwind ANTES do loop (em runs frescos). @angular/flex-layout não tem versão
-  // Angular 16+ e precisa sair antes do loop; convertê-lo aqui (código + pacote juntos) evita
-  // imports órfãos (TS2307 → cascata) durante todo o ng update. No-op se o projeto não usa flex.
-  if (!continuingFromExisting) {
-    const fl = migrateFlexLayoutToTailwind();
-    if (fl.htmlCount || fl.tsCount) {
-      report.modernize.flexLayoutMigrated = fl;
-      run('git add -A && git commit -m "refactor: @angular/flex-layout → Tailwind (pré-loop)" -m "[ng-migrator-step:flexLayout]" --allow-empty', { ignoreError: true });
-    }
-  }
-
   buildCheck(`ngUpdate_${detectedVersion || 11}`);
 }
 
@@ -335,7 +324,21 @@ for (let v = startVersion; v <= opts.to; v++) {
 
   const packages = [`@angular/core@${v}`, `@angular/cli@${v}`, ...extraPackages(v)].join(' ');
 
-  // Before v17: Angular Material drops legacy-* — migrate them first
+  // ── "Preflight" DESTE update: remove/converte só o que quebraria a subida para v ──────────
+  // Princípio: não remover nada eager no início — cada item sai no ponto onde de fato quebra,
+  // e só se a migração chega lá. Assim alvo baixo (ex: 11→12) não perde nada que ainda funciona.
+
+  // @angular/flex-layout não tem versão v16+ → converte para Tailwind ANTES de subir para o 16
+  // (remove pacote + código juntos; no-op se o projeto não usa flex). Abaixo do v16, intocado.
+  if (v === 16) {
+    const fl = migrateFlexLayoutToTailwind();
+    if (fl.htmlCount || fl.tsCount) {
+      report.modernize.flexLayoutMigrated = fl;
+      run('git add -A && git commit -m "refactor: @angular/flex-layout → Tailwind" -m "[ng-migrator-step:flexLayout]"', { ignoreError: true });
+    }
+  }
+
+  // Angular Material remove os pacotes legacy-* no v17 → migra MatLegacy* → Mat* antes de subir.
   if (v === 17) {
     console.log(`\n  🔄 Migrando Material legacy → MDC...`);
     fixLegacyMaterial();

@@ -989,27 +989,37 @@ export function fixSubjectEmit() {
 
 // ─── polyfills.ts → zone.js inline em angular.json ───────────────────────────
 
+// Remove imports de polyfills legados do polyfills.ts: core-js/es6|es7/* (paths que NÃO existem no
+// core-js 3 → "Could not resolve"), classlist.js, web-animations-js, intl — desnecessários em
+// navegadores evergreen / Angular moderno. Idempotente. É chamado no preflight (pareado com a
+// remoção do pacote core-js, pra não deixar imports órfãos durante o loop — mesmo padrão do
+// flex-layout) e em inlinePolyfills() no fim. Retorna true se removeu algo.
+export function stripLegacyPolyfillImports() {
+  const polyfillsPath = join(destPath, 'src', 'polyfills.ts');
+  if (!existsSync(polyfillsPath)) return false;
+  let content = readFileSync(polyfillsPath, 'utf8');
+  const legacyPolyfillRe = /^[ \t]*import\s+['"](?:core-js\/(?:es[67]|modules\/es[67])|classlist\.js|web-animations-js|intl(?:\/.*)?)['"];?[ \t]*\r?\n?/gm;
+  if (!legacyPolyfillRe.test(content)) return false;
+  content = content.replace(legacyPolyfillRe, '');
+  writeFileSync(polyfillsPath, content);
+  console.log('  ↳ polyfills legados removidos (core-js es6/es7, classlist, intl…)');
+  return true;
+}
+
 export function inlinePolyfills() {
   const polyfillsPath = join(destPath, 'src', 'polyfills.ts');
   if (!existsSync(polyfillsPath)) return false;
 
-  let content = readFileSync(polyfillsPath, 'utf8');
-
   // Normalize legacy zone.js path: 'zone.js/dist/zone' → 'zone.js'
+  let content = readFileSync(polyfillsPath, 'utf8');
   if (content.includes('zone.js/dist/zone')) {
     content = content.replace(/zone\.js\/dist\/zone/g, 'zone.js');
     writeFileSync(polyfillsPath, content);
   }
 
-  // Remove imports de polyfills legados: core-js/es6/* e core-js/es7/* (paths removidos no
-  // core-js 3 → "Could not resolve"), classlist.js, web-animations-js, intl — desnecessários
-  // em navegadores evergreen / Angular moderno. Sem isso o polyfills.ts quebra o build esbuild.
-  const legacyPolyfillRe = /^[ \t]*import\s+['"](?:core-js\/(?:es[67]|modules\/es[67])|classlist\.js|web-animations-js|intl(?:\/.*)?)['"];?[ \t]*\r?\n?/gm;
-  if (legacyPolyfillRe.test(content)) {
-    content = content.replace(legacyPolyfillRe, '');
-    writeFileSync(polyfillsPath, content);
-    console.log('  ↳ polyfills legados removidos (core-js es6/es7, classlist, intl…)');
-  }
+  // Rede de segurança (idempotente — normalmente já feito no preflight).
+  stripLegacyPolyfillImports();
+  content = readFileSync(polyfillsPath, 'utf8');
 
   const stripped = content
     .replace(/\/\/.*$/gm, '')

@@ -181,11 +181,25 @@ Regras `@typescript-eslint/quotes` e `@typescript-eslint/dot-notation` foram rem
 
 `@angular-eslint/*` desatualizado (ex: `@angular-eslint@1`, era ng10/11) peer-depende de `@angular-devkit/architect`/`@angular/cli` antigos (`~0.1100`, `>=12 <13`…). Isso faz o `ng update` **abortar com `Incompatible peer dependencies`** e cair em `--force` em **todo step** — churn inútil, porque o `addEslint()` (step `eslint`) roda `ng add @angular/eslint` no fim e re-instala a versão correta. Por isso o `preflight()` **remove todo o toolchain `@angular-eslint/*`** (mesma lógica do TSLint — lint é dev-only, não afeta build/runtime). Os arquivos de config (`.eslintrc`/`eslint.config`) ficam; o `addEslint()` cuida da config no final. `eslint`/`@typescript-eslint/*` **não** são removidos (não peer-dependem de pacotes Angular, então não disparam conflito por versão; o `ng-update.mjs` já alinha as versões deles).
 
-### flex-layout → Tailwind roda ANTES do loop (não remover o pacote cedo e deixar o código)
+### Princípio: remover/transformar só no ponto onde realmente quebra (preflight por update)
 
-`@angular/flex-layout` não tem versão Angular 16+ e precisa sair antes do loop. A tentação é removê-lo no `preflight()` — mas o **código** (`FlexLayoutModule` nos `.module.ts`, `fx*` nos templates) continua usando o pacote. Removê-lo cedo deixa **imports órfãos** → `TS2307: Cannot find module '@angular/flex-layout'` no `SharedModule` → como **todo módulo importa o `SharedModule`**, vira `NG6002` ("não resolve pra um NgModule") em cada um → cascata de `NG8001`/`NG8004`/`NG8002` (componentes desconhecidos) por todo o app. Num projeto real isso gerou **373 erros** no baseline a partir de **um** pacote faltando — mascarando se a migração realmente funcionou.
+Remoções/transformações destrutivas **não** devem ser eager no `preflight()` inicial. Isso (a) deixa **lacunas que quebram os builds intermediários** (pacote removido mas código ainda usando) e (b) **estraga migrações de alvo baixo** — se o usuário sobe só `11→12`, não faz sentido remover algo que só quebra no v16/v17; o projeto final dele para de rodar.
 
-Solução: `migrateFlexLayoutToTailwind()` é **auto-contida** (converte templates + remove `FlexLayoutModule` dos módulos + remove o pacote do `package.json`) e roda **antes do loop de `ng update`** (`migrate.mjs`, logo após o npm install inicial, em runs frescos). O `preflight()` **não** remove mais o pacote. Assim o build fica limpo do v11 ao v21 (sem imports órfãos), e o flex-layout sai antes do v16 onde quebraria. A função tem **guard**: no-op se o projeto não declara `@angular/flex-layout` (não instala Tailwind nem cria `tailwind.config` em projeto que não usa flex). O step `flexLayout` da modernização vira **rede de segurança** (só roda se `!report.modernize.flexLayoutMigrated` e ainda houver flex) — ex: resume a partir de um ponto.
+Regra: cada item sai **no ponto onde de fato quebra**, e **só se a migração chega lá**. Na prática há um "preflight por `ng update`" — no topo de cada iteração do loop (`migrate.mjs`), gateado por versão:
+
+| Item | Quebra de fato em | Onde é tratado |
+|---|---|---|
+| `tslint`/`codelyzer`/`protractor`/`@angular-eslint` | peer-conflict **já no 1º `ng update`** | `preflight()` inicial (correto — é o ponto onde quebram) |
+| `node-sass` | 1º boundary de troca de Node (Docker sem Python) | `preflight()` inicial |
+| **`@angular/flex-layout`** | sem versão **v16+** | gate `v === 16` no loop |
+| **Material `legacy-*`** | removido no **v17** | gate `v === 17` no loop (`fixLegacyMaterial`) |
+| **`core-js`** (polyfills legados) | só no **builder esbuild (v17)** | `inlinePolyfills()` (step do builder) — `preflight()` **não** remove |
+
+### flex-layout → Tailwind no gate v16 (não eager, não em alvo < 16)
+
+`@angular/flex-layout` não tem versão Angular 16+. Removê-lo eager no `preflight()` deixa **imports órfãos** (`FlexLayoutModule` nos `.module.ts`, `fx*` nos templates) → `TS2307: Cannot find module '@angular/flex-layout'` no `SharedModule` → como **todo módulo importa o `SharedModule`**, vira `NG6002` em cada um → cascata de `NG8001`/`NG8004`/`NG8002` por todo o app (num projeto real: **373 erros** a partir de **um** pacote faltando, mascarando se a migração funcionou).
+
+Solução: `migrateFlexLayoutToTailwind()` é **auto-contida** (converte templates + remove `FlexLayoutModule` dos módulos + remove o pacote) e roda **no loop, no gate `v === 16`** (antes de subir para o 16). Abaixo do v16 ele fica **intocado** — `11→12`/`11→15` mantêm o flex-layout funcionando. A função tem **guard**: no-op se o projeto não declara `@angular/flex-layout` (não instala Tailwind à toa). O step `flexLayout` da modernização vira **rede de segurança**, gateado por `opts.to >= 16 && !report.modernize.flexLayoutMigrated` (cobre resume que pula o loop). `core-js` segue o mesmo princípio: não é removido no preflight (não quebra `ng update`, só o esbuild) — `inlinePolyfills()` limpa os imports legados no step do builder via `stripLegacyPolyfillImports()`.
 
 ### NG2012 — NgModules incompatíveis com Ivy
 

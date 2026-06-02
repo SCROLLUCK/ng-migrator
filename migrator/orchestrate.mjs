@@ -53,9 +53,11 @@ export function runModernizationMigrations() {
   }
 
   // 0. @angular/flex-layout → Tailwind CSS
-  // Normalmente já foi feito ANTES do loop (migrate.mjs), pra não deixar imports órfãos durante o
-  // ng update. Aqui é rede de segurança: só roda se ainda não foi migrado E o projeto ainda usa flex.
-  if (!skipSteps.has('flexLayout') && !report.modernize.flexLayoutMigrated && (hasPackage('@angular/flex-layout') || (() => {
+  // flex-layout é um caso de "teto de versão": só precisa sair ao subir para o v16 (sem versão
+  // v16+), e isso é feito no loop (migrate.mjs, gate v===16). Abaixo do v16 ele ainda funciona —
+  // converter exigiria Tailwind e quebraria o estilo, então NÃO convertemos (opts.to >= 16). Aqui
+  // é rede de segurança: só roda se o alvo passa do v16, ainda não foi migrado e ainda há flex.
+  if (!skipSteps.has('flexLayout') && opts.to >= 16 && !report.modernize.flexLayoutMigrated && (hasPackage('@angular/flex-layout') || (() => {
     const hasFx = (dir) => {
       try {
         for (const e of readdirSync(dir)) {
