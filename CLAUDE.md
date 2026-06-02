@@ -381,6 +381,14 @@ O motivo de o loop ser iterativo, e não um único retry: o `ng update` reporta 
 
 `node-sass` é um módulo **nativo**: compila libsass via `node-gyp`, que exige **Python + toolchain de build**. As imagens Docker `node:NN` usadas no isolamento não têm Python. No boundary onde o Node troca de major (ex: ng12 node:14 → ng13 node:16), o `node-sass` tenta **recompilar** o binário nativo, não encontra Python (`Can't find Python executable "python"`), e o `npm install` falha **inteiro** — deixando o `node_modules` incompleto. `node-sass` está deprecado; `preflight()` o troca por `sass` (dart-sass, JS puro, sem build nativo — o que o Angular CLI já usa). Fix genérico: vale para qualquer projeto que ainda dependa de `node-sass`.
 
+### fixMangledSassNamespaceDefs — desfaz definição Sass com namespace (schematic do Material)
+
+O `ng update` do **Angular Material** roda um schematic que renomeia `mat-X(` → `mat.define-X(` em TODA ocorrência — inclusive na **definição** de `@function`/`@mixin` **custom** que shadowam um nome do Material (ex: projeto define a sua própria `@function mat-light-theme(...)` com params extras). Vira `@function mat.define-light-theme(` — **Sass inválido** (`expected "("`) → quebra o build do step. Sass nunca permite definição com namespace. `fixMangledSassNamespaceDefs()` (em `transforms.mjs`, rodado **no loop após cada ng update**, antes do build do step) faz 2 passes: (1) coleta cross-file os nomes definidos como `NS.name`; (2) remove o prefixo `NS.` desses nomes em **todos** os `.scss` (definição **e** chamadas — podem estar em arquivos diferentes), restaurando a função custom sem colidir com o `mat.` real. Genérico, idempotente.
+
+### fixJsonNamedImports — named import de *.json vira default import (Angular 12+)
+
+Angular 12+ trata `.json` como módulo de **default export** e barra `import { version } from '../package.json'` com *"Should not import the named export 'version' … from default-exporting module"* → quebra o build já no 1º update. `fixJsonNamedImports()` (em `transforms.mjs`, chamado **uma vez no início**, após `cleanupLegacyFiles`) troca por **default import + destructuring**: `import _packageJson from '…'; const { version } = _packageJson;`. Mantém os bindings (incl. `as` aliases) idênticos — **não reescreve usos** (mais seguro que renomear identificadores). Vale para qualquer `import { … } from '….json'`.
+
 ### fixSassImports conservador — não quebrar mixins de theming
 
 A migração `@import` → `@use` é correta, mas o **`@use` não repassa membros transitivos** como o `@import` fazia: se A faz `@use 'tema' as *` e o tema faz `@use 'lib'`, os mixins/funções de `lib` **não** ficam disponíveis em A (faltaria `@forward`). Em sistemas de theming (Nebular, Bootstrap, Material) isso quebra o build com `Undefined mixin` (ex: `@include nb-install-component()`).

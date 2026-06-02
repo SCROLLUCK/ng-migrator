@@ -1002,6 +1002,39 @@ export function fixSubjectEmit() {
 // remove o prefixo `NS.` desse nome em TODO o arquivo (definição + chamadas), restaurando a função
 // custom (sem colidir com o Material real, que mantém o `mat.` namespaced em outras chamadas).
 // Roda no loop após cada ng update (o do Material é quem mangleia). Idempotente; no-op se nada.
+// Angular 12+ trata arquivos `.json` como módulo de DEFAULT export e barra o named import
+// (`import { version } from '../package.json'`) com:
+//   "Should not import the named export 'version' ... from default-exporting module".
+// Quebra o build. Fix genérico e SEGURO (sem reescrever usos): troca o named import por um default
+// import + destructuring no topo — os bindings (incl. aliases) continuam idênticos, então nenhuma
+// referência no código precisa mudar. Vale para qualquer `import { ... } from '...json'`.
+export function fixJsonNamedImports() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+  let fixed = 0;
+  const re = /import\s*\{([^}]+)\}\s*from\s*(['"])([^'"]+\.json)\2\s*;?/g;
+  try {
+    walkFiles(srcDir, (name) => name.endsWith('.ts'), (full) => {
+      const content = readFileSync(full, 'utf8');
+      if (!re.test(content)) return;
+      re.lastIndex = 0;
+      const out = content.replace(re, (_m, names, q, path) => {
+        const base = path.split('/').pop().replace(/\.json$/, '')
+          .replace(/[^A-Za-z0-9]+(.)/g, (_s, c) => c.toUpperCase());
+        const local = `_${base}Json`;
+        const destruct = names.split(',').map((s) => s.trim()).filter(Boolean).map((s) => {
+          const [key, alias] = s.split(/\s+as\s+/).map((x) => x.trim());
+          return alias ? `${key}: ${alias}` : key;
+        }).join(', ');
+        return `import ${local} from ${q}${path}${q};\nconst { ${destruct} } = ${local};`;
+      });
+      if (out !== content) { writeFileSync(full, out); fixed++; }
+    });
+  } catch { /* ignore */ }
+  if (fixed) console.log(`  ↳ named import de *.json → default import em ${fixed} arquivo(s) (Angular 12+)`);
+  return fixed;
+}
+
 export function fixMangledSassNamespaceDefs() {
   const srcDir = join(destPath, 'src');
   if (!existsSync(srcDir)) return 0;
