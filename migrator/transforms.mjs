@@ -994,6 +994,46 @@ export function fixSubjectEmit() {
 // navegadores evergreen / Angular moderno. Idempotente. É chamado no preflight (pareado com a
 // remoção do pacote core-js, pra não deixar imports órfãos durante o loop — mesmo padrão do
 // flex-layout) e em inlinePolyfills() no fim. Retorna true se removeu algo.
+// O schematic de update do Angular Material renomeia `mat-X(` → `mat.define-X(` em TODA ocorrência —
+// inclusive na DEFINIÇÃO de funções/mixins CUSTOM que shadowam um nome do Material. Ex: o projeto
+// define a sua própria `@function mat-light-theme(...)` (com params extras); o schematic vira
+// `@function mat.define-light-theme(` = Sass INVÁLIDO ("expected (") → quebra o build no step.
+// Sass nunca permite definição com namespace. Fix genérico: para cada `@function|@mixin NS.name(`,
+// remove o prefixo `NS.` desse nome em TODO o arquivo (definição + chamadas), restaurando a função
+// custom (sem colidir com o Material real, que mantém o `mat.` namespaced em outras chamadas).
+// Roda no loop após cada ng update (o do Material é quem mangleia). Idempotente; no-op se nada.
+export function fixMangledSassNamespaceDefs() {
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+  const files = [];
+  try { walkFiles(srcDir, (name) => name.endsWith('.scss'), (full) => files.push(full)); } catch { return 0; }
+
+  // Passe 1: coleta os nomes com definição namespaced inválida em QUALQUER .scss (a definição e as
+  // chamadas podem estar em arquivos diferentes — o schematic do Material renomeou em todos).
+  const defRe = /@(?:function|mixin)\s+([A-Za-z_][\w-]*)\.([A-Za-z_][\w-]*)\s*\(/g;
+  const mangled = new Set();
+  for (const full of files) {
+    const c = readFileSync(full, 'utf8');
+    let m;
+    while ((m = defRe.exec(c))) mangled.add(`${m[1]}.${m[2]}`);
+  }
+  if (!mangled.size) return 0;
+
+  // Passe 2: remove o prefixo NS desses nomes em TODOS os .scss (definição + chamadas, cross-file).
+  let fixed = 0;
+  for (const full of files) {
+    let c = readFileSync(full, 'utf8');
+    let changed = false;
+    for (const ns of mangled) {
+      const next = c.split(ns).join(ns.split('.')[1]);
+      if (next !== c) { c = next; changed = true; }
+    }
+    if (changed) { writeFileSync(full, c); fixed++; }
+  }
+  console.log(`  ↳ Sass: ${mangled.size} definição(ões) com namespace inválido corrigida(s) em ${fixed} arquivo(s): ${[...mangled].join(', ')}`);
+  return fixed;
+}
+
 export function stripLegacyPolyfillImports() {
   const polyfillsPath = join(destPath, 'src', 'polyfills.ts');
   if (!existsSync(polyfillsPath)) return false;

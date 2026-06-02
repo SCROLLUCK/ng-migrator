@@ -36,6 +36,7 @@ import {
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
 import { migrateFlexLayoutToTailwind } from './migrator/flex-layout.mjs';
+import { fixMangledSassNamespaceDefs } from './migrator/transforms.mjs';
 import { writeReport, writeMigrationData, hydrateReportFromDisk, markRollbackInReport } from './migrator/report.mjs';
 import { buildCheck } from './migrator/build-check.mjs';
 
@@ -455,6 +456,10 @@ for (let v = startVersion; v <= opts.to; v++) {
       console.log(`  ↳ Schematics aplicados via --migrate-only`);
     }
   }
+
+  // O schematic do Material (no ng update) pode manglear `@function`/`@mixin` custom que shadowam
+  // nomes do Material em `@function mat.define-X(` (Sass inválido). Desfaz antes do build deste step.
+  fixMangledSassNamespaceDefs();
 
   run('git add -A');
   run(`git commit -m "chore: Angular ${v}" -m "[ng-migrator-step:ng${v}]" --allow-empty`);
