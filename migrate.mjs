@@ -341,10 +341,12 @@ for (let v = startVersion; v <= opts.to; v++) {
   // @angular/flex-layout não tem versão v16+ → converte para Tailwind ANTES de subir para o 16
   // (remove pacote + código juntos; no-op se o projeto não usa flex). Abaixo do v16, intocado.
   if (v === 16) {
+    const flH0 = capture('git rev-parse HEAD');
     const fl = migrateFlexLayoutToTailwind();
     if (fl.htmlCount || fl.tsCount) {
       report.modernize.flexLayoutMigrated = fl;
       run('git add -A && git commit -m "refactor: @angular/flex-layout → Tailwind" -m "[ng-migrator-step:flexLayout]"', { ignoreError: true });
+      report.details['flexLayout'] = captureGitDiff(flH0, capture('git rev-parse HEAD'));
     }
   }
 
@@ -481,11 +483,15 @@ for (let v = startVersion; v <= opts.to; v++) {
   // schematics de modernização (standalone/signals) seguem no fim (maturidade). One-shot via flag.
   if (!report.modernize._rxjsCompatBoundary && getInstalledMajor('rxjs') >= 7) {
     console.log(`\n  🔄 RxJS 7 compat (throwError factory + Subject.next + internal-compatibility)...`);
+    const rxH0 = capture('git rev-parse HEAD');
     report.modernize.throwErrorFixed = fixThrowError();
     fixSubjectVoid();
     fixSubjectNextArgless();
     fixRxjsInternalCompat();
     report.modernize._rxjsCompatBoundary = true;
+    // Commit separado + diff por arquivo (mostra na UI quais arquivos a modernização tocou).
+    run('git add -A && git commit -m "refactor: RxJS 7 compat (throwError/Subject/internal-compatibility)" -m "[ng-migrator-step:throwError]"', { ignoreError: true });
+    report.details['throwError'] = captureGitDiff(rxH0, capture('git rev-parse HEAD'));
   }
 
   run('git add -A');

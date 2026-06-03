@@ -524,6 +524,18 @@ function highestStableWithMajor(pkgName, major) {
   return same.length ? same.sort(semver.rcompare)[0] : null;
 }
 
+// É uma lib Angular (provê NgModule/diretiva, peer-depende de @angular/core em ALGUMA versão)? Usado
+// para não tratar libs JS puras (core-js, moment, uuid, jwt-decode…) como "View Engine irresolvível".
+const _angularLibCache = new Map();
+function isAngularLib(name) {
+  if (_angularLibCache.has(name)) return _angularLibCache.get(name);
+  const p = fetchPackument(name);
+  const yes = !!p?.versions && Object.values(p.versions).some(m =>
+    m.peerDependencies?.['@angular/core'] || m.dependencies?.['@angular/core']);
+  _angularLibCache.set(name, yes);
+  return yes;
+}
+
 // No gate v16+ (ngcc removido): libs de terceiros em major ANTIGO (View Engine/pré-Ivy) viram
 // NG6002 ("does not appear to be an NgModule class"). Sobe cada lib de terceiros cujo major
 // instalado < alvo para a versão Ivy compatível (preferindo major == alvo). Não força quem não
@@ -538,6 +550,9 @@ export function upgradeThirdPartyForIvy(angularMajor) {
     for (const name of Object.keys(pkg[section] || {})) {
       if (THIRD_PARTY_SKIP_PREFIXES.some(p => name.startsWith(p))) continue;
       if (name === 'rxjs' || name === 'zone.js' || name === 'typescript' || name === 'tslib') continue;
+      // SÓ libs Angular de verdade: core-js/moment/uuid/jwt-decode… não têm NgModule (nenhuma versão
+      // peer-depende de @angular/core) → não precisam de Ivy, não entram nem como subida nem como nota.
+      if (!isAngularLib(name)) continue;
       const installedMajor = getInstalledMajor(name) || getMajor(pkg[section][name]);
       if (!installedMajor || installedMajor >= angularMajor) continue; // já no major (ou acima)
       const target = resolveCompatibleVersion(name, angularMajor) || highestStableWithMajor(name, angularMajor);
