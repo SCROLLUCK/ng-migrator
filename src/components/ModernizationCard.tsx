@@ -38,7 +38,10 @@ export function ModernizationCard({ data, query = '' }: Props) {
   const m = data.modernize
   const totalModernSteps = Object.keys(data.details).filter((k) => !k.startsWith('ngUpdate_')).length
   const isRunning = data.status === 'running'
-  const ngUpdateDone = data.ngUpdateSteps.length > 0
+  // A modernização só roda DEPOIS de todo o loop de ng update (até o alvo). Antes disso, nenhum
+  // step de modernização deve aparecer como "rodando" — senão o `inject` etc. piscam como pending
+  // já no ng update 13. Considera o loop concluído quando o alvo foi alcançado.
+  const ngUpdateDone = data.ngUpdateSteps.some((s) => s.version >= data.targetVersion)
   const q = query.toLowerCase()
   const intentionalSkips = new Set(data.skippedSteps ?? [])
 
