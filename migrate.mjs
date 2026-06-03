@@ -27,7 +27,7 @@ import {
   checkDocker, copyDir, run, capture, captureGitDiff, npmInstall, runCapture,
   setupTempNpmrc, restoreNpmrc, readJson,
 } from './migrator/utils.mjs';
-import { getInstalledMajor } from './migrator/packages.mjs';
+import { getInstalledMajor, hasPackage } from './migrator/packages.mjs';
 import { preflight, cleanupLegacyFiles } from './migrator/preflight.mjs';
 import {
   fixLegacyMaterial, verifyTsconfigPaths, syncVersions,
@@ -522,6 +522,15 @@ if (opts.modernize) {
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(' Modernização (inject / signals / output)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+  // Rede de segurança do flex-layout: o caminho normal é a correção proativa no loop (gate v16).
+  // Mas um resume que pula o loop não passa por lá — se o alvo é >= 16 e o pacote ainda está
+  // presente, dispara a MESMA correção aqui (a lógica fica 100% isolada na correção). hasPackage
+  // é o sinal de "ainda não migrado" (a correção remove o pacote ao converter).
+  if (opts.to >= 16 && !skipSteps.has('flexLayout') && hasPackage('@angular/flex-layout')) {
+    await runProactiveCorrections(16);
+  }
+
   runModernizationMigrations(); // cada step já grava commit individualmente
 
   // Correções específicas de lib disparadas pelos erros do ESTADO FINAL — moment (TS2349 após o

@@ -29,8 +29,13 @@
  * @property {(fn: (content: string, path: string) => string) => string[]} transformTs
  *   Aplica `fn` a cada `.ts` de `src/` (pula `.spec.ts`). Se `fn` devolver uma string DIFERENTE,
  *   grava o arquivo. Retorna os caminhos (relativos ao projeto) que mudaram.
+ * @property {(fn: (content: string, path: string) => string) => string[]} transformHtml
+ *   Como `transformTs`, mas para cada `.html` de `src/`. Retorna os caminhos que mudaram.
  * @property {(key: string, value: any) => boolean} setCompilerOption
  *   Garante uma opção em `tsconfig.json` (`compilerOptions[key] = value`). Retorna `true` se mudou.
+ * @property {(packages: string[]) => boolean} installDevDeps
+ *   Instala devDependencies de forma isolada (Docker, via o mesmo runner do pipeline). Retorna
+ *   `true` se rodou. A correção decide O QUE instalar; o ctx cuida de COMO (isolamento).
  */
 /**
  * Uma correção. O default export de cada arquivo em `corrections/` deve ter esta forma. Use UM gatilho:
@@ -83,7 +88,8 @@ export async function loadCorrections() {
  */
 function makeApplyCtx() {
   const srcDir = join(destPath, 'src');
-  const transformTs = (fn) => {
+  // Walker genérico: aplica `fn` a cada arquivo de `src/` que casa `match(name)`, grava se mudou.
+  const transformFiles = (match, fn) => {
     const changed = [];
     const walk = (dir) => {
       let entries;
@@ -91,7 +97,7 @@ function makeApplyCtx() {
       for (const e of entries) {
         const full = join(dir, e.name);
         if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(full); continue; }
-        if (!e.name.endsWith('.ts') || e.name.endsWith('.spec.ts')) continue;
+        if (!match(e.name)) continue;
         const src = readFileSync(full, 'utf8');
         const out = fn(src, full);
         if (typeof out === 'string' && out !== src) { writeFileSync(full, out); changed.push(relative(destPath, full).replace(/\\/g, '/')); }
@@ -99,6 +105,13 @@ function makeApplyCtx() {
     };
     walk(srcDir);
     return changed;
+  };
+  const transformTs = (fn) => transformFiles((n) => n.endsWith('.ts') && !n.endsWith('.spec.ts'), fn);
+  const transformHtml = (fn) => transformFiles((n) => n.endsWith('.html'), fn);
+  const installDevDeps = (packages) => {
+    if (!packages?.length) return false;
+    run(`npm install -D ${packages.map(p => `"${p}"`).join(' ')} --legacy-peer-deps --no-audit --no-fund`, { ignoreError: true });
+    return true;
   };
   const setCompilerOption = (key, value) => {
     const tsconfigPath = join(destPath, 'tsconfig.json');
@@ -112,7 +125,7 @@ function makeApplyCtx() {
       return true;
     } catch { return false; }
   };
-  return { destPath, srcDir, transformTs, setCompilerOption };
+  return { destPath, srcDir, transformTs, transformHtml, setCompilerOption, installDevDeps };
 }
 
 /**

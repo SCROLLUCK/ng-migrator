@@ -1,9 +1,8 @@
 import { spawnSync } from 'child_process';
-import { existsSync, readdirSync, statSync, readFileSync, appendFileSync, writeFileSync } from 'fs';
+import { existsSync, appendFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { destPath, report, skipSteps, SKIP_DIRS, opts } from './context.mjs';
+import { destPath, report, skipSteps, opts } from './context.mjs';
 import { capture, run, runUntilStable, captureGitDiff, scanForContent } from './utils.mjs';
-import { hasPackage } from './packages.mjs';
 import { writeMigrationData } from './report.mjs';
 import {
   fixNgModuleImports, copyModuleImportsToComponents, fixStandaloneImports,
@@ -22,7 +21,6 @@ import {
   modernizeTsconfig, addTsconfigPathAliases, migrateToApplicationBuilder, addEslint,
 } from './transforms.mjs';
 import { createAppConfigAndRoutes } from './app-config.mjs';
-import { migrateFlexLayoutToTailwind } from './flex-layout.mjs';
 import { buildCheck } from './build-check.mjs';
 
 export function runModernizationMigrations() {
@@ -52,29 +50,11 @@ export function runModernizationMigrations() {
     writeMigrationData();
   }
 
-  // 0. @angular/flex-layout → Tailwind CSS
-  // flex-layout é um caso de "teto de versão": só precisa sair ao subir para o v16 (sem versão
-  // v16+), e isso é feito no loop (migrate.mjs, gate v===16). Abaixo do v16 ele ainda funciona —
-  // converter exigiria Tailwind e quebraria o estilo, então NÃO convertemos (opts.to >= 16). Aqui
-  // é rede de segurança: só roda se o alvo passa do v16, ainda não foi migrado e ainda há flex.
-  if (!skipSteps.has('flexLayout') && opts.to >= 16 && !report.modernize.flexLayoutMigrated && (hasPackage('@angular/flex-layout') || (() => {
-    const hasFx = (dir) => {
-      try {
-        for (const e of readdirSync(dir)) {
-          const full = join(dir, e);
-          if (statSync(full).isDirectory() && !SKIP_DIRS.has(e)) { if (hasFx(full)) return true; continue; }
-          if (e.endsWith('.html') && readFileSync(full, 'utf8').match(/\bfx[A-Z]/)) return true;
-        }
-      } catch { }
-      return false;
-    };
-    return hasFx(join(destPath, 'src'));
-  })())) {
-    console.log(`\n  🔄 @angular/flex-layout → Tailwind CSS...`);
-    report.modernize.flexLayoutMigrated = migrateFlexLayoutToTailwind();
-    commitStep('flexLayout', '@angular/flex-layout → Tailwind');
-    buildCheck('flexLayout');
-  }
+  // 0. @angular/flex-layout → Tailwind: NÃO roda aqui. É uma correção PROATIVA
+  // (corrections/angular-flex-layout-tailwind.mjs, gate v16), disparada no loop por
+  // runProactiveCorrections(v). A rede de segurança para resume-que-pula-o-loop vive em
+  // migrate.mjs (antes desta função), também via runProactiveCorrections(16) — assim a lógica
+  // do flex-layout fica 100% isolada na correção, fora da modernização.
 
   // 1. inject(): constructor DI → inject()
   if (!skipSteps.has('inject')) {
