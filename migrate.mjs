@@ -37,6 +37,7 @@ import {
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
 import { migrateFlexLayoutToTailwind } from './migrator/flex-layout.mjs';
+import { runCorrections } from './migrator/corrections/index.mjs';
 import {
   fixMangledSassNamespaceDefs, fixJsonNamedImports, ensureSkipLibCheck,
   fixThrowError, fixSubjectVoid, fixSubjectNextArgless, fixRxjsInternalCompat,
@@ -509,6 +510,17 @@ for (let v = startVersion; v <= opts.to; v++) {
   report.ngUpdateSteps.push({ version: v, ok, peer: peerLog });
   report.ngUpdateSteps.sort((a, b) => a.version - b.version);
   if (opts.ngUpdateChecks) buildCheck(`ngUpdate_${v}`);
+
+  // Steps de CORREÇÃO disparados pelo build-check: se este step tem erros, roda as correções
+  // específicas (ngx-mask, etc.) cujo detect casa o erro. Conserta de verdade (runtime-safe),
+  // diferente da neutralização. Re-builda e re-checa após aplicar.
+  if (opts.ngUpdateChecks && (report.buildChecks?.[`ngUpdate_${v}`]?.total ?? 0) > 0) {
+    const applied = await runCorrections(v);
+    if (applied.length) {
+      run(`git add -A && git commit -m "fix: correções específicas de lib (ng${v})" -m "[ng-migrator-step:corrections]" --allow-empty`, { ignoreError: true });
+      buildCheck(`ngUpdate_${v}`); // re-mede após as correções
+    }
+  }
   writeMigrationData();
 }
 

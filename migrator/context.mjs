@@ -159,6 +159,8 @@ export const report = {
   },
   filesCreated: [],
   notes: [],
+  corrections: [],   // steps de correção específicos aplicados (lib, arquivos) — runtime-safe
+
   skippedSteps: [],  // steps that were intentionally skipped via NG_MIGRATOR_SKIP_STEPS
   details: {},   // key → [{path, action, lines}]
 };

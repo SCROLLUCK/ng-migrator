@@ -66,6 +66,7 @@ O entry point é `migrate.mjs` (~200 linhas — só o pipeline principal). Toda 
 | `migrator/flex-layout.mjs` | `migrateFlexLayoutToTailwind` |
 | `migrator/report.mjs` | `writeReport`, `writeMigrationData` |
 | `migrator/orchestrate.mjs` | `runModernizationMigrations` (com `commitStep` local) |
+| `migrator/corrections/` | Steps de **correção** específicos de lib (auto-descobertos): `index.mjs` (`loadCorrections`/`runCorrections`) + um arquivo por correção (ex: `ngx-mask.mjs`) |
 
 Sem build step, sem testes automatizados.
 
@@ -73,8 +74,12 @@ Sem build step, sem testes automatizados.
 
 ## Regras invioláveis
 
-### Fixes sempre genéricos, nunca específicos de biblioteca
-Todo fix deve resolver um padrão conhecido do Angular/TypeScript/RxJS, não um problema de uma lib específica. Se a solução só se aplica a `ngx-something`, não pertence ao migrador — pertence à documentação de migração daquela lib.
+### Fixes sempre genéricos, nunca específicos de biblioteca (modernização) — EXCETO correções
+Todo fix de **modernização** deve resolver um padrão conhecido do Angular/TypeScript/RxJS, não um problema de uma lib específica. Se a solução só se aplica a `ngx-something`, não pertence à modernização.
+
+**A exceção consciente: steps de CORREÇÃO** (`migrator/corrections/`). São uma categoria **separada** das modernizações e **podem ser específicas de lib** — porque são cirúrgicas, disparadas por erro, e isoladas. Resolvem quebras conhecidas que a modernização genérica não cobre (ex: `ngx-mask` v15+ removeu `NgxMaskModule` → `NgxMaskDirective`/`provideNgxMask()`). Distinção crucial vs **neutralização** (autoFixBuildErrors comenta `// TODO`/remove import → builda mas **runtime quebrado**): uma correção migra a API **de verdade** (runtime-safe).
+
+**Extensível**: cada correção é um arquivo `.mjs` auto-contido em `migrator/corrections/`, **auto-descoberto** (adicionar = soltar arquivo; no futuro, upload pela UI). Formato: `{ name, description, detect(ctx), apply(ctx) }`. `detect(ctx)` recebe `{ raw, codes:Set, angularMajor, hasPackage, getInstalledMajor }`; `apply(ctx)` recebe `{ destPath, srcDir, transformTs(fn) }` e usa **só o ctx** (não importa internals — seguro p/ correção enviada pela UI). `runCorrections(v)` builda, casa os `detect` e aplica; registra em `report.corrections` (separado de `report.notes`/neutralizado). **Disparado no loop pelo build-check** (`opts.ngUpdateChecks`): se o step `ngUpdate_v` tem erros, roda as correções e re-checa. `runtimeRaw` opcional permite disparar por erro de runtime no futuro.
 
 ### Nunca modificar o projeto de origem
 O migrador opera sempre sobre a cópia em `destPath`. O projeto original em `sourcePath` é somente-leitura.
