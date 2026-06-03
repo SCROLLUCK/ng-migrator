@@ -29,6 +29,8 @@
  * @property {(fn: (content: string, path: string) => string) => string[]} transformTs
  *   Aplica `fn` a cada `.ts` de `src/` (pula `.spec.ts`). Se `fn` devolver uma string DIFERENTE,
  *   grava o arquivo. Retorna os caminhos (relativos ao projeto) que mudaram.
+ * @property {(key: string, value: any) => boolean} setCompilerOption
+ *   Garante uma opção em `tsconfig.json` (`compilerOptions[key] = value`). Retorna `true` se mudou.
  */
 /**
  * Uma correção. O default export de cada arquivo em `corrections/` deve ter exatamente esta forma.
@@ -39,10 +41,10 @@
  * @property {(ctx: ApplyContext)  => { files: string[], summary: string }} apply  Aplica a correção.
  */
 
-import { readdirSync, readFileSync, writeFileSync } from 'fs';
+import { readdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname, relative } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { capture } from '../utils.mjs';
+import { capture, readJson, writeJson } from '../utils.mjs';
 import { destPath, report, SKIP_DIRS } from '../context.mjs';
 import { hasPackage, getInstalledMajor } from '../packages.mjs';
 
@@ -91,7 +93,19 @@ function makeApplyCtx() {
     walk(srcDir);
     return changed;
   };
-  return { destPath, srcDir, transformTs };
+  const setCompilerOption = (key, value) => {
+    const tsconfigPath = join(destPath, 'tsconfig.json');
+    if (!existsSync(tsconfigPath)) return false;
+    try {
+      const tc = readJson(tsconfigPath);
+      tc.compilerOptions ??= {};
+      if (tc.compilerOptions[key] === value) return false;
+      tc.compilerOptions[key] = value;
+      writeJson(tsconfigPath, tc);
+      return true;
+    } catch { return false; }
+  };
+  return { destPath, srcDir, transformTs, setCompilerOption };
 }
 
 /**

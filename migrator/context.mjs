@@ -47,7 +47,7 @@ export const opts = {
 // Usada por --resume-from para saber o que pular ao retomar de um step.
 export const MODERNIZATION_STEPS = [
   'flexLayout', 'inject', 'signals', 'reservedKeywords', 'untypedForms', 'throwError',
-  'fixMoment', 'standalone', 'standaloneFixed', 'controlFlow', 'ngClassToClass',
+  'standalone', 'standaloneFixed', 'controlFlow', 'ngClassToClass',
   'ngStyleToStyle', 'appConfig', 'lazyRoutes', 'builder', 'polyfills', 'tsconfig',
   'pathAliases', 'eslint', 'sass', 'modules', 'styleUrl', 'selfClosing',
   'cleanupImports', 'thirdPartyVersions', 'lintFix',

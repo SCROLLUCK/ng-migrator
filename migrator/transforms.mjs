@@ -146,16 +146,9 @@ export function fixTsCompat() {
     let src = readFileSync(full, 'utf8');
     let out = src;
 
-      // _countGroupLabelsBeforeLegacyOption → _countGroupLabelsBeforeOption (Material v15)
-      out = out.replace(/_countGroupLabelsBeforeLegacyOption/g, '_countGroupLabelsBeforeOption');
-      // _getLegacyOptionScrollPosition → _getOptionScrollPosition (Material v15)
-      out = out.replace(/_getLegacyOptionScrollPosition/g, '_getOptionScrollPosition');
-      // Material v15+: _control.ngControl return type widened to NgControl | AbstractControlDirective
-      // Cast is safe — in MatFormFieldControl context ngControl is always NgControl when not null.
-      // Must wrap in parens when followed by property access to avoid broken `x as T.prop` syntax.
-      out = out.replace(/(\._control\.ngControl)(?!\s+as\s+NgControl)(\.[A-Za-z_$])/g, '($1 as NgControl)$2');
-      // Fallback for standalone occurrences (not followed by property access)
-      out = out.replace(/(\._control\.ngControl)(?!\s+as\s+NgControl)(?!\s*\.\w)/g, '$1 as NgControl');
+      // (Os renames Material v15 — _countGroupLabelsBeforeLegacyOption, _getLegacyOptionScrollPosition,
+      //  ngControl as NgControl — viraram a correção `corrections/material-api-renames.mjs`, pois são
+      //  específicos do @angular/material e disparados por erro. Aqui só fica o que é genérico.)
 
       // Double commas in TypeScript arrays/imports (from schematic add/remove operations)
       out = out.replace(/,(\s*,)+/g, ',');

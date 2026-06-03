@@ -531,6 +531,15 @@ if (opts.modernize) {
   console.log(' Modernização (inject / signals / output)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   runModernizationMigrations(); // cada step já grava commit individualmente
+
+  // Correções específicas de lib disparadas pelos erros do ESTADO FINAL — moment (TS2349 após o
+  // esModuleInterop) e renames do @angular/material só aparecem depois das mudanças do próprio
+  // migrador, não no loop de ng update. Conserta de verdade (runtime-safe). Re-checa após aplicar.
+  const finalCorr = await runCorrections(opts.to);
+  if (finalCorr.length) {
+    run('git add -A && git commit -m "fix: correções específicas de lib (estado final)" -m "[ng-migrator-step:corrections]" --allow-empty', { ignoreError: true });
+    buildCheck('corrections');
+  }
 }
 
 // ─── Relatório final ─────────────────────────────────────────────────────────

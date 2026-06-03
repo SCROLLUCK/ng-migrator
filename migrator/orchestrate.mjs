@@ -15,7 +15,7 @@ import { convertLazyModulesToRoutes, convertRemainingRoutingModules, removeUnuse
 import { patchThirdPartyVersions } from './ng-update.mjs';
 import {
   fixUntypedForms, fixReservedKeywordVariables, fixThrowError, fixTsCompat,
-  fixMomentImport, fixSubjectVoid, fixSubjectNextArgless, fixVoidOutputEmit, fixReadonlySignalInputAssignments,
+  fixSubjectVoid, fixSubjectNextArgless, fixVoidOutputEmit, fixReadonlySignalInputAssignments,
   fixReadonlySignalQueryAssignments,
   fixSignalPropertyAccess, fixSubjectEmit, fixDoubleCommas, fixTs2663SignalAccess,
   fixSassImports, fixStyleUrls, inlinePolyfills,
@@ -129,13 +129,8 @@ export function runModernizationMigrations() {
     buildCheck('throwError');
   }
 
-  // 2d. moment: import * as moment → default import (requer esModuleInterop)
-  if (!skipSteps.has('fixMoment')) {
-    console.log(`\n  🔄 fixMoment  (moment default import)...`);
-    fixMomentImport();
-    commitStep('fixMoment', 'moment: namespace import → default import');
-    buildCheck('fixMoment');
-  }
+  // 2d. moment: agora é uma CORREÇÃO (corrections/moment-default-import.mjs) — específico do moment,
+  // disparada pelo TS2349 no estado final (após esModuleInterop). Não roda mais aqui.
 
   // 3. standalone migration (3 passos obrigatórios em sequência)
   if (!skipSteps.has('standalone')) {
