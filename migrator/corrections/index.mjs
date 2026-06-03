@@ -3,19 +3,41 @@
 // Diferente das modernizações (genéricas, regra inviolável), as CORREÇÕES são CIRÚRGICAS e PODEM
 // ser específicas de uma lib. Elas consertam erros conhecidos (ex: `NgxMaskModule` removido no
 // ngx-mask v15+) — disparadas pelo build-check (e futuramente runtime-check) que detectou o erro.
+// Migram a API DE VERDADE (runtime-safe), ao contrário da neutralização (comentar/remover).
 //
 // EXTENSÍVEL: cada correção é um arquivo `.mjs` auto-contido nesta pasta, auto-descoberto. Adicionar
-// uma correção = soltar um arquivo aqui (no futuro, via upload na UI). Formato de cada arquivo:
+// uma correção = soltar um arquivo aqui (no futuro, via upload na UI). Veja o template e a doc dos
+// campos no README ("Writing a correction") e o exemplo de referência em `ngx-mask.mjs`.
 //
-//   export default {
-//     name: 'ngx-mask-standalone',
-//     description: 'texto p/ o report',
-//     detect(ctx) { return boolean },          // ctx: { raw, codes:Set, angularMajor, hasPackage, getInstalledMajor }
-//     apply(ctx) { return { files:[...], summary } }, // ctx: { destPath, srcDir, transformTs(fn) }
-//   }
+// ─── Contrato (formato padrão de toda correção) ──────────────────────────────
 //
-// `apply` usa SÓ o ctx (não importa internals do migrador) — assim uma correção enviada pela UI é
-// segura e portátil.
+/**
+ * Contexto passado ao `detect()` — somente LEITURA do estado de erro do step atual.
+ * @typedef {Object} DetectContext
+ * @property {string}  raw              Saída combinada de build (+runtime futuro), sem códigos ANSI.
+ * @property {Set<string>} codes        Códigos de erro presentes (ex: `'TS2305'`, `'NG6002'`).
+ * @property {number}  angularMajor     Major do Angular deste step (ex: `16`).
+ * @property {(name: string) => boolean} hasPackage        O projeto declara este pacote?
+ * @property {(name: string) => number}  getInstalledMajor Major instalado de um pacote (0 se ausente).
+ */
+/**
+ * Contexto passado ao `apply()` — helpers de transformação. NÃO importe internals do migrador aqui:
+ * use só o ctx (assim uma correção enviada pela UI é portátil e segura).
+ * @typedef {Object} ApplyContext
+ * @property {string} destPath  Raiz do projeto migrado.
+ * @property {string} srcDir    `<destPath>/src`.
+ * @property {(fn: (content: string, path: string) => string) => string[]} transformTs
+ *   Aplica `fn` a cada `.ts` de `src/` (pula `.spec.ts`). Se `fn` devolver uma string DIFERENTE,
+ *   grava o arquivo. Retorna os caminhos (relativos ao projeto) que mudaram.
+ */
+/**
+ * Uma correção. O default export de cada arquivo em `corrections/` deve ter exatamente esta forma.
+ * @typedef {Object} Correction
+ * @property {string} name         Id único em kebab-case (ex: `'ngx-mask-standalone'`).
+ * @property {string} description  Uma linha para o report (o que a correção faz).
+ * @property {(ctx: DetectContext) => boolean} detect   Deve ativar para o erro atual?
+ * @property {(ctx: ApplyContext)  => { files: string[], summary: string }} apply  Aplica a correção.
+ */
 
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname, relative } from 'path';
@@ -26,7 +48,11 @@ import { hasPackage, getInstalledMajor } from '../packages.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Auto-descobre e carrega todas as correções desta pasta.
+/**
+ * Auto-descobre e carrega todas as correções desta pasta (todo `.mjs` exceto `index.mjs`).
+ * Ignora, com aviso, arquivos cujo default export não tem a forma {@link Correction}.
+ * @returns {Promise<Correction[]>}
+ */
 export async function loadCorrections() {
   let files = [];
   try { files = readdirSync(__dirname).filter(f => f.endsWith('.mjs') && f !== 'index.mjs'); } catch { return []; }
@@ -42,7 +68,10 @@ export async function loadCorrections() {
   return out;
 }
 
-// Helper passado às correções: transforma cada .ts de src/ e devolve os arquivos alterados.
+/**
+ * Monta o {@link ApplyContext} (o helper `transformTs` + paths) passado a `apply()`.
+ * @returns {ApplyContext}
+ */
 function makeApplyCtx() {
   const srcDir = join(destPath, 'src');
   const transformTs = (fn) => {
@@ -65,9 +94,14 @@ function makeApplyCtx() {
   return { destPath, srcDir, transformTs };
 }
 
-// Builda, extrai os códigos de erro, e roda as correções cujo `detect` casa. Registra em
-// report.corrections (separado de "neutralizado"). `runtimeRaw` (opcional) permite disparar por
-// erro de RUNTIME no futuro (ex: saída de `ng serve`/smoke test), além do build.
+/**
+ * Builda o projeto, extrai os códigos de erro e roda as correções cujo `detect()` casa. Registra
+ * as aplicadas em `report.corrections` (separado de `report.notes`/neutralizado).
+ * @param {number} angularMajor  Major do Angular do step atual (entra no {@link DetectContext}).
+ * @param {string} [runtimeRaw]  Saída de erro de RUNTIME (ex: `ng serve`/smoke test) — gatilho extra
+ *                               além do build, para casos "builda mas crasha". Opcional.
+ * @returns {Promise<Array<{ name: string, description: string, summary: string, files: string[], angularMajor: number }>>}
+ */
 export async function runCorrections(angularMajor, runtimeRaw = '') {
   const corrections = await loadCorrections();
   if (!corrections.length) return [];

@@ -211,6 +211,54 @@ ng serve    # test the app
 
 See `MIGRATION-REPORT.md` → **What to do next** for a prioritized checklist of manual tasks.
 
+## Corrections (library-specific, error-driven)
+
+Most fixes in ng-migrator are **generic** (Angular/TypeScript/RxJS patterns). But some build errors come from a **specific library** that had a breaking change between Angular majors — e.g. `ngx-mask` v15+ removed `NgxMaskModule` (it became the standalone `NgxMaskDirective` + `provideNgxMask()`). The generic engine can only *neutralize* these (remove the broken import → **builds but the feature is dead at runtime**).
+
+**Corrections** are a separate, opt-in category that may be **library-specific**. They migrate the API **for real** (runtime-safe), and are **triggered by the build-check** that detected the error. Each correction is a self-contained file in [`migrator/corrections/`](migrator/corrections/) and is **auto-discovered** — adding one is just dropping a file (a future UI will let users upload their own).
+
+### Writing a correction
+
+Create `migrator/corrections/<your-name>.mjs` with a default export of this exact shape (see [`ngx-mask.mjs`](migrator/corrections/ngx-mask.mjs) for a fully-commented reference, and the JSDoc typedefs in [`index.mjs`](migrator/corrections/index.mjs)):
+
+```js
+/** @type {import('./index.mjs').Correction} */
+export default {
+  // Unique id, kebab-case.
+  name: 'my-lib-fix',
+
+  // One line for the report (what this correction does).
+  description: 'my-lib vN: OldThing → NewThing',
+
+  // Should this correction run for the current error?  Keep it CHEAP and SPECIFIC.
+  // ctx: { raw, codes:Set<string>, angularMajor, hasPackage(name), getInstalledMajor(name) }
+  detect({ raw, codes, hasPackage }) {
+    return hasPackage('my-lib') && /OldThing/.test(raw) && codes.has('TS2305');
+  },
+
+  // Apply the fix. Use ONLY ctx (no migrator internals → portable / safe for UI-submitted files).
+  // ctx: { destPath, srcDir, transformTs(fn) }
+  //   transformTs((content, path) => newContent) → walks every .ts in src/, writes the changed ones,
+  //   returns the list of changed file paths.
+  apply({ transformTs }) {
+    const files = transformTs((content) => {
+      if (!content.includes('OldThing')) return content;     // file not affected → return unchanged
+      return content.replace(/\bOldThing\b/g, 'NewThing');   // the surgical transform
+    });
+    return { files, summary: `OldThing → NewThing in ${files.length} file(s)` };
+  },
+};
+```
+
+| Field | Type | Purpose |
+|---|---|---|
+| `name` | `string` | Unique kebab-case id. |
+| `description` | `string` | One line shown in the report. |
+| `detect(ctx)` | `(DetectContext) => boolean` | Whether to run, given the current error state. Keep it cheap/specific. |
+| `apply(ctx)` | `(ApplyContext) => { files, summary }` | The surgical transform; returns the changed files + a summary. |
+
+`detect` receives a read-only `DetectContext` (`raw` build output, `codes` set, `angularMajor`, `hasPackage`, `getInstalledMajor`). `apply` receives an `ApplyContext` whose `transformTs(fn)` is the only thing you need to read/rewrite files — **do not import migrator internals** (keeps corrections portable and safe for UI upload). Applied corrections are recorded in `report.corrections` and surfaced in the report, separate from neutralized/manual items.
+
 ## Known limitations
 
 - **Internal state signals** — converting `isLoading = false` to `isLoading = signal(false)` has no official schematic and requires manual refactoring.
