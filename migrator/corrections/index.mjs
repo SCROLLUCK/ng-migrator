@@ -33,18 +33,24 @@
  *   Garante uma opção em `tsconfig.json` (`compilerOptions[key] = value`). Retorna `true` se mudou.
  */
 /**
- * Uma correção. O default export de cada arquivo em `corrections/` deve ter exatamente esta forma.
+ * Uma correção. O default export de cada arquivo em `corrections/` deve ter esta forma. Use UM gatilho:
+ *  - `detect` (ERROR-DRIVEN): roda quando o erro aparece no build. A maioria. Simples (só ctx) →
+ *    portável/UI-uploadable.
+ *  - `gate`  (PROATIVO/ceiling): roda numa versão específica ANTES de quebrar (ex: flex-layout no v16,
+ *    que não tem versão v16 — esperar o erro = npm install já falhou). Pode ser BUILT-IN/complexa
+ *    (importar internals do migrador) — não é uma correção simples de UI.
  * @typedef {Object} Correction
  * @property {string} name         Id único em kebab-case (ex: `'ngx-mask-standalone'`).
  * @property {string} description  Uma linha para o report (o que a correção faz).
- * @property {(ctx: DetectContext) => boolean} detect   Deve ativar para o erro atual?
+ * @property {((ctx: DetectContext) => boolean)} [detect]  ERROR-DRIVEN: ativar para o erro atual?
+ * @property {((angularMajor: number) => boolean)} [gate]  PROATIVO: rodar neste major (antes do update)?
  * @property {(ctx: ApplyContext)  => { files: string[], summary: string }} apply  Aplica a correção.
  */
 
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname, relative } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { capture, readJson, writeJson } from '../utils.mjs';
+import { capture, run, captureGitDiff, readJson, writeJson } from '../utils.mjs';
 import { destPath, report, SKIP_DIRS } from '../context.mjs';
 import { hasPackage, getInstalledMajor } from '../packages.mjs';
 
@@ -63,8 +69,9 @@ export async function loadCorrections() {
     try {
       const mod = await import(pathToFileURL(join(__dirname, f)).href);
       const c = mod.default;
-      if (c?.name && typeof c.detect === 'function' && typeof c.apply === 'function') out.push(c);
-      else console.log(`  ⚠ correção '${f}' ignorada (formato inválido)`);
+      const hasTrigger = typeof c?.detect === 'function' || typeof c?.gate === 'function';
+      if (c?.name && hasTrigger && typeof c.apply === 'function') out.push(c);
+      else console.log(`  ⚠ correção '${f}' ignorada (formato inválido — precisa de name, apply e detect|gate)`);
     } catch (e) { console.log(`  ⚠ correção '${f}' falhou ao carregar: ${e.message}`); }
   }
   return out;
@@ -117,7 +124,7 @@ function makeApplyCtx() {
  * @returns {Promise<Array<{ name: string, description: string, summary: string, files: string[], angularMajor: number }>>}
  */
 export async function runCorrections(angularMajor, runtimeRaw = '') {
-  const corrections = await loadCorrections();
+  const corrections = (await loadCorrections()).filter(c => typeof c.detect === 'function');
   if (!corrections.length) return [];
   const buildRaw = capture('npx ng build --configuration development 2>&1; true').replace(/\x1b\[[0-9;]*m/g, '');
   const raw = buildRaw + '\n' + runtimeRaw;
@@ -140,6 +147,41 @@ export async function runCorrections(angularMajor, runtimeRaw = '') {
   if (applied.length) {
     (report.corrections ??= []).push(...applied);
     report.notes.push(`[ng${angularMajor}] Correções específicas aplicadas (runtime-safe): ${applied.map(a => a.name).join(', ')}`);
+  }
+  return applied;
+}
+
+/**
+ * Roda as correções PROATIVAS (gatilho `gate`) deste major, ANTES do `ng update`. Diferente do
+ * {@link runCorrections} (error-driven, builda e casa por código de erro), estas rodam pela versão
+ * — para casos "ceiling" sem versão no major alvo (ex: `@angular/flex-layout`, que não tem v16):
+ * esperar o erro seria tarde, o `npm install` do update já teria falhado. Cada correção que mexe
+ * na árvore é commitada (`[ng-migrator-step:corrections]`) e seu diff entra em `report.details`.
+ * @param {number} angularMajor  Major do Angular que está prestes a subir (entra no `gate`).
+ * @returns {Promise<Array<{ name: string, description: string, summary: string, files: string[], angularMajor: number }>>}
+ */
+export async function runProactiveCorrections(angularMajor) {
+  const corrections = (await loadCorrections()).filter(c => typeof c.gate === 'function' && c.gate(angularMajor));
+  if (!corrections.length) return [];
+  const applyCtx = makeApplyCtx();
+  const applied = [];
+  for (const c of corrections) {
+    try {
+      const h0 = capture('git rev-parse HEAD');
+      const result = c.apply(applyCtx) || {};
+      const dirty = capture('git status --porcelain').trim();
+      if (!dirty && !(result.files || []).length) continue; // no-op (ex: projeto não usa a lib)
+      run(`git add -A && git commit -m "fix(correção): ${c.name}" -m "[ng-migrator-step:corrections]"`, { ignoreError: true });
+      const diff = captureGitDiff(h0, capture('git rev-parse HEAD'));
+      report.details[c.name] = diff;
+      const files = (result.files || []).length ? result.files : Object.keys(diff);
+      console.log(`  🩹 correção proativa '${c.name}': ${result.summary || files.length + ' arquivo(s)'}`);
+      applied.push({ name: c.name, description: c.description || '', summary: result.summary || '', files, angularMajor });
+    } catch (e) { console.log(`  ⚠ correção '${c.name}' falhou: ${e.message}`); }
+  }
+  if (applied.length) {
+    (report.corrections ??= []).push(...applied);
+    report.notes.push(`[ng${angularMajor}] Correções proativas aplicadas: ${applied.map(a => a.name).join(', ')}`);
   }
   return applied;
 }

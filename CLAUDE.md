@@ -66,7 +66,7 @@ O entry point é `migrate.mjs` (~200 linhas — só o pipeline principal). Toda 
 | `migrator/flex-layout.mjs` | `migrateFlexLayoutToTailwind` |
 | `migrator/report.mjs` | `writeReport`, `writeMigrationData` |
 | `migrator/orchestrate.mjs` | `runModernizationMigrations` (com `commitStep` local) |
-| `migrator/corrections/` | Steps de **correção** específicos de lib (auto-descobertos): `index.mjs` (`loadCorrections`/`runCorrections`) + um arquivo por correção (ex: `ngx-mask.mjs`) |
+| `migrator/corrections/` | Steps de **correção** específicos de lib (auto-descobertos): `index.mjs` (`loadCorrections`/`runCorrections`/`runProactiveCorrections`) + um arquivo por correção (`ngx-mask.mjs`, `moment-default-import.mjs`, `material-api-renames.mjs`, `angular-flex-layout-tailwind.mjs`) |
 
 Sem build step, sem testes automatizados.
 
@@ -79,9 +79,19 @@ Todo fix de **modernização** deve resolver um padrão conhecido do Angular/Typ
 
 **A exceção consciente: steps de CORREÇÃO** (`migrator/corrections/`). São uma categoria **separada** das modernizações e **podem ser específicas de lib** — porque são cirúrgicas, disparadas por erro, e isoladas. Resolvem quebras conhecidas que a modernização genérica não cobre (ex: `ngx-mask` v15+ removeu `NgxMaskModule` → `NgxMaskDirective`/`provideNgxMask()`). Distinção crucial vs **neutralização** (autoFixBuildErrors comenta `// TODO`/remove import → builda mas **runtime quebrado**): uma correção migra a API **de verdade** (runtime-safe).
 
-**Extensível**: cada correção é um arquivo `.mjs` auto-contido em `migrator/corrections/`, **auto-descoberto** (adicionar = soltar arquivo; no futuro, upload pela UI). Formato: `{ name, description, detect(ctx), apply(ctx) }`. `detect(ctx)` recebe `{ raw, codes:Set, angularMajor, hasPackage, getInstalledMajor }`; `apply(ctx)` recebe `{ destPath, srcDir, transformTs(fn) }` e usa **só o ctx** (não importa internals — seguro p/ correção enviada pela UI). `runCorrections(v)` builda, casa os `detect` e aplica; registra em `report.corrections` (separado de `report.notes`/neutralizado). **Disparado no loop pelo build-check** (`opts.ngUpdateChecks`): se o step `ngUpdate_v` tem erros, roda as correções e re-checa. `runtimeRaw` opcional permite disparar por erro de runtime no futuro.
+**Extensível**: cada correção é um arquivo `.mjs` auto-contido em `migrator/corrections/`, **auto-descoberto** (adicionar = soltar arquivo; no futuro, upload pela UI). Formato: `{ name, description, apply(ctx), + UM gatilho }`. Há **dois tipos de gatilho** — uma correção declara exatamente um:
 
-**Passos de modernização que são, na verdade, correções** (específicos de lib — candidatos a migrar para `corrections/`): `fixMomentImport` (`import * as moment` → default import; específico do **moment**, disparado por `TS2349` "not callable" depois que o `esModuleInterop` é ligado) e os renames Material do `fixTsCompat` (`_countGroupLabelsBeforeLegacyOption`→`…BeforeOption`, `_getLegacyOptionScrollPosition`, `ngControl as NgControl`; específicos do **@angular/material** v15). O `ModuleWithProviders<T>` e o de-double-comma do `fixTsCompat` **continuam genéricos** (modernização). Migrá-los exige rodar `runCorrections` também ao FIM da modernização (não só no loop), já que esses erros surgem depois das mudanças do próprio migrador (esModuleInterop / update do Material).
+- **`detect(ctx)` — ERROR-DRIVEN** (a maioria): roda quando o erro aparece no build. `detect(ctx)` recebe `{ raw, codes:Set, angularMajor, hasPackage, getInstalledMajor }`. `runCorrections(v)` builda, extrai os códigos de erro, casa os `detect` e aplica. **Disparado no loop pelo build-check** (`opts.ngUpdateChecks`) e **também ao FIM da modernização** (esses erros surgem depois das mudanças do próprio migrador — esModuleInterop / update do Material — não só no loop). `runtimeRaw` opcional permite disparar por erro de runtime no futuro.
+- **`gate(angularMajor)` — PROATIVO/ceiling**: roda numa versão específica **antes** do `ng update`, sem esperar erro. Para casos sem versão no major alvo, onde esperar o erro seria tarde demais (o `npm install` do update já teria falhado). `runProactiveCorrections(v)` roda no topo do loop, antes do update, casa `gate(v)` e aplica.
+
+`apply(ctx)` recebe `{ destPath, srcDir, transformTs(fn), setCompilerOption(key,value) }`. **Correções simples** (error-driven, UI-uploadable) usam **só o ctx** (não importam internals — seguro p/ upload). **Correções built-in** (proativas/complexas) **podem** importar internals do migrador (ex: a de flex-layout chama `migrateFlexLayoutToTailwind`). Ambas registram em `report.corrections` (separado de `report.notes`/neutralizado) e commitam com trailer `[ng-migrator-step:corrections]`.
+
+**Passos de modernização que eram, na verdade, correções — JÁ MIGRADOS para `corrections/`**:
+- `moment-default-import.mjs` (era `fixMomentImport`): `import * as moment` → default import + `esModuleInterop`; específico do **moment**, disparado por `TS2349`/`TS1192`.
+- `material-api-renames.mjs` (eram renames do `fixTsCompat`): `_countGroupLabelsBeforeLegacyOption`→`…BeforeOption`, `_getLegacyOptionScrollPosition`→`…OptionScrollPosition`, `ngControl as NgControl`; específicos do **@angular/material** v15.
+- `angular-flex-layout-tailwind.mjs` (era o step `flexLayout`/gate v16 inline): `@angular/flex-layout` → Tailwind; **proativo** (gate v16, ver seção abaixo).
+
+O `ModuleWithProviders<T>` e o de-double-comma do `fixTsCompat` **continuam genéricos** (modernização). `fixMomentImport` em `transforms.mjs` ficou órfão (substituído pela correção).
 
 ### Nunca modificar o projeto de origem
 O migrador opera sempre sobre a cópia em `destPath`. O projeto original em `sourcePath` é somente-leitura.
@@ -206,7 +216,7 @@ Regra: cada item sai **no ponto onde de fato quebra**, e **só se a migração c
 |---|---|---|
 | `tslint`/`codelyzer`/`protractor`/`@angular-eslint` | peer-conflict **já no 1º `ng update`** | `preflight()` inicial (correto — é o ponto onde quebram) |
 | `node-sass` | 1º boundary de troca de Node (Docker sem Python) | `preflight()` inicial |
-| **`@angular/flex-layout`** | sem versão **v16+** | gate `v === 16` no loop |
+| **`@angular/flex-layout`** | sem versão **v16+** | **correção proativa** `angular-flex-layout-tailwind` (`gate(v)===16`), via `runProactiveCorrections(v)` no topo do loop |
 | **Material `legacy-*`** | removido no **v17** | gate `v === 17` no loop (`fixLegacyMaterial`) |
 | **`core-js`** (polyfills legados) | só no **builder esbuild (v17)** | `inlinePolyfills()` (step do builder) — `preflight()` **não** remove |
 | **RxJS 6→7** (`throwError`/`Subject.next`/`internal-compatibility`) | quando o **rxjs vira 7** (tipicamente ng13) | boundary no loop (`getInstalledMajor('rxjs') >= 7`), não só no fim |
@@ -215,11 +225,11 @@ Regra: cada item sai **no ponto onde de fato quebra**, e **só se a migração c
 
 **`Subject.next()` argless: corrigir a CHAMADA, não o tipo.** RxJS 6 tinha `next(value?: T)` (opcional) → `subject.next()` buildava limpo no ng11. RxJS 7 é `next(value: T)` (obrigatório) → `TS2554`. **Só `Subject<void>` permite `.next()` argless** (regra do TS p/ params `void`); `<any>`/`<boolean>` **não** (`new Subject<any>().next()` → TS2554, comprovado). Mas um Subject pode receber **valor** em outro componente — `<void>` quebraria os `.next(valor)`. Então o fix universal é na **chamada**: `fixSubjectNextArgless` troca `.next()` → `.next(undefined as any)` (replica o RxJS 6, vale p/ qualquer tipo, idempotente). **Exclui receivers `*stepper`** (`MatStepper`/`CdkStepper`: `stepper.next()` é "próximo passo", **0-arg** — passar arg dá TS2554 "Expected 0 arguments, but got 1"). Iteradores toleram o arg (value opcional). Se surgir outro componente com `.next()` 0-arg, adicionar ao denylist. `fixSubjectVoid` passa a converter p/ `<void>` **só** os Subjects de lifecycle (destroy/unsubscribe…), nunca por "tem `.next()` argless". O rxjs vira 7 já no **ng13** (o `ng update` resolve), mas a modernização rodava no fim → os erros (`TS2554` em `.next()`, `TS2307` em `internal-compatibility`, `throwError(valor)`) quebravam os builds intermediários. Por isso rodam **no loop, no boundary `rxjs >= 7`** (one-shot via `report.modernize._rxjsCompatBoundary`). O `fixTsCompat()` (que tem **renames de Material v15**, NÃO seguros no ng13) **fica no fim** — só o `fixRxjsInternalCompat` foi extraído dele para o boundary. Os schematics de modernização do Angular (standalone, signals, control-flow) **seguem no fim** (maturidade do schematic — ver "rodar intercalado bagunça"). O step `throwError` da modernização vira rede de segurança idempotente (`|| ` preserva a contagem do boundary).
 
-### flex-layout → Tailwind no gate v16 (não eager, não em alvo < 16)
+### flex-layout → Tailwind: correção PROATIVA no gate v16 (não eager, não em alvo < 16)
 
 `@angular/flex-layout` não tem versão Angular 16+. Removê-lo eager no `preflight()` deixa **imports órfãos** (`FlexLayoutModule` nos `.module.ts`, `fx*` nos templates) → `TS2307: Cannot find module '@angular/flex-layout'` no `SharedModule` → como **todo módulo importa o `SharedModule`**, vira `NG6002` em cada um → cascata de `NG8001`/`NG8004`/`NG8002` por todo o app (num projeto real: **373 erros** a partir de **um** pacote faltando, mascarando se a migração funcionou).
 
-Solução: `migrateFlexLayoutToTailwind()` é **auto-contida** (converte templates + remove `FlexLayoutModule` dos módulos + remove o pacote) e roda **no loop, no gate `v === 16`** (antes de subir para o 16). Abaixo do v16 ele fica **intocado** — `11→12`/`11→15` mantêm o flex-layout funcionando. A função tem **guard**: no-op se o projeto não declara `@angular/flex-layout` (não instala Tailwind à toa). O step `flexLayout` da modernização vira **rede de segurança**, gateado por `opts.to >= 16 && !report.modernize.flexLayoutMigrated` (cobre resume que pula o loop). `core-js` segue o mesmo princípio: não é removido no preflight (não quebra `ng update`, só o esbuild) — `inlinePolyfills()` limpa os imports legados no step do builder via `stripLegacyPolyfillImports()`.
+**É uma correção** (específica do `@angular/flex-layout`), não uma modernização genérica. Mas é **proativa** (gatilho `gate`, não `detect`): tem que rodar **antes** de subir para o 16 — esperar o erro de build seria tarde, o `npm install` do `ng update@16` já teria falhado por não achar candidato. Por isso vive em `corrections/angular-flex-layout-tailwind.mjs` com `gate(v) === 16`, disparada por `runProactiveCorrections(v)` no topo do loop. É uma correção **built-in/complexa**: delega à `migrateFlexLayoutToTailwind()` (importa internal — converte templates + remove `FlexLayoutModule` dos módulos + remove o pacote), que correções simples de UI não fariam. Abaixo do v16 fica **intocado** — `11→12`/`11→15` mantêm o flex-layout funcionando. Tem **guard**: no-op se o projeto não declara `@angular/flex-layout` (não instala Tailwind à toa). O step `flexLayout` da modernização (`orchestrate.mjs`) permanece como **rede de segurança** para resume que pula o loop, gateado por `opts.to >= 16 && !report.modernize.flexLayoutMigrated` (a correção seta `flexLayoutMigrated`, então o net não duplica). `core-js` segue o mesmo princípio: não é removido no preflight (não quebra `ng update`, só o esbuild) — `inlinePolyfills()` limpa os imports legados no step do builder via `stripLegacyPolyfillImports()`.
 
 ### NG2012 — NgModules incompatíveis com Ivy
 
@@ -313,6 +323,7 @@ Como **cada step é commitado** no git do destino, dá pra retomar de qualquer p
 6. **`git init`** + commit inicial — `ng update` exige repositório git
 7. **`npm install`** das dependências da versão atual (executado via `wrapCommand` com a versão de Node adequada para a versão inicial do Angular)
 8. Loop `startVersion → targetVersion` (cada iteração executa comandos de Node/npm isolados via container Docker para a respectiva versão do Angular, monitorada via `currentAngularVersion`):
+   - `runProactiveCorrections(v)` — correções proativas (gatilho `gate`) deste major, antes do update (ex: flex-layout → Tailwind no v16)
    - Antes do v17: `fixLegacyMaterial()` (converte `MatLegacy*` → `Mat*`)
    - `resolveNodeTypesOverride(v)` — alinha override `@types/node` para evitar EOVERRIDE
    - `pinCompatibleThirdParty(v)` — (só na estratégia `resolve`) fixa versões compatíveis de libs de terceiros antes do update
@@ -322,13 +333,12 @@ Como **cada step é commitado** no git do destino, dá pra retomar de qualquer p
    - `git commit "chore: Angular vN"`
    - `writeReport(true)` — atualiza `MIGRATION-STATUS.html` e `MIGRATION-REPORT.md` em tempo real
 9. **Modernização** (salvo com `--no-modernize`) — cada step faz commit individual e rastreia arquivos/linhas via `captureGitDiff`:
-   0. `flexLayout` — `@angular/flex-layout` → Tailwind CSS (se presente)
+   0. `flexLayout` — **rede de segurança** do `@angular/flex-layout` → Tailwind (o caminho normal é a correção proativa no v16; aqui só dispara em resume que pula o loop, gateado por `!flexLayoutMigrated`)
    1. `inject-migration` schematic
    2. `signals` schematic (`--best-effort-mode`) + `fixVoidOutputEmit` + `fixReadonlySignalInputAssignments` + `fixSignalPropertyAccess`
    2b. `fixReservedKeywordVariables` — renomeia variáveis geradas com palavras reservadas
    2c. `fixUntypedForms()` — `UntypedFormBuilder/Group/Control/Array` → typed
-   2d. `fixThrowError()` + `fixSubjectVoid()` + `fixTsCompat()` — RxJS 7 + TS compat
-   2e. `fixMomentImport()` — `import * as moment` → default import
+   2d. `fixThrowError()` + `fixSubjectVoid()` + `fixTsCompat()` — RxJS 7 + TS compat (renames Material e moment **saíram** daqui → viraram correções)
    3. `standalone-migration` (convert → prune → bootstrap) + `fixDoubleCommas` + `fixSubjectEmit`
    3b. `fixMissingStandalone()` + `fixStandaloneInModuleDeclarations()` + `fixDoubleCommas` + `fixStandaloneImports()`
    3c. `control-flow` schematic — pula se `*ngIf/*ngFor` não encontrado (ng update@19 já aplicou)
@@ -347,6 +357,7 @@ Como **cada step é commitado** no git do destino, dá pra retomar de qualquer p
    10. `self-closing-tag` schematic
    11. `cleanup-unused-imports` schematic + `autoFixBuildErrors` (NG8001/NG8004 genérico)
    12. `patchThirdPartyVersions()` — detecta e reporta libs com peer deps incompatíveis
+   13. `runCorrections(opts.to)` — correções error-driven (`detect`) ao FIM da modernização: builda o estado final, casa por código de erro e aplica (ex: `moment-default-import` dispara após `esModuleInterop`; `material-api-renames` após o update do Material). Commit `[ng-migrator-step:corrections]` + re-build-check se aplicou algo.
    Final. `eslint --fix` (único, no final, não contamina diffs individuais)
 10. **`writeReport()`** — relatório final com git diff --stat, MIGRATION.patch e seção "File changes per step"
 

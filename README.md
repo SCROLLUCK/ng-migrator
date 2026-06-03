@@ -215,7 +215,12 @@ See `MIGRATION-REPORT.md` → **What to do next** for a prioritized checklist of
 
 Most fixes in ng-migrator are **generic** (Angular/TypeScript/RxJS patterns). But some build errors come from a **specific library** that had a breaking change between Angular majors — e.g. `ngx-mask` v15+ removed `NgxMaskModule` (it became the standalone `NgxMaskDirective` + `provideNgxMask()`). The generic engine can only *neutralize* these (remove the broken import → **builds but the feature is dead at runtime**).
 
-**Corrections** are a separate, opt-in category that may be **library-specific**. They migrate the API **for real** (runtime-safe), and are **triggered by the build-check** that detected the error. Each correction is a self-contained file in [`migrator/corrections/`](migrator/corrections/) and is **auto-discovered** — adding one is just dropping a file (a future UI will let users upload their own).
+**Corrections** are a separate, opt-in category that may be **library-specific**. They migrate the API **for real** (runtime-safe). Each correction is a self-contained file in [`migrator/corrections/`](migrator/corrections/) and is **auto-discovered** — adding one is just dropping a file (a future UI will let users upload their own).
+
+A correction declares exactly **one trigger**:
+
+- **`detect(ctx)` — error-driven** (most corrections): runs when the error shows up in the build. Fired by `runCorrections(v)` from the build-check (in the loop and at the end of modernization). Example: `ngx-mask` removed `NgxMaskModule`.
+- **`gate(angularMajor)` — proactive / "ceiling"**: runs at a specific major **before** the `ng update`, without waiting for an error — for libraries with **no version at the target major**, where waiting would be too late (the update's `npm install` would already have failed). Fired by `runProactiveCorrections(v)` at the top of the loop. Example: `@angular/flex-layout` → Tailwind at v16 ([`angular-flex-layout-tailwind.mjs`](migrator/corrections/angular-flex-layout-tailwind.mjs)).
 
 ### Writing a correction
 
@@ -230,16 +235,19 @@ export default {
   // One line for the report (what this correction does).
   description: 'my-lib vN: OldThing → NewThing',
 
-  // Should this correction run for the current error?  Keep it CHEAP and SPECIFIC.
+  // TRIGGER — pick ONE. Error-driven: should this run for the current error? Keep it CHEAP/SPECIFIC.
   // ctx: { raw, codes:Set<string>, angularMajor, hasPackage(name), getInstalledMajor(name) }
   detect({ raw, codes, hasPackage }) {
     return hasPackage('my-lib') && /OldThing/.test(raw) && codes.has('TS2305');
   },
+  // ...OR proactive (runs before the update at a given major, no error needed):
+  // gate: (angularMajor) => angularMajor === 16,
 
   // Apply the fix. Use ONLY ctx (no migrator internals → portable / safe for UI-submitted files).
-  // ctx: { destPath, srcDir, transformTs(fn) }
+  // ctx: { destPath, srcDir, transformTs(fn), setCompilerOption(key, value) }
   //   transformTs((content, path) => newContent) → walks every .ts in src/, writes the changed ones,
   //   returns the list of changed file paths.
+  //   setCompilerOption(key, value) → ensures a tsconfig.json compilerOptions entry (returns true if changed).
   apply({ transformTs }) {
     const files = transformTs((content) => {
       if (!content.includes('OldThing')) return content;     // file not affected → return unchanged
@@ -254,10 +262,11 @@ export default {
 |---|---|---|
 | `name` | `string` | Unique kebab-case id. |
 | `description` | `string` | One line shown in the report. |
-| `detect(ctx)` | `(DetectContext) => boolean` | Whether to run, given the current error state. Keep it cheap/specific. |
+| `detect(ctx)` | `(DetectContext) => boolean` | **Error-driven** trigger: whether to run, given the current error state. Keep it cheap/specific. |
+| `gate(major)` | `(number) => boolean` | **Proactive** trigger: whether to run at this major, before the update (use instead of `detect` for ceiling cases). |
 | `apply(ctx)` | `(ApplyContext) => { files, summary }` | The surgical transform; returns the changed files + a summary. |
 
-`detect` receives a read-only `DetectContext` (`raw` build output, `codes` set, `angularMajor`, `hasPackage`, `getInstalledMajor`). `apply` receives an `ApplyContext` whose `transformTs(fn)` is the only thing you need to read/rewrite files — **do not import migrator internals** (keeps corrections portable and safe for UI upload). Applied corrections are recorded in `report.corrections` and surfaced in the report, separate from neutralized/manual items.
+`detect` receives a read-only `DetectContext` (`raw` build output, `codes` set, `angularMajor`, `hasPackage`, `getInstalledMajor`). `apply` receives an `ApplyContext` with `transformTs(fn)` (read/rewrite every `.ts`) and `setCompilerOption(key, value)` (patch `tsconfig.json`). **Simple/error-driven corrections must use only the ctx** — no migrator internals (keeps them portable and safe for UI upload). **Built-in proactive corrections may import internals** (e.g. flex-layout delegates to `migrateFlexLayoutToTailwind`), since they ship with the migrator and aren't UI-uploaded. Applied corrections are recorded in `report.corrections` and surfaced in the report, separate from neutralized/manual items.
 
 ## Known limitations
 

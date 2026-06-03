@@ -36,8 +36,7 @@ import {
   upgradeThirdPartyForIvy,
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
-import { migrateFlexLayoutToTailwind } from './migrator/flex-layout.mjs';
-import { runCorrections } from './migrator/corrections/index.mjs';
+import { runCorrections, runProactiveCorrections } from './migrator/corrections/index.mjs';
 import {
   fixMangledSassNamespaceDefs, fixJsonNamedImports, ensureSkipLibCheck,
   fixThrowError, fixSubjectVoid, fixSubjectNextArgless, fixRxjsInternalCompat,
@@ -339,17 +338,10 @@ for (let v = startVersion; v <= opts.to; v++) {
   // Princípio: não remover nada eager no início — cada item sai no ponto onde de fato quebra,
   // e só se a migração chega lá. Assim alvo baixo (ex: 11→12) não perde nada que ainda funciona.
 
-  // @angular/flex-layout não tem versão v16+ → converte para Tailwind ANTES de subir para o 16
-  // (remove pacote + código juntos; no-op se o projeto não usa flex). Abaixo do v16, intocado.
-  if (v === 16) {
-    const flH0 = capture('git rev-parse HEAD');
-    const fl = migrateFlexLayoutToTailwind();
-    if (fl.htmlCount || fl.tsCount) {
-      report.modernize.flexLayoutMigrated = fl;
-      run('git add -A && git commit -m "refactor: @angular/flex-layout → Tailwind" -m "[ng-migrator-step:flexLayout]"', { ignoreError: true });
-      report.details['flexLayout'] = captureGitDiff(flH0, capture('git rev-parse HEAD'));
-    }
-  }
+  // Correções PROATIVAS deste major (gatilho `gate`) — rodam ANTES do update, para casos "ceiling"
+  // sem versão no alvo. Ex: @angular/flex-layout (sem v16+) → Tailwind no gate v16. No-op se nenhuma
+  // correção casa o major ou se a lib não está no projeto. Abaixo do v16, intocado.
+  await runProactiveCorrections(v);
 
   // Angular Material remove os pacotes legacy-* no v17 → migra MatLegacy* → Mat* antes de subir.
   if (v === 17) {
