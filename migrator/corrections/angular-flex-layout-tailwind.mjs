@@ -12,6 +12,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { removeImport, removeSymbolFromArrays, hasDependency, removeDependencies, readPackageJson } from './_lib.mjs';
 
 // ─── fxLayout/fxFlex → classes Tailwind ──────────────────────────────────────
 
@@ -128,16 +129,9 @@ export default {
    * @param {import('./index.mjs').ApplyContext} ctx
    */
   apply: ({ destPath, transformHtml, transformTs, installDevDeps }) => {
-    const pkgPath = join(destPath, 'package.json');
-
     // Guard: só age se o projeto realmente depende de @angular/flex-layout. Sem isso, instalaríamos
     // Tailwind e criaríamos tailwind.config em QUALQUER projeto migrado.
-    let usesFlex = false;
-    try {
-      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-      usesFlex = !!(pkg.dependencies?.['@angular/flex-layout'] || pkg.devDependencies?.['@angular/flex-layout']);
-    } catch { /* ignore */ }
-    if (!usesFlex) return { files: [], summary: '' };
+    if (!hasDependency(destPath, '@angular/flex-layout')) return { files: [], summary: '' };
 
     // 1) templates: fxLayout/fxFlex/… → classes Tailwind
     const htmlFiles = transformHtml((src) => (/\bfx[A-Z]/.test(src) ? processHtml(src) : src));
@@ -145,10 +139,7 @@ export default {
     // 2) módulos .ts: remove o import e as referências a FlexLayoutModule
     const tsFiles = transformTs((src) => {
       if (!/FlexLayout/.test(src)) return src;
-      let out = src.replace(/^import\s*\{[^}]*FlexLayoutModule[^}]*\}\s*from\s*['"]@angular\/flex-layout['"]\s*;?\r?\n?/gm, '');
-      out = out.replace(/,?\s*\bFlexLayoutModule\b/g, '');
-      out = out.replace(/\bFlexLayoutModule\b\s*,?\s*/g, '');
-      return out;
+      return removeSymbolFromArrays(removeImport(src, '@angular/flex-layout'), 'FlexLayoutModule');
     });
 
     // 3) Tailwind v3 (v4 usa um formato de config incompatível com este setup)
@@ -156,7 +147,7 @@ export default {
 
     // 4) tailwind.config (respeita ESM se o package.json tem "type": "module")
     let projectIsEsm = false;
-    try { projectIsEsm = JSON.parse(readFileSync(pkgPath, 'utf8')).type === 'module'; } catch { /* ignore */ }
+    try { projectIsEsm = readPackageJson(destPath).type === 'module'; } catch { /* ignore */ }
     const twConfigName = projectIsEsm ? 'tailwind.config.mjs' : 'tailwind.config.js';
     const configPath = join(destPath, twConfigName);
     if (!existsSync(configPath)) {
@@ -175,13 +166,7 @@ export default {
     }
 
     // 6) remove @angular/flex-layout do package.json (lê fresco — o install do Tailwind o reescreveu)
-    try {
-      const fresh = JSON.parse(readFileSync(pkgPath, 'utf8'));
-      let removed = false;
-      for (const sec of ['dependencies', 'devDependencies'])
-        if (fresh[sec]?.['@angular/flex-layout']) { delete fresh[sec]['@angular/flex-layout']; removed = true; }
-      if (removed) writeFileSync(pkgPath, JSON.stringify(fresh, null, 2) + '\n');
-    } catch { /* ignore */ }
+    removeDependencies(destPath, ['@angular/flex-layout']);
 
     const files = [...htmlFiles, ...tsFiles];
     return { files, summary: `flex-layout → Tailwind (${htmlFiles.length} template(s), ${tsFiles.length} módulo(s))` };

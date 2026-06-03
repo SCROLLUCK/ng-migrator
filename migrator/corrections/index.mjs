@@ -9,6 +9,10 @@
 // uma correção = soltar um arquivo aqui (no futuro, via upload na UI). Veja o template e a doc dos
 // campos no README ("Writing a correction") e o exemplo de referência em `ngx-mask.mjs`.
 //
+// HELPERS COMPARTILHADOS: utilitários genéricos reusáveis (manipular import, array de decorator,
+// package.json, etc.) ficam em `_lib.mjs` — para as correções não reinventarem a roda. Arquivos com
+// prefixo `_` NÃO são correções (o auto-discovery os ignora); são parte do subsistema e autocontidos.
+//
 // ─── Contrato (formato padrão de toda correção) ──────────────────────────────
 //
 /**
@@ -68,7 +72,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  */
 export async function loadCorrections() {
   let files = [];
-  try { files = readdirSync(__dirname).filter(f => f.endsWith('.mjs') && f !== 'index.mjs'); } catch { return []; }
+  // Ignora `index.mjs` e arquivos com prefixo `_` (helpers do subsistema, ex: `_lib.mjs`).
+  try { files = readdirSync(__dirname).filter(f => f.endsWith('.mjs') && f !== 'index.mjs' && !f.startsWith('_')); } catch { return []; }
   const out = [];
   for (const f of files) {
     try {

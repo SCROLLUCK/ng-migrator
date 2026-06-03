@@ -1,13 +1,16 @@
 // ─── Correção: ngx-mask (NgModule → standalone) ──────────────────────────────
 //
 // ESTE ARQUIVO É O EXEMPLO DE REFERÊNCIA do formato de correção. Copie a estrutura para escrever
-// novas correções. Veja a doc dos campos e do `ctx` em `index.mjs` (typedefs) e no README.
+// novas correções. Veja a doc dos campos e do `ctx` em `index.mjs` (typedefs) e no README; os
+// helpers genéricos (manipular import, provider, etc.) ficam em `_lib.mjs`.
 //
 // O problema: ngx-mask v15+ REMOVEU o `NgxMaskModule`. A diretiva virou standalone
 // (`NgxMaskDirective`) e a config global virou o provider `provideNgxMask()`. Apps NgModule que
 // faziam `imports: [NgxMaskModule.forRoot()]` quebram com:
 //   TS2305 'NgxMaskModule' has no exported member   (e NG6002/NG1010 a jusante).
 // Esta correção migra o uso DE VERDADE (runtime-safe) — não apenas remove pra "buildar".
+
+import { rewriteNamedImport, addProviderToNgModule } from './_lib.mjs';
 
 /** @type {import('./index.mjs').Correction} */
 export default {
@@ -39,29 +42,16 @@ export default {
   apply({ transformTs }) {
     const files = transformTs((content) => {
       if (!content.includes('NgxMaskModule')) return content;  // arquivo não afetado
-      let out = content;
 
-      // 1) Import: `import { NgxMaskModule, ... } from 'ngx-mask'`
-      //         → `import { NgxMaskDirective, provideNgxMask, ... } from 'ngx-mask'`
-      out = out.replace(/import\s*\{([^}]*)\}\s*from\s*(['"])ngx-mask\2\s*;?/g, (_full, names, quote) => {
-        const symbols = new Set(
-          names.split(',').map(s => s.trim()).filter(Boolean).filter(s => s !== 'NgxMaskModule'),
-        );
-        symbols.add('NgxMaskDirective');
-        symbols.add('provideNgxMask');
-        return `import { ${[...symbols].join(', ')} } from ${quote}ngx-mask${quote};`;
-      });
+      // 1) Import: remove `NgxMaskModule`, adiciona `NgxMaskDirective` + `provideNgxMask`.
+      let out = rewriteNamedImport(content, 'ngx-mask', { add: ['NgxMaskDirective', 'provideNgxMask'], remove: ['NgxMaskModule'] });
 
       // 2) `imports: [ ... NgxMaskModule.forRoot(...) / NgxMaskModule ... ]` → `NgxMaskDirective`
       out = out.replace(/NgxMaskModule\s*\.\s*for(?:Root|Child)\s*\([^)]*\)/g, 'NgxMaskDirective');
       out = out.replace(/\bNgxMaskModule\b/g, 'NgxMaskDirective');
 
       // 3) A config global do `forRoot` virou provider → garante `provideNgxMask()` nos providers.
-      if (/@NgModule\s*\(/.test(out) && !/provideNgxMask\s*\(/.test(out)) {
-        out = /providers\s*:\s*\[/.test(out)
-          ? out.replace(/providers\s*:\s*\[/, 'providers: [provideNgxMask(), ')
-          : out.replace(/@NgModule\s*\(\s*\{/, full => `${full}\n  providers: [provideNgxMask()],`);
-      }
+      out = addProviderToNgModule(out, 'provideNgxMask()');
       return out;
     });
 

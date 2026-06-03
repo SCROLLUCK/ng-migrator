@@ -9,6 +9,8 @@
 // Específico do @angular/material → correção (não modernização). O cast é seguro: em
 // MatFormFieldControl, `ngControl`, quando não-nulo, é sempre `NgControl`.
 
+import { renameIdentifiers } from './_lib.mjs';
+
 /** @type {import('./index.mjs').Correction} */
 export default {
   name: 'material-api-renames',
@@ -23,13 +25,17 @@ export default {
   /** @param {import('./index.mjs').ApplyContext} ctx */
   apply({ transformTs }) {
     const files = transformTs((content) => {
-      let out = content;
-      out = out.replace(/_countGroupLabelsBeforeLegacyOption/g, '_countGroupLabelsBeforeOption');
-      out = out.replace(/_getLegacyOptionScrollPosition/g, '_getOptionScrollPosition');
-      // Cast quando seguido por acesso a propriedade (envolve em parênteses p/ não quebrar `x as T.p`).
-      out = out.replace(/(\._control\.ngControl)(?!\s+as\s+NgControl)(\.[A-Za-z_$])/g, '($1 as NgControl)$2');
-      // Fallback p/ ocorrências sem acesso a propriedade logo após.
-      out = out.replace(/(\._control\.ngControl)(?!\s+as\s+NgControl)(?!\s*\.\w)/g, '$1 as NgControl');
+      let out = renameIdentifiers(content, {
+        _countGroupLabelsBeforeLegacyOption: '_countGroupLabelsBeforeOption',
+        _getLegacyOptionScrollPosition: '_getOptionScrollPosition',
+      });
+      // Cast `… as NgControl`. Quando há acesso a propriedade depois (`.name`), precisa envolver a
+      // expressão receptora INTEIRA em parênteses — `(this.formField._control.ngControl as NgControl).name`
+      // — senão o `(` cairia no meio da cadeia. Por isso capturamos o receiver todo, não só `._control…`.
+      const RECV = '(?:this|[A-Za-z_$][\\w$]*)(?:\\.[A-Za-z_$][\\w$]*)*\\._control\\.ngControl';
+      out = out.replace(new RegExp(`(${RECV})(?!\\s+as\\s+NgControl)(?=\\s*\\.[A-Za-z_$])`, 'g'), '($1 as NgControl)');
+      // Sem acesso logo após: cast sufixo simples.
+      out = out.replace(new RegExp(`(${RECV})(?!\\s+as\\s+NgControl)(?!\\s*\\.\\w)`, 'g'), '$1 as NgControl');
       return out;
     });
     return { files, summary: `Material API renames + ngControl cast em ${files.length} arquivo(s)` };

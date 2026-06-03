@@ -266,7 +266,22 @@ export default {
 | `gate(major)` | `(number) => boolean` | **Proactive** trigger: whether to run at this major, before the update (use instead of `detect` for ceiling cases). |
 | `apply(ctx)` | `(ApplyContext) => { files, summary }` | The surgical transform; returns the changed files + a summary. |
 
-`detect` receives a read-only `DetectContext` (`raw` build output, `codes` set, `angularMajor`, `hasPackage`, `getInstalledMajor`). `apply` receives an `ApplyContext` with `transformTs(fn)` / `transformHtml(fn)` (read/rewrite every `.ts` / `.html` in `src/`), `setCompilerOption(key, value)` (patch `tsconfig.json`), and `installDevDeps(packages)` (install dev dependencies, Docker-isolated). **Every correction is self-contained**: the bug-specific logic lives entirely in its file — it uses only the ctx mechanisms plus Node builtins (`fs`/`path`), and **never imports migrator internals**. The ctx provides the generic *how* (walk files, install a dep in isolation, set a tsconfig option); the correction provides the specific *what*. The flex-layout correction, for example, inlines the whole fxLayout→Tailwind conversion and calls `ctx.installDevDeps([...])` instead of running npm itself. Applied corrections are recorded in `report.corrections` and surfaced in the report, separate from neutralized/manual items.
+`detect` receives a read-only `DetectContext` (`raw` build output, `codes` set, `angularMajor`, `hasPackage`, `getInstalledMajor`). `apply` receives an `ApplyContext` with `transformTs(fn)` / `transformHtml(fn)` (read/rewrite every `.ts` / `.html` in `src/`), `setCompilerOption(key, value)` (patch `tsconfig.json`), and `installDevDeps(packages)` (install dev dependencies, Docker-isolated). **Every correction is self-contained**: the bug-specific logic lives entirely in its file — it uses only the ctx mechanisms, the shared helpers in `_lib.mjs`, plus Node builtins (`fs`/`path`), and **never imports migrator internals**. The ctx provides the generic *how* (walk files, install a dep in isolation, set a tsconfig option); the correction provides the specific *what*. The flex-layout correction, for example, inlines the whole fxLayout→Tailwind conversion and calls `ctx.installDevDeps([...])` instead of running npm itself. Applied corrections are recorded in `report.corrections` and surfaced in the report, separate from neutralized/manual items.
+
+#### Shared helpers (`_lib.mjs`)
+
+So corrections don't reinvent the wheel, generic **bug-agnostic** helpers live in [`migrator/corrections/_lib.mjs`](migrator/corrections/_lib.mjs) — import them with `import { ... } from './_lib.mjs'`:
+
+| Helper | Purpose |
+|---|---|
+| `rewriteNamedImport(content, module, { add, remove })` | Add/remove named symbols in an existing `import { ... } from 'module'` (drops the import if empty). |
+| `removeImport(content, module)` | Remove any `import … from 'module'` (default / named / namespace), incl. the newline. |
+| `renameIdentifiers(content, { from: to })` | Whole-word rename of identifiers. |
+| `removeSymbolFromArrays(content, symbol)` | Remove a bare symbol from arrays (e.g. `imports: [...]`), cleaning leftover commas. |
+| `addProviderToNgModule(content, expr)` | Ensure a provider expression in the `@NgModule` `providers` array (creates it if missing). |
+| `readPackageJson` / `writePackageJson` / `hasDependency` / `removeDependencies` | `package.json` reads/edits. |
+
+Files prefixed with `_` are **not** corrections — the auto-discovery skips them. `_lib.mjs` is itself self-contained (only `fs`/`path`), so the whole `corrections/` folder stays portable.
 
 ## Known limitations
 
