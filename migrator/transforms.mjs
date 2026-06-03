@@ -290,7 +290,10 @@ export function fixSubjectVoid() {
 // e seguro, independente do tipo do Subject (void/boolean/custom): passa `undefined as any` na
 // chamada argless — replica o comportamento do RxJS 6 (emitia undefined), preserva o tipo (chamadas
 // `.next(valor)` continuam válidas) e não exige análise cross-file do tipo. Idempotente (só casa
-// parênteses vazios). Harmless para `.next()` de iteradores (value é opcional lá).
+// parênteses vazios). EXCLUI `.next()` de receivers que NÃO são Subject e cujo `.next()` é 0-arg:
+// `MatStepper`/`CdkStepper` (`stepper.next()` = "próximo passo", 0 args) — passar arg dá TS2554
+// "Expected 0 arguments, but got 1". Iteradores toleram o arg (value opcional), então não precisam
+// ser excluídos. Se aparecerem outros componentes 0-arg `.next()`, adicionar ao denylist.
 export function fixSubjectNextArgless() {
   let count = 0;
   const srcDir = join(destPath, 'src');
@@ -298,7 +301,9 @@ export function fixSubjectNextArgless() {
   walkFiles(srcDir, e => e.endsWith('.ts') && !e.endsWith('.spec.ts'), (full) => {
     const src = readFileSync(full, 'utf8');
     if (!/\.next\(\s*\)/.test(src)) return;
-    const out = src.replace(/\.next\(\s*\)/g, '.next(undefined as any)');
+    // Captura o receiver (identificador imediatamente antes de `.next`) p/ pular steppers.
+    const out = src.replace(/([\w$]+)\.next\(\s*\)/g, (m, recv) =>
+      /stepper$/i.test(recv) ? m : `${recv}.next(undefined as any)`);
     if (out !== src) { writeFileSync(full, out); count++; }
   });
   if (count > 0) console.log(`  ↳ .next() argless → .next(undefined as any): ${count} arquivo(s)`);
