@@ -15,7 +15,7 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync, unlinkSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, unlinkSync, mkdirSync, rmSync, appendFileSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import Database from 'better-sqlite3';
 
@@ -126,8 +126,29 @@ if ((resuming || opts.rollbackTo) && !existsSync(join(destPath, '.git'))) {
 // sem re-copiar o projeto nem reinicializar o git. (resume/rollback também pulam cópia/preflight.)
 const continuingFromExisting = (opts.splitVersions && existsSync(join(destPath, '.git'))) || resuming || !!opts.rollbackTo;
 
+// --in-place: migra na própria pasta de origem (sem pasta irmã). Valida o ambiente e prepara a
+// branch dedicada. Exceção consciente à regra "nunca modificar a origem": só com opt-in explícito,
+// repo git e working tree limpo (assim `git reset --hard <branch-base>` desfaz tudo).
+let migrationBranch = null;
+if (opts.inPlace) {
+  if (opts.splitVersions) { console.error('\n❌ --in-place é incompatível com --split-versions (este cria uma pasta por versão).'); process.exit(1); }
+  if (opts.dest)          { console.error('\n❌ --in-place é incompatível com --dest.'); process.exit(1); }
+  if (!existsSync(join(sourcePath, '.git'))) { console.error(`\n❌ --in-place exige um repositório git em ${sourcePath}.`); process.exit(1); }
+  if (capture('git status --porcelain', sourcePath).trim()) {
+    console.error('\n❌ --in-place exige working tree limpo. Commit/stash suas mudanças primeiro — assim a migração roda numa branch nova e `git reset` desfaz tudo.');
+    process.exit(1);
+  }
+  migrationBranch = `ng-migrator/to-ng${opts.to}`;
+  if (capture(`git rev-parse --verify --quiet ${migrationBranch}`, sourcePath).trim()) {
+    console.error(`\n❌ A branch '${migrationBranch}' já existe. Apague-a (git branch -D ${migrationBranch}) ou faça checkout nela e use --resume-from.`);
+    process.exit(1);
+  }
+}
+
 if (continuingFromExisting) {
   console.log(`📁 Continuando de pasta existente: ${destPath}`);
+} else if (opts.inPlace) {
+  console.log(`📁 Migração in-place (mesma pasta): ${destPath}`);
 } else {
   // 1. Copia o projeto
   console.log('📁 Copiando projeto...');
@@ -220,11 +241,20 @@ if (continuingFromExisting) {
     fixLegacyMaterial();
   }
 
-  // 3. Git init — ng update exige repositório git
-  console.log('\n🔧 Inicializando repositório git...');
-  run('git init');
+  // 3. Git — ng update exige repositório git
+  if (opts.inPlace) {
+    // Cria a branch dedicada a partir do HEAD limpo; as mudanças do preflight (working tree)
+    // viajam para ela. A branch original do usuário continua apontando para o estado pristino.
+    console.log(`\n🔧 Criando branch de migração ${migrationBranch}...`);
+    run(`git checkout -b ${migrationBranch}`);
+    // Mantém os artefatos do migrador fora da branch (diff/merge limpos). Exclude local, não commitado.
+    try { appendFileSync(join(destPath, '.git/info/exclude'), '\n# ng-migrator (in-place)\n.ng-migrator/\nMIGRATION-REPORT.md\nMIGRATION-STATUS.html\nMIGRATION-DATA.json\nMIGRATION.patch\n'); } catch { /* ignore */ }
+  } else {
+    console.log('\n🔧 Inicializando repositório git...');
+    run('git init');
+  }
   run('git add -A');
-  run('git commit -m "chore: snapshot antes da migração"');
+  run('git commit -m "chore: snapshot antes da migração" --allow-empty');
   report.initialCommit = capture('git rev-parse HEAD');
 }
 
@@ -566,15 +596,22 @@ if (warnings.length) {
 }
 
 console.log(`\n  Projeto migrado: ${destPath}`);
+if (opts.inPlace) console.log(`  Branch de migração: ${migrationBranch} (sua branch original está intacta)`);
 
 writeReport();
 writeMigrationData();
 restoreNpmrc();
 
 console.log('\n Próximos passos:');
-console.log(` 1. cd ${destPath}`);
-console.log(' 2. ng build      → verifica erros de compilação');
-console.log(' 3. ng serve      → testa a aplicação');
+if (opts.inPlace) {
+  console.log(' 1. ng build / ng serve   → verifica e testa a aplicação');
+  console.log(` 2. git diff <sua-branch>...${migrationBranch}   → revisa as mudanças`);
+  console.log(`    Para desfazer tudo: git checkout <sua-branch> && git branch -D ${migrationBranch}`);
+} else {
+  console.log(` 1. cd ${destPath}`);
+  console.log(' 2. ng build      → verifica erros de compilação');
+  console.log(' 3. ng serve      → testa a aplicação');
+}
 console.log('');
 
 // Abre o projeto no VS Code se disponível

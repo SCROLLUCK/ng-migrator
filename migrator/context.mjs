@@ -25,6 +25,10 @@ export const opts = {
   dryRun:          args.includes('--dry-run'),
   modernize:       !args.includes('--no-modernize'),
   splitVersions:   args.includes('--split-versions'),
+  // Migra na PRÓPRIA pasta de origem (sem pasta irmã -ngN). Exige repo git + working tree limpo,
+  // e roda numa branch dedicada (ng-migrator/to-ngN) pra a branch atual ficar intacta. Útil para
+  // saltos curtos (ex: 21→22). Exceção consciente à regra "nunca modificar a origem".
+  inPlace:         args.includes('--in-place'),
   ngUpdateChecks:  args.includes('--ng-update-checks'),
   // Estratégia para conflitos de peer dependency no ng update:
   //   'resolve' (default) — loop iterativo resolvendo versões compatíveis via registry,
@@ -102,7 +106,9 @@ try {
 } catch (e) {}
 
 export let destPath = '';
-if (opts.splitVersions) {
+if (opts.inPlace) {
+  destPath = sourcePath;   // migra na própria pasta (validações de git em migrate.mjs)
+} else if (opts.splitVersions) {
   const parentDir = opts.versionsDir ?? join(dirname(sourcePath), `${basename(sourcePath)}-ng-versions`);
   const startVer = opts.from ?? detectedVersion;
   destPath = join(parentDir, `ng${startVer}`);

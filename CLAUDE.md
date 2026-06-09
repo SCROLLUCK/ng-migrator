@@ -21,6 +21,9 @@ node migrate.mjs ./proj --to 17
 # Começar a partir de uma versão diferente (projeto já em v14, por ex.)
 node migrate.mjs ./proj --from 14
 
+# Migrar na PRÓPRIA pasta (sem pasta irmã) — exige git limpo; cria branch ng-migrator/to-ng22
+node migrate.mjs ./proj --in-place                # ideal p/ saltos curtos (ex: 21→22)
+
 # Simular sem executar nada
 node migrate.mjs --dry-run
 
@@ -96,8 +99,10 @@ Toda correção registra em `report.corrections` (separado de `report.notes`/neu
 
 O `ModuleWithProviders<T>` e o de-double-comma do `fixTsCompat` **continuam genéricos** (modernização). `fixMomentImport` em `transforms.mjs` ficou órfão (substituído pela correção).
 
-### Nunca modificar o projeto de origem
+### Nunca modificar o projeto de origem — EXCETO `--in-place` (opt-in explícito)
 O migrador opera sempre sobre a cópia em `destPath`. O projeto original em `sourcePath` é somente-leitura.
+
+**Exceção consciente: `--in-place`.** Para saltos curtos (ex: 21→22) o usuário pode migrar na própria pasta (sem pasta irmã `-ngN`). Como o migrador commita por step e usa `git reset --hard` no resume/rollback, isso só é seguro com guard-rails: `--in-place` **exige** repo git **com working tree limpo** (assim há ponto de restauração) e roda numa **branch dedicada `ng-migrator/to-ng<alvo>`** criada a partir do HEAD limpo — a branch original do usuário fica intacta; ele revisa o diff e faz merge (ou `git branch -D` para descartar). `destPath = sourcePath` (em `context.mjs`); no git-init, `git checkout -b <branch>` em vez de `git init`; os artefatos do migrador (`.ng-migrator/`, `MIGRATION-*`) entram em `.git/info/exclude` para não sujar a branch. Incompatível com `--split-versions` e `--dest`. Aborta se a branch já existe (use `--resume-from` nela). O caminho default (pasta irmã) continua sendo o seguro/recomendado para migrações longas.
 
 ### Toda decisão de design atualiza este arquivo
 Cada vez que uma decisão arquitetural é tomada, revisada ou corrigida no código, o CLAUDE.md deve ser atualizado imediatamente com a decisão e o seu porquê. Isso evita que o mesmo erro seja descoberto duas vezes.

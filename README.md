@@ -43,9 +43,10 @@ node migrate.mjs [source] [options]
 | Argument / Flag | Description | Default |
 |---|---|---|
 | `source` | Path to the Angular project | `.` (current dir) |
-| `--to <version>` | Target Angular major version | `21` |
+| `--to <version>` | Target Angular major version | `22` |
 | `--from <version>` | Starting version (if auto-detection fails) | auto |
 | `--dest <path>` | Custom output directory | `<source>-ng<target>` |
+| `--in-place` | Migrate the source folder itself (no sibling copy). Requires a clean git tree; runs on a dedicated branch `ng-migrator/to-ng<target>`. Best for short hops (e.g. 21→22). Incompatible with `--split-versions`/`--dest`. | off |
 | `--split-versions` | Generate separate version-specific folders (e.g. `ng11`, `ng12`, etc.) inside a parent directory named `<project-name>-ng-versions` | off (single folder) |
 | `--dry-run` | Print what would happen without doing anything | off |
 | `--no-modernize` | Skip the modernization steps | off |
@@ -72,6 +73,9 @@ node migrate.mjs ./my-project --from 14
 # Custom output folder
 node migrate.mjs ./my-project --dest ./my-project-migrated
 
+# Migrate the source folder in place (clean git tree required), on a dedicated branch
+node migrate.mjs ./my-project --in-place
+
 # Generate separate version-specific folders for each incremental major step
 node migrate.mjs ./my-project --split-versions
 
@@ -82,7 +86,7 @@ node migrate.mjs ./my-project --no-modernize
 node migrate.mjs ./my-project --dry-run
 ```
 
-By default, the migrated project is created at `<source>-ng<target>` (e.g. `my-project-ng21`). When `--split-versions` is active, it creates separate folders for each major upgrade step (e.g., `ng11`, `ng12`, `ng13`...) inside a parent directory named `<project-name>-ng-versions` (e.g., `my-project-ng-versions/`). The original project is never touched.
+By default, the migrated project is created at `<source>-ng<target>` (e.g. `my-project-ng22`). When `--split-versions` is active, it creates separate folders for each major upgrade step (e.g., `ng11`, `ng12`, `ng13`...) inside a parent directory named `<project-name>-ng-versions` (e.g., `my-project-ng-versions/`). The original project is never touched — **except** with `--in-place`, where the source folder itself is migrated on a dedicated `ng-migrator/to-ng<target>` branch (a clean git tree is required, so `git reset`/branch deletion fully undoes it).
 
 ## Node.js Version Isolation (Docker)
 
