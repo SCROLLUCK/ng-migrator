@@ -199,6 +199,17 @@ Angular 17+ introduziu `@angular/build` (esbuild/Vite builder). Deve estar em `A
 | 17-20 | ~0.14.x |
 | 21+ | ~0.16.x |
 
+### Angular 22 — alvo default + TS 6 + Node
+
+`opts.to` default é **22**. O grosso das breaking changes do v22 é tratado pelos **schematics automáticos do próprio `ng update@22`** (genéricas do Angular, não viram correção): `OnPush` vira default (migração injeta `ChangeDetectionStrategy.Eager`), `strictTemplates` default (injeta `strictTemplates: false`), optional chaining `?.` em template passa a devolver `undefined` (era `null`; `$safeNavigationMigration()`), HttpClient Fetch default (`withFetch()` removido / `withXhr()` adicionado), `canMatch` ganha 3º param `currentSnapshot`, incremental hydration default (`withNoIncrementalHydration()`). O migrador **não** duplica nenhuma — só roda o update.
+
+O que o migrador trata por conta própria (tabelas de versão):
+- **Node**: v22 dropa Node 20; `nodeVersions['22'] = '22'` (Node 22 LTS basta; 24/26 também servem).
+- **TypeScript 6 obrigatório** (5.9 não é mais suportado): `TS_FLOOR[22]='6.0'` / `TS_TARGET[22]='~6.0.0'` em `ng-update.mjs` (rede de segurança se o `ng update` não bumpar o TS). O fallback de versões futuras passou a apontar para o 22 (`> 22 → TS_*[22]`). `@types/node` segue sem override (17+).
+- **`paramsInheritanceStrategy: 'always'`** (rotas filhas SEMPRE herdam params/data do pai; era `'emptyOnly'`): **sem migração automática** e é mudança de **runtime** (não quebra build) → o migrador só registra `report.notes` no gate `v === 22` (não dá pra detectar/corrigir genericamente). Para manter o antigo: `withRouterConfig({ paramsInheritanceStrategy: 'emptyOnly' })`.
+
+zone.js (`>= 21 → ~0.16.x`), `@angular/build` e o ecossistema detectado em runtime já cobrem o 22.
+
 ### ESLint — ng-cli-compat removido no @angular-eslint v17+
 
 `plugin:@angular-eslint/ng-cli-compat` foi removido no v17. A função `fixEslintConfig()` em `transforms.mjs` substitui por `plugin:@angular-eslint/recommended` e remove `ng-cli-compat--formatting-add-on`.

@@ -349,6 +349,13 @@ for (let v = startVersion; v <= opts.to; v++) {
     fixLegacyMaterial();
   }
 
+  // v22: paramsInheritanceStrategy passa a ser 'always' (rotas filhas SEMPRE herdam params do pai).
+  // Não há migração automática — é mudança de comportamento de RUNTIME (não quebra o build), então
+  // o migrador não consegue detectar/corrigir genericamente. Só avisa para revisão manual.
+  if (v === 22) {
+    report.notes.push(`[ng22] paramsInheritanceStrategy agora é 'always' por default — rotas filhas herdam todos os params/data do pai (antes: 'emptyOnly'). Sem migração automática: revise rotas que dependiam de não herdar. Para manter o comportamento antigo: provideRouter(routes, withRouterConfig({ paramsInheritanceStrategy: 'emptyOnly' })).`);
+  }
+
   // v16+: o ngcc foi removido → libs de terceiros em major antigo (View Engine) viram NG6002.
   // Sobe as que versionam junto com o Angular para a versão Ivy; reporta as irresolvíveis.
   // Abaixo do v16, intocadas (funcionam via ngcc) — "subir só onde quebra".

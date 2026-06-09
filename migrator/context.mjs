@@ -18,7 +18,7 @@ const args = process.argv.slice(2);
 const sourceArg = args.find(a => !a.startsWith('--')) ?? '.';
 
 export const opts = {
-  to:            parseInt(args.includes('--to')   ? args[args.indexOf('--to')   + 1] : '21'),
+  to:            parseInt(args.includes('--to')   ? args[args.indexOf('--to')   + 1] : '22'),
   from:          args.includes('--from') ? parseInt(args[args.indexOf('--from') + 1]) : null,
   dest:          args.includes('--dest') ? resolve(args[args.indexOf('--dest')  + 1]) : null,
   versionsDir:   args.includes('--versions-dir') ? resolve(args[args.indexOf('--versions-dir') + 1]) : null,
@@ -194,6 +194,7 @@ export const config = {
     '19': '22',
     '20': '22',
     '21': '22',
+    '22': '22',   // ng22 dropa Node 20; Node 22/24/26 suportados — node:22 (LTS) basta
   },
   customManagerCommand: '',
 };

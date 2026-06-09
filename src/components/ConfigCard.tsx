@@ -51,7 +51,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   const [sourcePath, setSourcePath] = useState(() => localStorage.getItem('ng-migrator.sourcePath') ?? '')
   const [targetVersion, setTargetVersion] = useState(() => {
     const v = localStorage.getItem('ng-migrator.targetVersion')
-    return v ? parseInt(v) : 21
+    return v ? parseInt(v) : 22
   })
   const [modernize, setModernize] = useState(() => localStorage.getItem('ng-migrator.modernize') !== 'false')
   const [cleanDest, setCleanDest] = useState(() => localStorage.getItem('ng-migrator.cleanDest') !== 'false')
@@ -224,7 +224,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
               <SelectValue placeholder={t('targetVersion')} />
             </SelectTrigger>
             <SelectContent>
-              {[12, 13, 14, 15, 16, 17, 18, 19, 20, 21].map((v) => (
+              {[12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22].map((v) => (
                 <SelectItem key={v} value={String(v)}>Angular {v}</SelectItem>
               ))}
             </SelectContent>

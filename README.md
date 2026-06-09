@@ -1,6 +1,6 @@
 # ng-migrator
 
-CLI that migrates Angular projects incrementally from old versions (v11+) to Angular 21, using the official `ng update` schematics at each step — then applies a full modernization pass to bring the code up to Angular 21 best practices.
+CLI that migrates Angular projects incrementally from old versions (v11+) to Angular 22, using the official `ng update` schematics at each step — then applies a full modernization pass to bring the code up to Angular 22 best practices.
 
 Comes with a local web dashboard for monitoring progress, inspecting per-step file changes, and reviewing before/after diffs.
 
@@ -60,7 +60,7 @@ node migrate.mjs [source] [options]
 ### Examples
 
 ```bash
-# Migrate to Angular 21 (default)
+# Migrate to Angular 22 (default)
 node migrate.mjs ./my-project
 
 # Migrate only up to Angular 17

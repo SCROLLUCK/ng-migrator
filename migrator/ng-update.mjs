@@ -72,12 +72,12 @@ export function syncVersions(targetVersion) {
   // TypeScript: ng update às vezes falha antes de atualizar o TS (ex: v12 com npm >6).
   // Garante versão mínima compatível para evitar conflito de peer deps no npm install.
   // Angular N exige uma faixa específica de TS; o compiler aborta se estiver abaixo.
-  // ng20 → TS >=5.8; ng21 → TS >=5.9 (e <6.1). Manter alinhado a cada release.
-  const TS_FLOOR  = { 12:'4.2',13:'4.4',14:'4.6',15:'4.8',16:'4.9',17:'5.2',18:'5.3',19:'5.5',20:'5.8',21:'5.9' };
-  const TS_TARGET = { 12:'~4.3.5',13:'~4.6.0',14:'~4.7.0',15:'~4.9.0',16:'~5.0.0',17:'~5.2.0',18:'~5.4.0',19:'~5.6.0',20:'~5.8.0',21:'~5.9.0' };
-  // For Angular v22+, fall back to the v21 floor/target until the maps are updated
-  const tsFloor  = TS_FLOOR[targetVersion]  ?? (targetVersion > 21 ? TS_FLOOR[21]  : null);
-  const tsTgt    = TS_TARGET[targetVersion] ?? (targetVersion > 21 ? TS_TARGET[21] : null);
+  // ng20 → TS >=5.8; ng21 → TS >=5.9 (e <6.1); ng22 → TS 6 (5.9 não é mais suportado). Manter alinhado.
+  const TS_FLOOR  = { 12:'4.2',13:'4.4',14:'4.6',15:'4.8',16:'4.9',17:'5.2',18:'5.3',19:'5.5',20:'5.8',21:'5.9',22:'6.0' };
+  const TS_TARGET = { 12:'~4.3.5',13:'~4.6.0',14:'~4.7.0',15:'~4.9.0',16:'~5.0.0',17:'~5.2.0',18:'~5.4.0',19:'~5.6.0',20:'~5.8.0',21:'~5.9.0',22:'~6.0.0' };
+  // For Angular v23+, fall back to the v22 floor/target until the maps are updated
+  const tsFloor  = TS_FLOOR[targetVersion]  ?? (targetVersion > 22 ? TS_FLOOR[22]  : null);
+  const tsTgt    = TS_TARGET[targetVersion] ?? (targetVersion > 22 ? TS_TARGET[22] : null);
   if (tsFloor && pkg.devDependencies?.typescript) {
     const curTs = pkg.devDependencies.typescript.replace(/[^0-9.]/g, '');
     const [curMaj, curMin] = curTs.split('.').map(Number);

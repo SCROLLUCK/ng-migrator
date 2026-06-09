@@ -18,7 +18,7 @@ import { X, Check, Undo2 } from 'lucide-react'
 const EMPTY_DATA: MigrationData = {
   status: 'idle',
   sourceVersion: null,
-  targetVersion: 21,
+  targetVersion: 22,
   sourcePath: '',
   destPath: '',
   date: '',
