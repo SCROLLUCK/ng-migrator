@@ -356,7 +356,7 @@ const server = createServer(async (req, res) => {
     }
 
     const body = await parseBody(req);
-    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions, ngUpdateChecks, peerStrategy, resumeFrom, rollbackTo } = body;
+    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions, inPlace, ngUpdateChecks, peerStrategy, resumeFrom, rollbackTo } = body;
 
     if (!source) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -377,6 +377,7 @@ const server = createServer(async (req, res) => {
     if (dest) args.push('--dest', dest);
     if (modernize === false) args.push('--no-modernize');
     if (splitVersions) args.push('--split-versions');
+    if (inPlace) args.push('--in-place');
     if (ngUpdateChecks) args.push('--ng-update-checks');
     if (peerStrategy === 'force') args.push('--peer-strategy', 'force');
     // Retomar/voltar a um step: operam no destino existente — nunca limpam a pasta.
@@ -390,13 +391,16 @@ const server = createServer(async (req, res) => {
       parentVersionsDir = '';
     }
 
-    // Determine destPath for data polling / deletion
-    const destPath = activeSplitVersions
-      ? parentVersionsDir
-      : (dest || `${source}-ng${to || 21}`);
+    // Determine destPath for data polling / deletion. In-place migra na própria pasta de origem.
+    const destPath = inPlace
+      ? source
+      : activeSplitVersions
+        ? parentVersionsDir
+        : (dest || `${source}-ng${to || 22}`);
 
-    // Delete destination folder if requested (nunca no resume/rollback — operam no destino existente)
-    if (cleanDest && !resumeFrom && !rollbackTo && existsSync(destPath)) {
+    // Delete destination folder if requested (nunca no resume/rollback nem in-place — este migra na
+    // própria pasta de origem, apagá-la seria catastrófico; o in-place exige git limpo, não cleanDest)
+    if (cleanDest && !resumeFrom && !rollbackTo && !inPlace && existsSync(destPath)) {
       try {
         rmSync(destPath, { recursive: true, force: true });
         console.log(`[ui] Destination folder deleted: ${destPath}`);

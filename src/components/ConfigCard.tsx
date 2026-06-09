@@ -57,6 +57,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   const [cleanDest, setCleanDest] = useState(() => localStorage.getItem('ng-migrator.cleanDest') !== 'false')
   const [runAfter, setRunAfter] = useState(() => localStorage.getItem('ng-migrator.runAfter') === 'true')
   const [splitVersions, setSplitVersions] = useState(() => localStorage.getItem('ng-migrator.splitVersions') === 'true')
+  const [inPlace, setInPlace] = useState(() => localStorage.getItem('ng-migrator.inPlace') === 'true')
   const [ngUpdateChecks, setNgUpdateChecks] = useState(() => localStorage.getItem('ng-migrator.ngUpdateChecks') === 'true')
   // 'resolve' (default): resolve compatible versions via registry; 'force': skip resolution, use --force
   const [forcePeerDeps, setForcePeerDeps] = useState(() => localStorage.getItem('ng-migrator.forcePeerDeps') === 'true')
@@ -75,6 +76,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   useEffect(() => { localStorage.setItem('ng-migrator.cleanDest', String(cleanDest)) }, [cleanDest])
   useEffect(() => { localStorage.setItem('ng-migrator.runAfter', String(runAfter)) }, [runAfter])
   useEffect(() => { localStorage.setItem('ng-migrator.splitVersions', String(splitVersions)) }, [splitVersions])
+  useEffect(() => { localStorage.setItem('ng-migrator.inPlace', String(inPlace)) }, [inPlace])
   useEffect(() => { localStorage.setItem('ng-migrator.ngUpdateChecks', String(ngUpdateChecks)) }, [ngUpdateChecks])
   useEffect(() => { localStorage.setItem('ng-migrator.forcePeerDeps', String(forcePeerDeps)) }, [forcePeerDeps])
   useEffect(() => { localStorage.setItem('ng-migrator.loadPath', loadPath) }, [loadPath])
@@ -155,6 +157,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           cleanDest,
           runAfter,
           splitVersions,
+          inPlace,
           ngUpdateChecks,
           peerStrategy: forcePeerDeps ? 'force' : 'resolve',
         }),
@@ -237,8 +240,8 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
             {t('migrationStrategy')}
           </label>
           <RadioGroup
-            value={splitVersions ? 'split' : 'single'}
-            onValueChange={(v) => setSplitVersions(v === 'split')}
+            value={inPlace ? 'inplace' : splitVersions ? 'split' : 'single'}
+            onValueChange={(v) => { setSplitVersions(v === 'split'); setInPlace(v === 'inplace') }}
             disabled={isRunning}
             className="gap-2 bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] p-2.5"
           >
@@ -250,13 +253,21 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
               <RadioGroupItem value="split" disabled={isRunning} />
               <span>{t('splitVersions')}</span>
             </label>
+            <label className={cn('flex items-start gap-2 text-[0.82rem] text-text', isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer')}>
+              <RadioGroupItem value="inplace" disabled={isRunning} className="mt-0.5" />
+              <span>
+                {t('inPlace')}
+                <span className="block text-[0.7rem] text-muted">{t('inPlaceHint')}</span>
+              </span>
+            </label>
           </RadioGroup>
         </div>
 
         {/* Toggles */}
         {[
           { id: 'modernize', label: t('runModernization'), checked: modernize, onChange: setModernize },
-          { id: 'cleanDest', label: t('deleteDestFolder'), checked: cleanDest, onChange: setCleanDest },
+          // "delete dest folder" não se aplica ao in-place (não há pasta de destino separada)
+          ...(inPlace ? [] : [{ id: 'cleanDest', label: t('deleteDestFolder'), checked: cleanDest, onChange: setCleanDest }]),
           { id: 'runAfter', label: t('installServe'), checked: runAfter, onChange: setRunAfter },
           { id: 'ngUpdateChecks', label: t('ngUpdateChecks'), checked: ngUpdateChecks, onChange: setNgUpdateChecks },
           { id: 'forcePeerDeps', label: t('forcePeerDeps'), checked: forcePeerDeps, onChange: setForcePeerDeps },
