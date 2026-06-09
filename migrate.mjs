@@ -16,7 +16,7 @@
 
 import { spawnSync } from 'child_process';
 import { existsSync, unlinkSync, mkdirSync, rmSync, appendFileSync } from 'fs';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, resolve } from 'path';
 import Database from 'better-sqlite3';
 
 import {
@@ -133,9 +133,17 @@ let migrationBranch = null;
 if (opts.inPlace) {
   if (opts.splitVersions) { console.error('\n❌ --in-place é incompatível com --split-versions (este cria uma pasta por versão).'); process.exit(1); }
   if (opts.dest)          { console.error('\n❌ --in-place é incompatível com --dest.'); process.exit(1); }
-  if (!existsSync(join(sourcePath, '.git'))) { console.error(`\n❌ --in-place exige um repositório git em ${sourcePath}.`); process.exit(1); }
+  // Detecta git inclusive em MONOREPO: o .git pode estar num ancestral (ex: projeto em <root>/frontend
+  // com o .git em <root>/.git) — por isso checa `is-inside-work-tree`, não um `.git` literal na pasta.
+  if (capture('git rev-parse --is-inside-work-tree', sourcePath).trim() !== 'true') {
+    console.error(`\n❌ --in-place exige que ${sourcePath} esteja sob um repositório git.`);
+    process.exit(1);
+  }
+  // git add -A / git reset --hard do migrador são REPO-WIDE → exige o repositório inteiro limpo (em
+  // monorepo, commit/stash o que estiver pendente em outras pastas também). `git status` já reporta o
+  // repo todo a partir de qualquer subpasta.
   if (capture('git status --porcelain', sourcePath).trim()) {
-    console.error('\n❌ --in-place exige working tree limpo. Commit/stash suas mudanças primeiro — assim a migração roda numa branch nova e `git reset` desfaz tudo.');
+    console.error('\n❌ --in-place exige o repositório git LIMPO (todo o working tree, não só esta pasta — os commits/reset do migrador são repo-wide). Commit/stash suas mudanças primeiro; assim a migração roda numa branch nova e `git reset` desfaz tudo.');
     process.exit(1);
   }
   migrationBranch = `ng-migrator/to-ng${opts.to}`;
@@ -248,7 +256,12 @@ if (continuingFromExisting) {
     console.log(`\n🔧 Criando branch de migração ${migrationBranch}...`);
     run(`git checkout -b ${migrationBranch}`);
     // Mantém os artefatos do migrador fora da branch (diff/merge limpos). Exclude local, não commitado.
-    try { appendFileSync(join(destPath, '.git/info/exclude'), '\n# ng-migrator (in-place)\n.ng-migrator/\nMIGRATION-REPORT.md\nMIGRATION-STATUS.html\nMIGRATION-DATA.json\nMIGRATION.patch\n'); } catch { /* ignore */ }
+    // Resolve o caminho REAL do info/exclude (em monorepo o .git fica num ancestral → `--git-path`
+    // devolve algo como `../.git/info/exclude`, relativo a destPath).
+    try {
+      const excludePath = resolve(destPath, capture('git rev-parse --git-path info/exclude', destPath).trim());
+      appendFileSync(excludePath, '\n# ng-migrator (in-place)\n.ng-migrator/\nMIGRATION-REPORT.md\nMIGRATION-STATUS.html\nMIGRATION-DATA.json\nMIGRATION.patch\n');
+    } catch { /* ignore */ }
   } else {
     console.log('\n🔧 Inicializando repositório git...');
     run('git init');
