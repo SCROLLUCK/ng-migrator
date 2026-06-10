@@ -26,9 +26,11 @@ export const opts = {
   modernize:       !args.includes('--no-modernize'),
   splitVersions:   args.includes('--split-versions'),
   // Migra na PRÓPRIA pasta de origem (sem pasta irmã -ngN). Exige repo git + working tree limpo,
-  // e roda numa branch dedicada (ng-migrator/to-ngN) pra a branch atual ficar intacta. Útil para
-  // saltos curtos (ex: 21→22). Exceção consciente à regra "nunca modificar a origem".
+  // e roda numa branch dedicada (default ng-migrator/to-ngN) pra a branch atual ficar intacta. Útil
+  // para saltos curtos (ex: 21→22). Exceção consciente à regra "nunca modificar a origem".
   inPlace:         args.includes('--in-place'),
+  // Nome da branch de migração no --in-place. Vazio → default ng-migrator/to-ng<alvo>.
+  branch:          args.includes('--branch') ? args[args.indexOf('--branch') + 1] : null,
   ngUpdateChecks:  args.includes('--ng-update-checks'),
   // Estratégia para conflitos de peer dependency no ng update:
   //   'resolve' (default) — loop iterativo resolvendo versões compatíveis via registry,

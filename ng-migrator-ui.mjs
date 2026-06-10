@@ -356,7 +356,7 @@ const server = createServer(async (req, res) => {
     }
 
     const body = await parseBody(req);
-    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions, inPlace, ngUpdateChecks, peerStrategy, resumeFrom, rollbackTo } = body;
+    const { source, to, from, dest, modernize, steps, cleanDest, runAfter, splitVersions, inPlace, branch, ngUpdateChecks, peerStrategy, resumeFrom, rollbackTo } = body;
 
     if (!source) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -378,6 +378,7 @@ const server = createServer(async (req, res) => {
     if (modernize === false) args.push('--no-modernize');
     if (splitVersions) args.push('--split-versions');
     if (inPlace) args.push('--in-place');
+    if (inPlace && branch && branch.trim()) args.push('--branch', branch.trim());
     if (ngUpdateChecks) args.push('--ng-update-checks');
     if (peerStrategy === 'force') args.push('--peer-strategy', 'force');
     // Retomar/voltar a um step: operam no destino existente — nunca limpam a pasta.

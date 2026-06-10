@@ -146,7 +146,13 @@ if (opts.inPlace) {
     console.error('\n❌ --in-place exige o repositório git LIMPO (todo o working tree, não só esta pasta — os commits/reset do migrador são repo-wide). Commit/stash suas mudanças primeiro; assim a migração roda numa branch nova e `git reset` desfaz tudo.');
     process.exit(1);
   }
-  migrationBranch = `ng-migrator/to-ng${opts.to}`;
+  // Nome da branch: fornecido pelo usuário (--branch / UI) ou default ng-migrator/to-ng<alvo>.
+  migrationBranch = (opts.branch || '').trim() || `ng-migrator/to-ng${opts.to}`;
+  // Valida com allow-list conservador (evita shell-injection e nomes de ref inválidos do git).
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(migrationBranch) || migrationBranch.endsWith('/') || migrationBranch.includes('..')) {
+    console.error(`\n❌ Nome de branch inválido: '${migrationBranch}'. Use letras, números e '/', '-', '_', '.' (sem espaços; não pode terminar em '/' nem conter '..').`);
+    process.exit(1);
+  }
   if (capture(`git rev-parse --verify --quiet ${migrationBranch}`, sourcePath).trim()) {
     console.error(`\n❌ A branch '${migrationBranch}' já existe. Apague-a (git branch -D ${migrationBranch}) ou faça checkout nela e use --resume-from.`);
     process.exit(1);

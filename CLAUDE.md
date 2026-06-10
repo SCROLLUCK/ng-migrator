@@ -23,6 +23,7 @@ node migrate.mjs ./proj --from 14
 
 # Migrar na PRÓPRIA pasta (sem pasta irmã) — exige git limpo; cria branch ng-migrator/to-ng22
 node migrate.mjs ./proj --in-place                # ideal p/ saltos curtos (ex: 21→22)
+node migrate.mjs ./proj --in-place --branch chore/ng22   # nome de branch customizado
 
 # Simular sem executar nada
 node migrate.mjs --dry-run
@@ -102,7 +103,7 @@ O `ModuleWithProviders<T>` e o de-double-comma do `fixTsCompat` **continuam gen�
 ### Nunca modificar o projeto de origem — EXCETO `--in-place` (opt-in explícito)
 O migrador opera sempre sobre a cópia em `destPath`. O projeto original em `sourcePath` é somente-leitura.
 
-**Exceção consciente: `--in-place`.** Para saltos curtos (ex: 21→22) o usuário pode migrar na própria pasta (sem pasta irmã `-ngN`). Como o migrador commita por step e usa `git reset --hard` no resume/rollback, isso só é seguro com guard-rails: `--in-place` **exige** repo git **com working tree limpo** (assim há ponto de restauração) e roda numa **branch dedicada `ng-migrator/to-ng<alvo>`** criada a partir do HEAD limpo — a branch original do usuário fica intacta; ele revisa o diff e faz merge (ou `git branch -D` para descartar). `destPath = sourcePath` (em `context.mjs`); no git-init, `git checkout -b <branch>` em vez de `git init`; os artefatos do migrador (`.ng-migrator/`, `MIGRATION-*`) entram em `.git/info/exclude` para não sujar a branch. Incompatível com `--split-versions` e `--dest`. Aborta se a branch já existe (use `--resume-from` nela). O caminho default (pasta irmã) continua sendo o seguro/recomendado para migrações longas.
+**Exceção consciente: `--in-place`.** Para saltos curtos (ex: 21→22) o usuário pode migrar na própria pasta (sem pasta irmã `-ngN`). Como o migrador commita por step e usa `git reset --hard` no resume/rollback, isso só é seguro com guard-rails: `--in-place` **exige** repo git **com working tree limpo** (assim há ponto de restauração) e roda numa **branch dedicada** (default `ng-migrator/to-ng<alvo>`, customizável via `--branch <nome>` ou pelo campo na UI — validada por allow-list `^[A-Za-z0-9][A-Za-z0-9._/-]*$`, sem `..`/trailing `/`) criada a partir do HEAD limpo — a branch original do usuário fica intacta; ele revisa o diff e faz merge (ou `git branch -D` para descartar). `destPath = sourcePath` (em `context.mjs`); no git-init, `git checkout -b <branch>` em vez de `git init`; os artefatos do migrador (`.ng-migrator/`, `MIGRATION-*`) entram em `.git/info/exclude` para não sujar a branch. Incompatível com `--split-versions` e `--dest`. Aborta se a branch já existe (use `--resume-from` nela). O caminho default (pasta irmã) continua sendo o seguro/recomendado para migrações longas.
 
 **Monorepo:** o projeto pode estar numa subpasta cujo `.git` fica num ancestral (ex: `<root>/frontend` com `.git` em `<root>/.git`). Por isso a detecção usa `git rev-parse --is-inside-work-tree` (não um `.git` literal na pasta), e o `info/exclude` é resolvido via `git rev-parse --git-path info/exclude` (pode vir relativo, ex: `../.git/info/exclude`). Como `git add -A` e `git reset --hard` são **repo-wide**, o requisito de "limpo" e a branch dedicada valem para o **repositório inteiro** — a branch de migração troca o monorepo todo (só a subpasta migrada muda de conteúdo). Em monorepo, commit/stash de pendências em outras pastas também é exigido antes.
 

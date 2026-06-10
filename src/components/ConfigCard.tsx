@@ -58,6 +58,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   const [runAfter, setRunAfter] = useState(() => localStorage.getItem('ng-migrator.runAfter') === 'true')
   const [splitVersions, setSplitVersions] = useState(() => localStorage.getItem('ng-migrator.splitVersions') === 'true')
   const [inPlace, setInPlace] = useState(() => localStorage.getItem('ng-migrator.inPlace') === 'true')
+  const [branchName, setBranchName] = useState(() => localStorage.getItem('ng-migrator.branchName') ?? '')
   const [ngUpdateChecks, setNgUpdateChecks] = useState(() => localStorage.getItem('ng-migrator.ngUpdateChecks') === 'true')
   // 'resolve' (default): resolve compatible versions via registry; 'force': skip resolution, use --force
   const [forcePeerDeps, setForcePeerDeps] = useState(() => localStorage.getItem('ng-migrator.forcePeerDeps') === 'true')
@@ -77,6 +78,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
   useEffect(() => { localStorage.setItem('ng-migrator.runAfter', String(runAfter)) }, [runAfter])
   useEffect(() => { localStorage.setItem('ng-migrator.splitVersions', String(splitVersions)) }, [splitVersions])
   useEffect(() => { localStorage.setItem('ng-migrator.inPlace', String(inPlace)) }, [inPlace])
+  useEffect(() => { localStorage.setItem('ng-migrator.branchName', branchName) }, [branchName])
   useEffect(() => { localStorage.setItem('ng-migrator.ngUpdateChecks', String(ngUpdateChecks)) }, [ngUpdateChecks])
   useEffect(() => { localStorage.setItem('ng-migrator.forcePeerDeps', String(forcePeerDeps)) }, [forcePeerDeps])
   useEffect(() => { localStorage.setItem('ng-migrator.loadPath', loadPath) }, [loadPath])
@@ -158,6 +160,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
           runAfter,
           splitVersions,
           inPlace,
+          branch: inPlace ? branchName.trim() : undefined,
           ngUpdateChecks,
           peerStrategy: forcePeerDeps ? 'force' : 'resolve',
         }),
@@ -260,6 +263,18 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
                 <span className="block text-[0.7rem] text-muted">{t('inPlaceHint')}</span>
               </span>
             </label>
+            {inPlace && (
+              <div className="pl-6">
+                <label className={labelCls} htmlFor="branchName">{t('branchName')}</label>
+                <Input
+                  id="branchName"
+                  value={branchName}
+                  onChange={(e) => setBranchName(e.target.value)}
+                  placeholder={`ng-migrator/to-ng${targetVersion}`}
+                  disabled={isRunning}
+                />
+              </div>
+            )}
           </RadioGroup>
         </div>
 
