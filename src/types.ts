@@ -42,6 +42,14 @@ export interface NgUpdateStep {
   peer?: PeerLog;
 }
 
+export interface AppliedCorrection {
+  name: string;
+  description: string;
+  summary: string;
+  files: string[];
+  angularMajor: number;
+}
+
 export interface MigrationData {
   status: 'idle' | 'running' | 'done' | 'error' | 'serving';
   sourceVersion: number | null;
@@ -81,6 +89,7 @@ export interface MigrationData {
   details: Record<string, StepDetail[]>;
   buildChecks?: Record<string, BuildCheck>;
   notes: string[];
+  corrections?: AppliedCorrection[];
   skippedSteps?: string[];
   filesCreated: string[];
   rolledBackTo?: { step: string; at: string };

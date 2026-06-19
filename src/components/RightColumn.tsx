@@ -4,6 +4,7 @@ import { TerminalCard } from './TerminalCard'
 import { ModernizationCard } from './ModernizationCard'
 import { NgUpdateCard } from './NgUpdateCard'
 import { NotesCard } from './NotesCard'
+import { CorrectionsCard } from './CorrectionsCard'
 import { FinalBuildStatus } from './BuildCheckViews'
 import { useTranslation } from '../lib/i18n'
 import { X } from 'lucide-react'
@@ -62,6 +63,9 @@ export function RightColumn({ data, terminalLines, terminalTotal, onClearTermina
       )}
       {data.status !== 'idle' && (
         <FinalBuildStatus data={data} />
+      )}
+      {data.status !== 'idle' && (
+        <CorrectionsCard data={data} />
       )}
       {data.status !== 'idle' && (
         <NotesCard data={data} />

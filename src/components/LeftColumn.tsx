@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import type { MigrationData } from '../types'
 import { ConfigCard } from './ConfigCard'
+import { CorrectionsManagerCard } from './CorrectionsManagerCard'
 
 interface Props {
   data: MigrationData
@@ -21,13 +22,16 @@ export function LeftColumn({ data, onDataChange, onLoadMigration }: Props) {
   }, [])
 
   return (
-    <ConfigCard
-      data={data}
-      isRunning={isRunning || data.status === 'running'}
-      onStart={() => setIsRunning(true)}
-      onStop={handleStop}
-      onDataChange={onDataChange}
-      onLoadMigration={onLoadMigration}
-    />
+    <div className="flex flex-col gap-5">
+      <ConfigCard
+        data={data}
+        isRunning={isRunning || data.status === 'running'}
+        onStart={() => setIsRunning(true)}
+        onStop={handleStop}
+        onDataChange={onDataChange}
+        onLoadMigration={onLoadMigration}
+      />
+      <CorrectionsManagerCard />
+    </div>
   )
 }

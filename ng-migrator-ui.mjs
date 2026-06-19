@@ -10,16 +10,17 @@
  */
 
 import { createServer } from 'http';
-import { readFileSync, existsSync, statSync, rmSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, readdirSync, existsSync, statSync, rmSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import Database from 'better-sqlite3';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { spawn, spawnSync } from 'child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PORT = 4242;
 const DIST_DIR = join(__dirname, 'dist');
+const CORRECTIONS_DIR = join(__dirname, 'migrator', 'corrections');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -312,6 +313,70 @@ const server = createServer(async (req, res) => {
       'Access-Control-Allow-Origin': '*',
     });
     res.end(JSON.stringify(currentMigrationData));
+    return;
+  }
+
+  // Lista as correções disponíveis em migrator/corrections/ (carrega cada uma p/ ler metadados).
+  if (path === '/api/corrections' && req.method === 'GET') {
+    try {
+      const { loadCorrections } = await import('./migrator/corrections/index.mjs');
+      const list = (await loadCorrections()).map(c => ({
+        name: c.name,
+        description: c.description || '',
+        trigger: typeof c.gate === 'function' ? 'proactive' : 'error-driven',
+      })).sort((a, b) => a.name.localeCompare(b.name));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ corrections: list }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err.message || err) }));
+    }
+    return;
+  }
+
+  // Recebe um arquivo .mjs de correção, VALIDA a forma (name + apply + detect|gate) carregando-o de
+  // forma isolada na própria pasta (p/ os imports `./_lib.mjs` resolverem), e salva se válido.
+  if (path === '/api/corrections' && req.method === 'POST') {
+    const body = await parseBody(req);
+    let { filename, content } = body;
+    if (!content || typeof content !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'content (conteúdo do arquivo .mjs) é obrigatório.' }));
+      return;
+    }
+    // Nome de arquivo seguro: só basename, termina em .mjs, sem prefixo `_` (helper) nem index.mjs.
+    let safe = basename(String(filename || '')).trim();
+    if (safe && !safe.endsWith('.mjs')) safe += '.mjs';
+    if (!safe || safe === 'index.mjs' || safe.startsWith('_') || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.mjs$/.test(safe)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Nome de arquivo inválido: '${filename}'. Use algo como 'minha-correcao.mjs' (sem '/', sem prefixo '_').` }));
+      return;
+    }
+    const finalPath = join(CORRECTIONS_DIR, safe);
+    if (existsSync(finalPath)) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Já existe uma correção '${safe}'. Renomeie ou remova a existente.` }));
+      return;
+    }
+    // Valida num arquivo temporário NA pasta de corrections (prefixo `_` → não é auto-descoberto).
+    const tmpPath = join(CORRECTIONS_DIR, `_upload_check_${Date.now()}.mjs`);
+    try {
+      writeFileSync(tmpPath, content);
+      const mod = await import(pathToFileURL(tmpPath).href + `?v=${Date.now()}`);
+      const c = mod.default;
+      const hasTrigger = typeof c?.detect === 'function' || typeof c?.gate === 'function';
+      if (!c?.name || typeof c.apply !== 'function' || !hasTrigger) {
+        throw new Error("export default inválido: precisa de { name, apply, e detect ou gate }.");
+      }
+      writeFileSync(finalPath, content);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ ok: true, name: c.name, file: safe, trigger: typeof c.gate === 'function' ? 'proactive' : 'error-driven' }));
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Correção inválida: ${String(err.message || err)}` }));
+    } finally {
+      try { unlinkSync(tmpPath); } catch { /* ignore */ }
+    }
     return;
   }
 
