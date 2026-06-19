@@ -1,14 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from '../lib/i18n'
-import { glossaryList, ERROR_GLOSSARY } from '../lib/errorGlossary'
+import { glossaryList, type ErrorInfo } from '../lib/errorGlossary'
 import { cn } from '@/lib/utils'
 import { X } from 'lucide-react'
 
+/** Uma ocorrência de um erro: em qual step, arquivo, quantas vezes e as linhas do diff. */
+export interface ErrorOccurrence {
+  step: string
+  file: string
+  count: number
+  lines?: number[]
+  action?: string
+}
+
 interface Props {
-  /** Códigos presentes na migração atual (destacados). */
-  present?: Set<string>
-  /** Código para focar/scrollar ao abrir (ex: clicou num chip). */
+  /** Mapa código → ocorrências (arquivos/steps/linhas) da migração atual. */
+  occurrences?: Record<string, ErrorOccurrence[]>
+  /** Código para focar/scrollar ao abrir. */
   focusCode?: string
   onClose: () => void
 }
@@ -18,7 +27,45 @@ const FAMILY_STYLE: Record<string, string> = {
   ts: 'bg-blue/12 text-blue border-blue/30',
 }
 
-export function KnownErrorsModal({ present, focusCode, onClose }: Props) {
+function fmtLines(lines?: number[]): string {
+  if (!lines || !lines.length) return ''
+  const s = [...lines].sort((a, b) => a - b)
+  const out: string[] = []
+  let start = s[0], prev = s[0]
+  for (let i = 1; i <= s.length; i++) {
+    if (i < s.length && s[i] === prev + 1) { prev = s[i]; continue }
+    out.push(start === prev ? `${start}` : `${start}–${prev}`)
+    if (i < s.length) { start = s[i]; prev = s[i] }
+  }
+  return out.join(', ')
+}
+
+function OccurrenceList({ occ }: { occ: ErrorOccurrence[] }) {
+  const total = occ.reduce((n, o) => n + o.count, 0)
+  return (
+    <div className="mt-2 border-t border-[#2A2A45] pt-2 flex flex-col gap-1">
+      <span className="text-[0.64rem] uppercase tracking-wider text-muted font-semibold">
+        {occ.length} file{occ.length !== 1 ? 's' : ''} · {total} occurrence{total !== 1 ? 's' : ''}
+      </span>
+      <div className="flex flex-col gap-0.5 max-h-52 overflow-y-auto">
+        {occ.map((o, i) => (
+          <div key={`${o.step}-${o.file}-${i}`} className="flex items-baseline gap-2 text-[0.7rem]">
+            <span className="text-red/80 font-mono shrink-0">×{o.count}</span>
+            <span className="font-mono text-[#B0B0D0] wrap-break-word flex-1" title={o.file}>
+              {o.file}
+            </span>
+            <span className="text-[#5A5A85] shrink-0">{o.step}</span>
+            {o.lines && o.lines.length > 0 && (
+              <span className="text-amber/70 font-mono shrink-0" title="linhas alteradas neste step">L{fmtLines(o.lines)}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function KnownErrorsModal({ occurrences, focusCode, onClose }: Props) {
   const { t, language } = useTranslation()
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -35,17 +82,39 @@ export function KnownErrorsModal({ present, focusCode, onClose }: Props) {
     else inputRef.current?.focus()
   }, [focusCode])
 
-  const all = useMemo(() => glossaryList(), [])
+  // Entradas: glossário + códigos com ocorrências que ainda não estão documentados.
+  const entries = useMemo(() => {
+    const base = glossaryList()
+    const known = new Set(base.map(e => e.code))
+    const extra = Object.keys(occurrences ?? {})
+      .filter(c => !known.has(c))
+      .sort()
+      .map((code): { code: string } & ErrorInfo => ({
+        code,
+        family: code.startsWith('NG') ? 'ng' : 'ts',
+        title: { en: '(undocumented)', pt: '(sem descrição)' },
+        desc: {
+          en: 'Not in the glossary yet — see the affected files below.',
+          pt: 'Ainda não está no glossário — veja os arquivos afetados abaixo.',
+        },
+      }))
+    // Códigos com ocorrências primeiro, depois o resto.
+    const occ = occurrences ?? {}
+    return [...base, ...extra].sort((a, b) => {
+      const ao = occ[a.code] ? 0 : 1, bo = occ[b.code] ? 0 : 1
+      return ao !== bo ? ao - bo : 0
+    })
+  }, [occurrences])
+
   const q = query.trim().toLowerCase()
   const list = q
-    ? all.filter(e =>
+    ? entries.filter(e =>
         e.code.toLowerCase().includes(q) ||
         e.title[language].toLowerCase().includes(q) ||
         e.desc[language].toLowerCase().includes(q))
-    : all
+    : entries
 
-  // Códigos presentes na migração que não estão no glossário (mostra pra não perder).
-  const undocumented = present ? [...present].filter(c => !ERROR_GLOSSARY[c]).sort() : []
+  const occCount = Object.keys(occurrences ?? {}).length
 
   return createPortal(
     <div
@@ -54,13 +123,15 @@ export function KnownErrorsModal({ present, focusCode, onClose }: Props) {
     >
       <div
         onClick={e => e.stopPropagation()}
-        className="bg-surface border border-[#2A2A45] rounded-[12px] w-[72vw] max-w-[820px] h-[88vh] flex flex-col shadow-[0_24px_64px_rgba(0,0,0,0.6)]"
+        className="bg-surface border border-[#2A2A45] rounded-[12px] w-[78vw] max-w-[900px] h-[88vh] flex flex-col shadow-[0_24px_64px_rgba(0,0,0,0.6)]"
       >
         <div className="bg-surface2 border-b border-[#2A2A45] rounded-t-[12px] px-4 py-3 flex items-center gap-3 shrink-0">
           <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-muted">{t('knownErrorsTitle')}</span>
-          <span className="bg-blue/12 text-blue border border-blue/25 rounded px-2 py-px text-[0.68rem] font-semibold shrink-0">
-            {q ? `${list.length} / ` : ''}{all.length}
-          </span>
+          {occCount > 0 && (
+            <span className="bg-red/12 text-red border border-red/25 rounded px-2 py-px text-[0.68rem] font-semibold shrink-0">
+              {occCount} {t('knownErrorsPresent')}
+            </span>
+          )}
           <button
             onClick={onClose}
             className="ml-auto inline-flex items-center bg-transparent border border-[#2A2A45] rounded-[6px] text-muted cursor-pointer px-2 py-1 leading-none shrink-0 hover:text-text hover:border-[#3A3A65] transition-colors"
@@ -82,14 +153,9 @@ export function KnownErrorsModal({ present, focusCode, onClose }: Props) {
         </div>
 
         <div className="overflow-y-auto overflow-x-hidden flex flex-col gap-2 px-4 py-3">
-          {undocumented.length > 0 && !q && (
-            <div className="border border-amber/30 bg-amber/8 rounded-md px-3 py-2 text-[0.74rem] text-amber">
-              {t('knownErrorsUndocumented')}: <span className="font-mono">{undocumented.join(', ')}</span>
-            </div>
-          )}
-
           {list.map(e => {
-            const here = present?.has(e.code)
+            const occ = occurrences?.[e.code]
+            const here = !!occ?.length
             return (
               <div
                 key={e.code}
@@ -112,6 +178,7 @@ export function KnownErrorsModal({ present, focusCode, onClose }: Props) {
                   )}
                 </div>
                 <p className="text-[0.76rem] text-[#9090C0] mt-1 leading-snug wrap-break-word">{e.desc[language]}</p>
+                {here && <OccurrenceList occ={occ!} />}
               </div>
             )
           })}

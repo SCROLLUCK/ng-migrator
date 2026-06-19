@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { MigrationData } from './types'
 import { LeftColumn } from './components/LeftColumn'
 import { RightColumn } from './components/RightColumn'
+import { ErrorModalProvider } from './components/ErrorModalProvider'
 import {
   SidebarProvider,
   Sidebar,
@@ -140,6 +141,7 @@ export default function App() {
   const isViewingLoaded = viewedData !== null
 
   return (
+    <ErrorModalProvider data={data}>
     <SidebarProvider
       open={sidebarOpen}
       onOpenChange={setSidebarOpen}
@@ -254,6 +256,7 @@ export default function App() {
         </div>
       </SidebarInset>
     </SidebarProvider>
+    </ErrorModalProvider>
   )
 }
 
