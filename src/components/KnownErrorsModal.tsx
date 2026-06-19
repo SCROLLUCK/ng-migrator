@@ -2,21 +2,26 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from '../lib/i18n'
 import { glossaryList, type ErrorInfo } from '../lib/errorGlossary'
+import { parseDiff, DiffPanel, type ExpandedState } from './DiffPanel'
 import { cn } from '@/lib/utils'
-import { X } from 'lucide-react'
+import { X, ChevronDown, ChevronRight } from 'lucide-react'
 
-/** Uma ocorrência de um erro: em qual step, arquivo, quantas vezes e as linhas do diff. */
+/** Uma ocorrência de um erro: em qual step, arquivo, quantas vezes, linhas e hashes do diff. */
 export interface ErrorOccurrence {
   step: string
   file: string
   count: number
   lines?: number[]
   action?: string
+  h0?: string
+  h1?: string
 }
 
 interface Props {
   /** Mapa código → ocorrências (arquivos/steps/linhas) da migração atual. */
   occurrences?: Record<string, ErrorOccurrence[]>
+  /** Raiz do projeto migrado (para buscar os diffs). */
+  destPath?: string
   /** Código para focar/scrollar ao abrir. */
   focusCode?: string
   onClose: () => void
@@ -40,32 +45,66 @@ function fmtLines(lines?: number[]): string {
   return out.join(', ')
 }
 
-function OccurrenceList({ occ }: { occ: ErrorOccurrence[] }) {
+function OccurrenceList({ occ, destPath }: { occ: ErrorOccurrence[]; destPath: string }) {
+  const [expanded, setExpanded] = useState<Record<string, ExpandedState>>({})
   const total = occ.reduce((n, o) => n + o.count, 0)
+
+  async function toggle(key: string, o: ErrorOccurrence) {
+    if (expanded[key]) { setExpanded(p => { const n = { ...p }; delete n[key]; return n }); return }
+    if (!o.h0 || !o.h1) { setExpanded(p => ({ ...p, [key]: { lines: [], loading: false, tab: 'diff' } })); return }
+    setExpanded(p => ({ ...p, [key]: { lines: null, loading: true, tab: 'diff' } }))
+    try {
+      const params = new URLSearchParams({ dest: destPath, path: o.file, h0: o.h0, h1: o.h1 })
+      const res = await fetch(`/api/diff?${params}`)
+      const json = await res.json()
+      setExpanded(p => ({ ...p, [key]: { ...p[key], lines: parseDiff(json.diff || ''), loading: false } }))
+    } catch {
+      setExpanded(p => ({ ...p, [key]: { lines: [], loading: false, tab: 'diff' } }))
+    }
+  }
+
   return (
-    <div className="mt-2 border-t border-[#2A2A45] pt-2 flex flex-col gap-1">
-      <span className="text-[0.64rem] uppercase tracking-wider text-muted font-semibold">
+    <div className="mt-2 border-t border-[#2A2A45] pt-2 flex flex-col gap-0.5">
+      <span className="text-[0.64rem] uppercase tracking-wider text-muted font-semibold mb-0.5">
         {occ.length} file{occ.length !== 1 ? 's' : ''} · {total} occurrence{total !== 1 ? 's' : ''}
       </span>
-      <div className="flex flex-col gap-0.5 max-h-52 overflow-y-auto">
-        {occ.map((o, i) => (
-          <div key={`${o.step}-${o.file}-${i}`} className="flex items-baseline gap-2 text-[0.7rem]">
-            <span className="text-red/80 font-mono shrink-0">×{o.count}</span>
-            <span className="font-mono text-[#B0B0D0] wrap-break-word flex-1" title={o.file}>
-              {o.file}
-            </span>
-            <span className="text-[#5A5A85] shrink-0">{o.step}</span>
-            {o.lines && o.lines.length > 0 && (
-              <span className="text-amber/70 font-mono shrink-0" title="linhas alteradas neste step">L{fmtLines(o.lines)}</span>
-            )}
-          </div>
-        ))}
+      <div className="flex flex-col gap-0.5 max-h-[55vh] overflow-y-auto">
+        {occ.map((o, i) => {
+          const key = `${o.step}::${o.file}::${i}`
+          const isOpen = !!expanded[key]
+          const hasDiff = !!o.h0 && !!o.h1
+          return (
+            <div key={key} className="min-w-0">
+              <div
+                onClick={() => hasDiff && toggle(key, o)}
+                className={cn(
+                  'flex items-baseline gap-2 text-[0.7rem] px-1 py-0.5 rounded',
+                  hasDiff ? 'cursor-pointer hover:bg-white/4' : '',
+                  isOpen && 'bg-blue/5',
+                )}
+              >
+                <span className="text-[#3A3A60] w-2.5 shrink-0 inline-flex justify-center self-center">
+                  {hasDiff ? (isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />) : null}
+                </span>
+                <span className="text-red/80 font-mono shrink-0">×{o.count}</span>
+                <span className="font-mono text-[#B0B0D0] wrap-break-word flex-1" title={o.file}>{o.file}</span>
+                <span className="text-[#5A5A85] shrink-0">{o.step}</span>
+                {o.lines && o.lines.length > 0 && (
+                  <span className="text-amber/70 font-mono shrink-0" title="linhas alteradas neste step">L{fmtLines(o.lines)}</span>
+                )}
+              </div>
+              {isOpen && (
+                <DiffPanel state={expanded[key]} onTabChange={tab => setExpanded(p => ({ ...p, [key]: { ...p[key], tab } }))} />
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
 }
 
-export function KnownErrorsModal({ occurrences, focusCode, onClose }: Props) {
+export function KnownErrorsModal({ occurrences, destPath = '', focusCode, onClose }: Props) {
   const { t, language } = useTranslation()
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -123,7 +162,7 @@ export function KnownErrorsModal({ occurrences, focusCode, onClose }: Props) {
     >
       <div
         onClick={e => e.stopPropagation()}
-        className="bg-surface border border-[#2A2A45] rounded-[12px] w-[78vw] max-w-[900px] h-[88vh] flex flex-col shadow-[0_24px_64px_rgba(0,0,0,0.6)]"
+        className="bg-surface border border-[#2A2A45] rounded-[12px] w-[78vw] max-w-225 h-[88vh] flex flex-col shadow-[0_24px_64px_rgba(0,0,0,0.6)]"
       >
         <div className="bg-surface2 border-b border-[#2A2A45] rounded-t-[12px] px-4 py-3 flex items-center gap-3 shrink-0">
           <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-muted">{t('knownErrorsTitle')}</span>
@@ -178,7 +217,7 @@ export function KnownErrorsModal({ occurrences, focusCode, onClose }: Props) {
                   )}
                 </div>
                 <p className="text-[0.76rem] text-[#9090C0] mt-1 leading-snug wrap-break-word">{e.desc[language]}</p>
-                {here && <OccurrenceList occ={occ!} />}
+                {here && <OccurrenceList occ={occ!} destPath={destPath} />}
               </div>
             )
           })}

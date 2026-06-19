@@ -22,7 +22,7 @@ function buildOccurrences(data: MigrationData): Record<string, ErrorOccurrence[]
       for (const c of codes) counts[c] = (counts[c] ?? 0) + 1
       const d = detail.find(x => x.path === file)
       for (const [code, count] of Object.entries(counts)) {
-        (out[code] ??= []).push({ step, file, count, lines: d?.lines, action: d?.action })
+        (out[code] ??= []).push({ step, file, count, lines: d?.lines, action: d?.action, h0: d?.h0, h1: d?.h1 })
       }
     }
   }
@@ -40,7 +40,7 @@ export function ErrorModalProvider({ data, children }: { data: MigrationData; ch
     <ErrorModalContext.Provider value={{ open: openModal }}>
       {children}
       {open && (
-        <KnownErrorsModal occurrences={occurrences} focusCode={focus} onClose={() => setOpen(false)} />
+        <KnownErrorsModal occurrences={occurrences} destPath={data.destPath} focusCode={focus} onClose={() => setOpen(false)} />
       )}
     </ErrorModalContext.Provider>
   )

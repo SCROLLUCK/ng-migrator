@@ -78,6 +78,31 @@ export const ERROR_GLOSSARY: Record<string, ErrorInfo> = {
     },
   },
 
+  NG2003: {
+    family: 'ng',
+    title: { en: 'No injection token', pt: 'Sem token de injeção' },
+    desc: {
+      en: "No suitable injection token for a constructor parameter (e.g. injecting an interface/abstract type). Use @Inject(TOKEN) or an InjectionToken.",
+      pt: "Sem token de injeção adequado para um parâmetro do construtor (ex: injetar interface/tipo abstrato). Use @Inject(TOKEN) ou um InjectionToken.",
+    },
+  },
+  NG2010: {
+    family: 'ng',
+    title: { en: "'imports' only valid on standalone", pt: "'imports' só vale em standalone" },
+    desc: {
+      en: "`imports` is only valid on a component marked `standalone: true`. Surfaces mid-migration when a component gained `imports` but isn't standalone yet.",
+      pt: "`imports` só é válido num componente `standalone: true`. Aparece no meio da migração quando um componente ganhou `imports` mas ainda não é standalone.",
+    },
+  },
+  NG8023: {
+    family: 'ng',
+    title: { en: 'Multiple components match element', pt: 'Múltiplos componentes casam o elemento' },
+    desc: {
+      en: "More than one component matches the same element in a template (ambiguous selector) — usually duplicate/overlapping selectors imported into the same component.",
+      pt: "Mais de um componente casa o mesmo elemento no template (seletor ambíguo) — geralmente seletores duplicados/sobrepostos importados no mesmo componente.",
+    },
+  },
+
   // ── TypeScript ─────────────────────────────────────────────────────────────
   TS2305: {
     family: 'ts',
@@ -181,6 +206,174 @@ export const ERROR_GLOSSARY: Record<string, ErrorInfo> = {
     desc: {
       en: "A parse error (e.g. ';' expected). During migration usually means a third-party .d.ts uses newer syntax than the step's TypeScript — the migrator pins compatible @types/node versions.",
       pt: "Erro de parse (ex: ';' esperado). Na migração, geralmente um .d.ts de terceiros usa sintaxe mais nova que o TypeScript do step — o migrador fixa versões compatíveis de @types/node.",
+    },
+  },
+  TS2339: {
+    family: 'ts',
+    title: { en: 'Property does not exist on type', pt: 'Propriedade não existe no tipo' },
+    desc: {
+      en: "Property 'X' does not exist on type 'Y'. A typo, a missing type, or accessing a member the type doesn't declare.",
+      pt: "Propriedade 'X' não existe no tipo 'Y'. Erro de digitação, tipo faltando, ou acesso a membro que o tipo não declara.",
+    },
+  },
+  TS2345: {
+    family: 'ts',
+    title: { en: 'Argument type not assignable', pt: 'Tipo do argumento não atribuível' },
+    desc: {
+      en: "Argument of type 'A' is not assignable to parameter of type 'B'. Passing the wrong type to a function/method.",
+      pt: "Argumento do tipo 'A' não é atribuível ao parâmetro do tipo 'B'. Passando o tipo errado para uma função/método.",
+    },
+  },
+  TS2366: {
+    family: 'ts',
+    title: { en: 'Function lacks ending return', pt: 'Função sem return final' },
+    desc: {
+      en: "Function lacks an ending return and its return type doesn't include 'undefined'. Add a return or widen the type.",
+      pt: "Função sem return ao final e o tipo de retorno não inclui 'undefined'. Adicione um return ou amplie o tipo.",
+    },
+  },
+  TS2416: {
+    family: 'ts',
+    title: { en: 'Override type mismatch', pt: 'Override com tipo incompatível' },
+    desc: {
+      en: "A property/method isn't assignable to the same member in the base type — an override with an incompatible signature (stricter checks surface it).",
+      pt: "Uma propriedade/método não é atribuível ao mesmo membro do tipo base — um override com assinatura incompatível (checagens mais estritas expõem).",
+    },
+  },
+  TS2454: {
+    family: 'ts',
+    title: { en: 'Used before assigned', pt: 'Usado antes de atribuir' },
+    desc: {
+      en: "Variable 'X' is used before being assigned (strictNullChecks). Initialize it or guard the access.",
+      pt: "Variável 'X' usada antes de ser atribuída (strictNullChecks). Inicialize ou proteja o acesso.",
+    },
+  },
+  TS2532: {
+    family: 'ts',
+    title: { en: "Object is possibly 'undefined'", pt: "Objeto possivelmente 'undefined'" },
+    desc: {
+      en: "Object is possibly 'undefined'. Add optional chaining (?.) or a null guard (strictNullChecks).",
+      pt: "Objeto possivelmente 'undefined'. Use optional chaining (?.) ou um guard de nulo (strictNullChecks).",
+    },
+  },
+  TS2538: {
+    family: 'ts',
+    title: { en: 'Invalid index type', pt: 'Tipo de índice inválido' },
+    desc: {
+      en: "Type 'X' cannot be used as an index type (e.g. indexing with undefined/object). Narrow the key type.",
+      pt: "Tipo 'X' não pode ser usado como índice (ex: indexar com undefined/objeto). Restrinja o tipo da chave.",
+    },
+  },
+  TS2551: {
+    family: 'ts',
+    title: { en: 'Property does not exist (suggestion)', pt: 'Propriedade não existe (sugestão)' },
+    desc: {
+      en: "Property 'X' does not exist on type 'Y'. Did you mean 'Z'? Variant of TS2339 with a near-match suggestion (often a rename).",
+      pt: "Propriedade 'X' não existe no tipo 'Y'. Quis dizer 'Z'? Variante do TS2339 com sugestão de nome (geralmente um rename).",
+    },
+  },
+  TS2564: {
+    family: 'ts',
+    title: { en: 'Property has no initializer', pt: 'Propriedade sem inicializador' },
+    desc: {
+      en: "Property has no initializer and isn't definitely assigned in the constructor (strictPropertyInitialization). Initialize it, use '!' or make it optional.",
+      pt: "Propriedade sem inicializador e não definitivamente atribuída no construtor (strictPropertyInitialization). Inicialize, use '!' ou torne opcional.",
+    },
+  },
+  TS2571: {
+    family: 'ts',
+    title: { en: "Object is of type 'unknown'", pt: "Objeto é do tipo 'unknown'" },
+    desc: {
+      en: "Object is of type 'unknown' (e.g. a caught error). Narrow it with a type guard before using it.",
+      pt: "Objeto é do tipo 'unknown' (ex: erro capturado). Restrinja com um type guard antes de usar.",
+    },
+  },
+  TS2769: {
+    family: 'ts',
+    title: { en: 'No overload matches call', pt: 'Nenhuma sobrecarga casa a chamada' },
+    desc: {
+      en: "No overload matches this call. The arguments don't fit any of the function's overload signatures.",
+      pt: "Nenhuma sobrecarga casa esta chamada. Os argumentos não batem com nenhuma assinatura sobrecarregada da função.",
+    },
+  },
+  TS2790: {
+    family: 'ts',
+    title: { en: "'delete' operand must be optional", pt: "operando de 'delete' deve ser opcional" },
+    desc: {
+      en: "The operand of a 'delete' operator must be optional. Make the property optional (?) to delete it.",
+      pt: "O operando de um 'delete' deve ser opcional. Torne a propriedade opcional (?) para poder deletá-la.",
+    },
+  },
+  TS7005: {
+    family: 'ts',
+    title: { en: "Variable implicitly 'any'", pt: "Variável implicitamente 'any'" },
+    desc: {
+      en: "Variable implicitly has an 'any' type (noImplicitAny). Add an explicit type annotation.",
+      pt: "Variável tem tipo 'any' implícito (noImplicitAny). Adicione uma anotação de tipo explícita.",
+    },
+  },
+  TS7006: {
+    family: 'ts',
+    title: { en: "Parameter implicitly 'any'", pt: "Parâmetro implicitamente 'any'" },
+    desc: {
+      en: "Parameter implicitly has an 'any' type (noImplicitAny). Annotate the parameter type. Common when stricter defaults land at v22.",
+      pt: "Parâmetro tem tipo 'any' implícito (noImplicitAny). Anote o tipo do parâmetro. Comum quando os defaults mais estritos chegam no v22.",
+    },
+  },
+  TS7008: {
+    family: 'ts',
+    title: { en: "Member implicitly 'any'", pt: "Membro implicitamente 'any'" },
+    desc: {
+      en: "Class member implicitly has an 'any' type (noImplicitAny). Add an explicit type.",
+      pt: "Membro de classe com tipo 'any' implícito (noImplicitAny). Adicione um tipo explícito.",
+    },
+  },
+  TS7015: {
+    family: 'ts',
+    title: { en: 'Implicit any from index', pt: 'any implícito por índice' },
+    desc: {
+      en: "Element implicitly has 'any' because the index expression isn't of type 'number'. Type the index or add an index signature.",
+      pt: "Elemento com 'any' implícito porque o índice não é 'number'. Tipe o índice ou adicione uma index signature.",
+    },
+  },
+  TS7034: {
+    family: 'ts',
+    title: { en: "Variable implicitly 'any' (inferred)", pt: "Variável 'any' implícito (inferido)" },
+    desc: {
+      en: "Variable implicitly has type 'any' in locations where its type can't be determined. Annotate it explicitly.",
+      pt: "Variável com tipo 'any' implícito onde o tipo não pôde ser determinado. Anote explicitamente.",
+    },
+  },
+  TS7053: {
+    family: 'ts',
+    title: { en: 'Implicit any from index signature', pt: 'any implícito por index signature' },
+    desc: {
+      en: "Element implicitly has 'any' because the expression can't index the type (no matching index signature). Add an index signature or narrow the key.",
+      pt: "Elemento com 'any' implícito porque a expressão não pode indexar o tipo (sem index signature). Adicione uma index signature ou restrinja a chave.",
+    },
+  },
+  TS18046: {
+    family: 'ts',
+    title: { en: "Value is of type 'unknown'", pt: "Valor é do tipo 'unknown'" },
+    desc: {
+      en: "A value is of type 'unknown' (often a caught error). Narrow it with a type guard before using.",
+      pt: "Um valor é do tipo 'unknown' (geralmente um erro no catch). Restrinja com um type guard antes de usar.",
+    },
+  },
+  TS18047: {
+    family: 'ts',
+    title: { en: "Value is possibly 'null'", pt: "Valor possivelmente 'null'" },
+    desc: {
+      en: "Value is possibly 'null' (strictNullChecks). Add a null guard or optional chaining.",
+      pt: "Valor possivelmente 'null' (strictNullChecks). Adicione guard de nulo ou optional chaining.",
+    },
+  },
+  TS18048: {
+    family: 'ts',
+    title: { en: "Value is possibly 'undefined'", pt: "Valor possivelmente 'undefined'" },
+    desc: {
+      en: "Value is possibly 'undefined' (strictNullChecks). Add a guard or optional chaining.",
+      pt: "Valor possivelmente 'undefined' (strictNullChecks). Adicione guard ou optional chaining.",
     },
   },
 }
