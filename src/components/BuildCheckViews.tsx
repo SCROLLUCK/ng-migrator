@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import type { BuildCheck, MigrationData } from '../types'
 import { useTranslation } from '../lib/i18n'
 import { cn } from '@/lib/utils'
-import { Check, TriangleAlert, CircleCheckBig, ArrowRight } from 'lucide-react'
+import { Check, TriangleAlert, CircleCheckBig, ArrowRight, BookOpen } from 'lucide-react'
+import { KnownErrorsModal } from './KnownErrorsModal'
 
 export function BuildBadge({ check }: { check: BuildCheck }) {
   const { t } = useTranslation()
@@ -40,6 +42,8 @@ export function BuildBadge({ check }: { check: BuildCheck }) {
 }
 
 export function FinalBuildStatus({ data }: { data: MigrationData }) {
+  const { t } = useTranslation()
+  const [modal, setModal] = useState<{ focus?: string } | null>(null)
   const checks = data.buildChecks ?? {}
   const keys = Object.keys(checks)
   if (!keys.length) return null
@@ -57,6 +61,10 @@ export function FinalBuildStatus({ data }: { data: MigrationData }) {
   const lastStep = keys[keys.length - 1]
   const isRunning = data.status === 'running'
 
+  // Códigos vistos em qualquer step (união dos `new`) — para o glossário destacar o que apareceu.
+  const seen = new Set<string>()
+  for (const key of keys) for (const c of checks[key].new) seen.add(c)
+
   return (
     <div className={cn(
       'rounded-[10px] border px-4 py-3',
@@ -70,26 +78,42 @@ export function FinalBuildStatus({ data }: { data: MigrationData }) {
           {isClean ? <><Check className="size-3.5" /> Build clean</> : <><TriangleAlert className="size-3.5" /> Build errors</>}
         </span>
         {!isClean && (
-          <span className="text-[0.72rem] text-[#7070A0]">
+          <span className="text-[0.72rem] text-muted">
             — {lastTotal} error type{lastTotal !== 1 ? 's' : ''} remaining
           </span>
         )}
+        <button
+          onClick={() => setModal({})}
+          className="ml-auto inline-flex items-center gap-1 text-[0.66rem] text-muted hover:text-text border border-[#2A2A45] hover:border-[#3A3A65] rounded px-1.5 py-0.5 cursor-pointer transition-colors"
+          title={t('knownErrorsTitle')}
+        >
+          <BookOpen className="size-3" /> {t('knownErrorsButton')}
+        </button>
         {isRunning && (
-          <span className="ml-auto text-[0.65rem] text-[#4A4A70] animate-pulse-custom">updating…</span>
+          <span className="text-[0.65rem] text-[#4A4A70] animate-pulse-custom">updating…</span>
         )}
       </div>
       {!isClean && remaining.size > 0 && (
         <div className="flex flex-wrap gap-1 mt-2">
           {Array.from(remaining).map(code => (
-            <span key={code} className="text-[0.72rem] px-1.5 py-0.5 rounded bg-red/8 border border-red/25 text-[#FF5252]/80 font-mono">
+            <button
+              key={code}
+              onClick={() => setModal({ focus: code })}
+              title={t('knownErrorsButton')}
+              className="text-[0.72rem] px-1.5 py-0.5 rounded bg-red/8 border border-red/25 text-[#FF5252]/80 font-mono cursor-pointer hover:bg-red/15 hover:text-[#FF5252] transition-colors"
+            >
               {code}
-            </span>
+            </button>
           ))}
         </div>
       )}
       <div className="text-[0.65rem] text-[#3A3A60] mt-1.5">
         {isRunning ? 'current state' : 'final state'} · last check: {lastStep}
       </div>
+
+      {modal && (
+        <KnownErrorsModal present={seen} focusCode={modal.focus} onClose={() => setModal(null)} />
+      )}
     </div>
   )
 }

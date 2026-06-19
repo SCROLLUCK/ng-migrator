@@ -22,14 +22,19 @@ export function CorrectionsManagerCard() {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  const [unavailable, setUnavailable] = useState(false)
   const load = useCallback(async () => {
     setLoading(true)
+    setUnavailable(false)
     try {
       const res = await fetch('/api/corrections')
+      const ct = res.headers.get('content-type') || ''
+      // Servidor antigo (sem o endpoint) devolve o index.html → não é JSON.
+      if (!res.ok || !ct.includes('application/json')) { setUnavailable(true); return }
       const json = await res.json()
-      if (res.ok) setItems(json.corrections ?? [])
+      setItems(json.corrections ?? [])
     } catch {
-      // ignore
+      setUnavailable(true)
     } finally {
       setLoading(false)
     }
@@ -65,7 +70,7 @@ export function CorrectionsManagerCard() {
         className="bg-surface2 border-b border-[#2A2A45] px-4 py-[0.55rem] flex items-center gap-[0.6rem] cursor-pointer hover:bg-white/3 transition-colors"
       >
         <Wrench className="size-3.5 text-green" />
-        <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">
+        <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-muted">
           {t('correctionsLibrary')}
         </span>
         {items.length > 0 && (
@@ -78,10 +83,15 @@ export function CorrectionsManagerCard() {
 
       {open && (
         <div className="flex flex-col gap-2 px-4 py-3">
-          <p className="text-[0.72rem] text-[#7070A0] -mt-0.5">{t('correctionsLibraryHint')}</p>
+          <p className="text-[0.72rem] text-muted -mt-0.5">{t('correctionsLibraryHint')}</p>
 
-          {loading && <p className="text-[0.74rem] text-[#7070A0]">…</p>}
-          {!loading && items.map(c => (
+          {loading && <p className="text-[0.74rem] text-muted">…</p>}
+          {!loading && unavailable && (
+            <div className="border border-amber/30 bg-amber/8 text-amber rounded-md px-3 py-2 text-[0.74rem] wrap-break-word">
+              {t('correctionsUnavailable')}
+            </div>
+          )}
+          {!loading && !unavailable && items.map(c => (
             <div key={c.name} className="border border-[#2A2A45] bg-[#0F0F1A] rounded-md px-3 py-2">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-mono text-[0.76rem] text-text font-semibold">{c.name}</span>
@@ -109,7 +119,7 @@ export function CorrectionsManagerCard() {
             </button>
             <button
               onClick={load}
-              className="inline-flex items-center text-[#7070A0] hover:text-text rounded-md p-1.5 cursor-pointer transition-colors"
+              className="inline-flex items-center text-muted hover:text-text rounded-md p-1.5 cursor-pointer transition-colors"
               title={t('refresh')}
             >
               <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />

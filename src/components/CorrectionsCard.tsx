@@ -26,7 +26,7 @@ function CorrectionRow({ c }: { c: AppliedCorrection }) {
               </span>
             )}
             {files.length > 0 && (
-              <span className="ml-auto text-[0.66rem] text-[#7070A0]">
+              <span className="ml-auto text-[0.66rem] text-muted">
                 {files.length} {files.length === 1 ? 'arquivo' : 'arquivos'} {open ? '▼' : '▶'}
               </span>
             )}
@@ -58,7 +58,7 @@ export function CorrectionsCard({ data }: { data: MigrationData }) {
         onClick={() => setOpen(o => !o)}
         className="bg-surface2 border-b border-[#2A2A45] px-4 py-[0.55rem] flex items-center gap-[0.6rem] cursor-pointer hover:bg-white/3 transition-colors"
       >
-        <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-[#7070A0]">
+        <span className="text-[0.72rem] font-bold tracking-[0.07em] uppercase text-muted">
           {t('correctionsTitle')}
         </span>
         <span className="ml-auto bg-green/18 text-green border border-green/30 rounded px-1.75 py-px text-[0.68rem] font-semibold">
@@ -69,7 +69,7 @@ export function CorrectionsCard({ data }: { data: MigrationData }) {
 
       {open && (
         <div className="flex flex-col gap-2 px-4 py-3">
-          <p className="text-[0.72rem] text-[#7070A0] -mt-0.5 mb-0.5">{t('correctionsSubtitle')}</p>
+          <p className="text-[0.72rem] text-muted -mt-0.5 mb-0.5">{t('correctionsSubtitle')}</p>
           {corrections.map((c, i) => (
             <CorrectionRow key={`${c.name}-${i}`} c={c} />
           ))}

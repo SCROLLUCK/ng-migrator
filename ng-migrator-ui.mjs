@@ -18,7 +18,7 @@ import { spawn, spawnSync } from 'child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const PORT = 4242;
+const PORT = Number(process.env.NG_MIGRATOR_UI_PORT) || 4242;
 const DIST_DIR = join(__dirname, 'dist');
 const CORRECTIONS_DIR = join(__dirname, 'migrator', 'corrections');
 
