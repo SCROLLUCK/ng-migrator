@@ -52,6 +52,51 @@ Legenda status: ✅ feito · 🔜 a portar · 🔬 investigar
 
 ---
 
+## 1bis. @angular/material — correção ABRANGENTE (alta prioridade) 🔜
+
+**As breaking changes do Material são recorrentes, previsíveis e em lockstep** (Material + CDK +
+companions como ngx-toastr versionam juntos). Não devem virar fix manual por projeto — devem ser
+**uma correção de Material única e completa** no migrador, cobrindo TS + template + Sass. Tudo abaixo
+foi encontrado e resolvido manualmente no orion (validado):
+
+**API TypeScript (v15 — JÁ na correção `material-api-renames` + `fixLegacyMaterial`):**
+- `MatLegacy*` → `Mat*`; `_countGroupLabelsBeforeLegacyOption`→`…BeforeOption`,
+  `_getLegacyOptionScrollPosition`→`…OptionScrollPosition`; `ngControl as NgControl`.
+- ⚠️ O cast `as NgControl` precisa **garantir o import** de `NgControl` (`@angular/forms`) — hoje
+  falta (gerou TS2304 no orion). **Adicionar ao apply.**
+
+**Templates (v17):**
+- `<mat-chip-list #x>` → `<mat-chip-grid #x>` (se tem `matChipInputFor`) ou `<mat-chip-set>` (display);
+  `<mat-chip>` → `<mat-chip-row>` (no grid); **remover** `[selectable]`/`[removable]`.
+- `<mat-slider [value] [thumbLabel] tickInterval ...>` → `<mat-slider discrete ...><input matSliderThumb
+  [value] [(ngModel)] aria-* ...></mat-slider>`. `thumbLabel`→`discrete`; value/ngModel/aria movem p/
+  o `<input matSliderThumb>`; dropar `tickInterval`/`invert`/`vertical`.
+
+**Templates (v19):**
+- Botão com 2+ diretivas de estilo (`mat-button mat-icon-button`, `mat-icon-button mat-stroked-button`,
+  `mat-button mat-raised-button`…) → **NG8023** "Multiple components match". Manter a mais específica
+  (prioridade icon-button > mini-fab > fab > stroked/raised/flat > button), remover as outras.
+
+**Sass / theming (v17):**
+- `mat.legacy-core()` → `mat.core()`; `mat.all-legacy-component-themes($t)` → `mat.all-component-themes($t)`;
+  `mat.legacy-<comp>-theme` → `mat.<comp>-theme`.
+- Tipografia legacy REMOVIDA: `mat.legacy-typography-hierarchy`, `mat.legacy-<comp>-typography`,
+  `mat.all-legacy-component-typographies` → não têm equivalente direto (a config usa levels antigos
+  `$display-4`/`$headline`/`$subheading-1`). Migração completa = remapear p/ M2 (`$headline-1..6`,
+  `$body-1/2`, `$subtitle-1/2`); fix mínimo = comentar os `@include` removidos (cai no default).
+- `ng update @angular/material` **deveria** rodar esses schematics de Sass/template — no orion **não
+  rodou/não cobriu**. Investigar por que (rodou antes do standalone? schematic não cobre custom theme?).
+
+**Companions em lockstep (subir junto com o Material):**
+- `ngx-toastr` < 20 importa `ComponentFactoryResolver` (removido v17) → subir p/ versão Ivy (20.x).
+  Generalizar: qualquer dep que importe símbolo removido do `@angular/core` → candidata a upgrade.
+
+**Núcleo Angular relacionado (não-Material, mas recorrente):**
+- `ComponentFactoryResolver` removido (v17): `resolver.resolveComponentFactory(X)` +
+  `vcr.createComponent(factory)` → `vcr.createComponent(X)`; `ref.instance.input = x` → `ref.setInput(...)`.
+
+---
+
 ## 2. CORREÇÕES novas (lib-specific) — validadas no orion
 
 ### 2.1 ✅ Criadas e commitadas
