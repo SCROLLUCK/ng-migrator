@@ -144,7 +144,11 @@ function makeApplyCtx() {
 export async function runCorrections(angularMajor, runtimeRaw = '') {
   const corrections = (await loadCorrections()).filter(c => typeof c.detect === 'function');
   if (!corrections.length) return [];
-  const buildRaw = capture('npx ng build --configuration development 2>&1; true').replace(/\x1b\[[0-9;]*m/g, '');
+  // Build com a config DEFAULT (mesma invocação do build-check). NÃO usar `--configuration
+  // development`: nem todo workspace define essa config (ex: angular.json só com 'production') — o
+  // build abortaria com "Configuration 'development' is not set", sem códigos de erro, e nenhum
+  // detect casaria → correções não disparam mesmo havendo erros.
+  const buildRaw = capture('npx ng build --no-progress 2>&1; true').replace(/\x1b\[[0-9;]*m/g, '');
   const raw = buildRaw + '\n' + runtimeRaw;
   const codes = new Set([...raw.matchAll(/\b((?:TS|NG)\d{4,5})\b/g)].map(m => m[1]));
   if (!codes.size) return []; // sem erro → nada a corrigir
