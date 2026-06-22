@@ -49,6 +49,11 @@ export function syncVersions(targetVersion) {
     for (const name of syncTargets) {
       if (!pkg[section][name]) continue;
       const current = getEffectiveMajor(pkg[section][name]);
+      // Só sincroniza quem está ATRÁS do major alvo. Pacote já no major alvo (ex: `^14.3.0` com
+      // alvo 14) fica como está — reescrever p/ `^14.0.0` seria churn inútil (mesmo major, resolve o
+      // mesmo patch) e rebaixaria o floor. O skew de PATCH entre pacotes de framework (caso raro do
+      // v20: `platform-browser-dynamic@20.0.7` vs `platform-browser@20.3.25`) é resolvido no
+      // `extractConflictPackages` (pin na versão EXATA durante o retry do conflito), não aqui.
       if (current > 0 && current < targetVersion) {
         let targetStr;
         if (frameworkSet.has(name)) {
@@ -556,7 +561,12 @@ export function upgradeThirdPartyForIvy(angularMajor) {
       const installedMajor = getInstalledMajor(name) || getMajor(pkg[section][name]);
       if (!installedMajor || installedMajor >= angularMajor) continue; // já no major (ou acima)
       const target = resolveCompatibleVersion(name, angularMajor) || highestStableWithMajor(name, angularMajor);
-      if (target && getMajor(target) > installedMajor) {
+      // Comparação por SEMVER, não por major. Libs 0.x (ex: ngx-webcam 0.3.2→0.4.x) têm o major
+      // SEMPRE 0 — o eixo que quebra é o MINOR. Com `getMajor(target) > installedMajor` (0 > 0) a
+      // subida nunca acontecia e o WebcamModule virava NG2012 em cascata. `semver.gt` cobre 0.x e
+      // continua impedindo downgrade.
+      const installedVer = semver.coerce(pkg[section][name]) || semver.coerce('0.0.0');
+      if (target && semver.gt(target, installedVer)) {
         const from = pkg[section][name];
         pkg[section][name] = target;            // EXATO (sem ^) — trava na versão Ivy resolvida
         pinned.push({ name, from, to: target });
@@ -660,6 +670,18 @@ export function pinCompatibleThirdParty(angularMajor) {
       );
       continue;
     }
+    // NUNCA fazer DOWNGRADE. Quando a lib ainda NÃO publicou release pro major alvo, as versões
+    // novas têm peer com teto conservador (ex: ngx-infinite-scroll@21 = ">=21 <22") que não cobre o
+    // alvo, e o `resolveCompatibleVersion` cai numa versão ANCIÃ de peer largo (ex: @8.0.2 = ">=8") —
+    // View Engine → NG6002. A versão instalada (mais nova) quase sempre roda por forward-compat;
+    // manter é estritamente melhor que regredir pro passado.
+    if (getMajor(target) < getMajor(meta.version)) {
+      report.notes.push(
+        `[ng${angularMajor}] ${name}@${meta.version} mantido — nenhuma versão dedicada a ng${angularMajor} no registry (peer da mais nova tem teto conservador); o resolve sugeriu ${target} (downgrade), evitado por forward-compat. Revise se quebrar.`,
+      );
+      anchorMajors[name] = getMajor(meta.version);
+      continue;
+    }
     applyPin(section, name, target, `compatível com Angular ${angularMajor}, via registry`);
     anchorMajors[name] = getMajor(target);
   }
@@ -688,6 +710,29 @@ export function pinCompatibleThirdParty(angularMajor) {
       continue;
     }
     applyPin(section, name, target, `acompanha ${Object.keys(relevant).join(', ')}, via registry`);
+  }
+
+  // PASSO 3 — peers NÃO-Angular faltantes dos pacotes-âncora (§5.5). Ex: `ngx-markdown@22`
+  // peer-depende de `marked@^17||^18`. Com `--legacy-peer-deps` o npm **não** instala peers
+  // automaticamente → o build quebra com "Could not resolve marked". Adiciona o peer ausente como
+  // dep direta (o range do peer da versão que VAI ficar instalada: target pinado, senão o instalado).
+  const pinnedMap = Object.fromEntries(pinned.map(p => [p.name, p.to]));
+  for (const [section, name] of thirdParty) {
+    const meta = installedMeta(name);
+    if (!meta || !meta.peers['@angular/core']) continue; // só âncoras (peer @angular/core)
+    let peers = meta.peers;
+    if (pinnedMap[name]) {
+      const pk = fetchPackument(name);
+      peers = pk?.versions?.[pinnedMap[name]]?.peerDependencies || peers;
+    }
+    for (const [peerName, peerRange] of Object.entries(peers)) {
+      if (peerName.startsWith('@angular/')) continue;                               // âncoras: passos 1/2
+      if (pkg.dependencies?.[peerName] || pkg.devDependencies?.[peerName]) continue; // já é dep direta
+      if (installedMeta(peerName)) continue;                                         // já instalado (transitivo OK)
+      pkg[section][peerName] = peerRange;
+      console.log(`  ↳ ${peerName}: + "${peerRange}" (peer não-Angular de ${name}, não instalado)`);
+      pinned.push({ name: peerName, from: '(peer ausente)', to: peerRange });
+    }
   }
 
   if (pinned.length) writeJson(pkgJsonPath, pkg);
@@ -719,8 +764,15 @@ export function extractConflictPackages(output, v, alreadyIncluded) {
     // Pacotes @angular/* oficiais existem em @v. Para libs de terceiros, o major raramente
     // bate com o do Angular — resolve a versão compatível no registry.
     let targetVer;
-    if (pkg.startsWith('@angular/') || pkg.startsWith('@angular-devkit/')) {
-      targetVer = String(v);
+    if (pkg.startsWith('@angular/')) {
+      // Framework versiona em lockstep com peer EXATO entre si. Pinar em `@v` deixa o npm resolver
+      // patches DIFERENTES (`platform-browser@20.3.25` vs `platform-browser-dynamic@20.0.7`) →
+      // quebra o peer exato → --force (com a mensagem enganosa "sem versão compatível", embora a
+      // lib OBVIAMENTE tenha o major v). Pinar na VERSÃO EXATA (maior patch estável do major) faz
+      // todos baterem no mesmo patch → ng update resolve sem forçar. Fallback p/ `@v` se offline.
+      targetVer = highestStableWithMajor(pkg, v) || String(v);
+    } else if (pkg.startsWith('@angular-devkit/')) {
+      targetVer = String(v); // devkit usa esquema 0.NNxx.y → highestStableWithMajor(.,v) não casa
     } else {
       targetVer = resolveCompatibleVersion(pkg, v);
       // Sem versão compatível (ex: @nebular/eva-icons, que peer-depende de @nebular/theme e

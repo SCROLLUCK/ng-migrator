@@ -30,11 +30,15 @@
  * @typedef {Object} ApplyContext
  * @property {string} destPath  Raiz do projeto migrado.
  * @property {string} srcDir    `<destPath>/src`.
+ * @property {number} angularMajor  Major do Angular deste step (p/ correções que cobrem várias
+ *   versões com um gate amplo, ex: `gate: v => v >= 15`, e aplicam cada transform no ponto certo).
  * @property {(fn: (content: string, path: string) => string) => string[]} transformTs
  *   Aplica `fn` a cada `.ts` de `src/` (pula `.spec.ts`). Se `fn` devolver uma string DIFERENTE,
  *   grava o arquivo. Retorna os caminhos (relativos ao projeto) que mudaram.
  * @property {(fn: (content: string, path: string) => string) => string[]} transformHtml
  *   Como `transformTs`, mas para cada `.html` de `src/`. Retorna os caminhos que mudaram.
+ * @property {(fn: (content: string, path: string) => string) => string[]} transformStyles
+ *   Como `transformTs`, mas para cada `.scss`/`.css` de `src/`. Retorna os caminhos que mudaram.
  * @property {(key: string, value: any) => boolean} setCompilerOption
  *   Garante uma opção em `tsconfig.json` (`compilerOptions[key] = value`). Retorna `true` se mudou.
  * @property {(packages: string[]) => boolean} installDevDeps
@@ -91,7 +95,7 @@ export async function loadCorrections() {
  * Monta o {@link ApplyContext} (o helper `transformTs` + paths) passado a `apply()`.
  * @returns {ApplyContext}
  */
-function makeApplyCtx() {
+function makeApplyCtx(angularMajor = 0) {
   const srcDir = join(destPath, 'src');
   // Walker genérico: aplica `fn` a cada arquivo de `src/` que casa `match(name)`, grava se mudou.
   const transformFiles = (match, fn) => {
@@ -113,6 +117,7 @@ function makeApplyCtx() {
   };
   const transformTs = (fn) => transformFiles((n) => n.endsWith('.ts') && !n.endsWith('.spec.ts'), fn);
   const transformHtml = (fn) => transformFiles((n) => n.endsWith('.html'), fn);
+  const transformStyles = (fn) => transformFiles((n) => n.endsWith('.scss') || n.endsWith('.css'), fn);
   const installDevDeps = (packages) => {
     if (!packages?.length) return false;
     run(`npm install -D ${packages.map(p => `"${p}"`).join(' ')} --legacy-peer-deps --no-audit --no-fund`, { ignoreError: true });
@@ -130,7 +135,7 @@ function makeApplyCtx() {
       return true;
     } catch { return false; }
   };
-  return { destPath, srcDir, transformTs, transformHtml, setCompilerOption, installDevDeps };
+  return { destPath, srcDir, angularMajor, transformTs, transformHtml, transformStyles, setCompilerOption, installDevDeps };
 }
 
 /**
@@ -153,7 +158,7 @@ export async function runCorrections(angularMajor, runtimeRaw = '') {
   const codes = new Set([...raw.matchAll(/\b((?:TS|NG)\d{4,5})\b/g)].map(m => m[1]));
   if (!codes.size) return []; // sem erro → nada a corrigir
   const detectCtx = { raw, codes, angularMajor, hasPackage, getInstalledMajor };
-  const applyCtx = makeApplyCtx();
+  const applyCtx = makeApplyCtx(angularMajor);
   const applied = [];
   for (const c of corrections) {
     try {
@@ -185,7 +190,7 @@ export async function runCorrections(angularMajor, runtimeRaw = '') {
 export async function runProactiveCorrections(angularMajor) {
   const corrections = (await loadCorrections()).filter(c => typeof c.gate === 'function' && c.gate(angularMajor));
   if (!corrections.length) return [];
-  const applyCtx = makeApplyCtx();
+  const applyCtx = makeApplyCtx(angularMajor);
   const applied = [];
   for (const c of corrections) {
     try {
@@ -196,9 +201,11 @@ export async function runProactiveCorrections(angularMajor) {
       run(`git add -A && git commit -m "fix(correção): ${c.name}" -m "[ng-migrator-step:corrections]"`, { ignoreError: true });
       const diff = captureGitDiff(h0, capture('git rev-parse HEAD'));
       report.details[c.name] = diff;
-      const files = (result.files || []).length ? result.files : Object.keys(diff);
+      // `files` = caminhos (do git diff real, que tem h0/h1); `fileDetails` = o StepDetail[] com
+      // h0/h1 p/ o dashboard abrir o diff ao clicar no arquivo (como nos cards de modernização).
+      const files = diff.length ? diff.map(d => d.path) : (result.files || []);
       console.log(`  🩹 correção proativa '${c.name}': ${result.summary || files.length + ' arquivo(s)'}`);
-      applied.push({ name: c.name, description: c.description || '', summary: result.summary || '', files, angularMajor });
+      applied.push({ name: c.name, description: c.description || '', summary: result.summary || '', files, angularMajor, fileDetails: diff });
     } catch (e) { console.log(`  ⚠ correção '${c.name}' falhou: ${e.message}`); }
   }
   if (applied.length) {

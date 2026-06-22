@@ -8,7 +8,7 @@ import {
   fixNgModuleImports, copyModuleImportsToComponents, fixStandaloneImports,
   fixMissingStandalone, removeImportsFromNonStandalone, cleanupStandaloneTodos,
   convertOrphanedNonStandalone, collectStandaloneFalseCount, fixCircularStandaloneImports,
-  invalidateProjectIndex, autoFixBuildErrors, fixStandaloneInModuleDeclarations,
+  invalidateProjectIndex, autoFixBuildErrors, pruneOverImports, fixStandaloneInModuleDeclarations,
 } from './standalone.mjs';
 import { convertLazyModulesToRoutes, convertRemainingRoutingModules, removeUnusedModules } from './modules.mjs';
 import { patchThirdPartyVersions } from './ng-update.mjs';
@@ -360,6 +360,14 @@ export function runModernizationMigrations() {
     run('npx ng generate @angular/core:cleanup-unused-imports', { ignoreError: true });
     run('git add -A');
     run('git commit -m "refactor: cleanup unused imports (pós build-fix)" --allow-empty', { ignoreError: true });
+
+    // Poda de over-imports via ORÁCULO NG8113 — robusta onde o schematic acima falha (ele exige
+    // programa compilável; se sobra QUALQUER erro no build, não remove nada). O NG8113 é emitido
+    // junto com os erros, então isto poda os milhares de imports co-declarados não-usados (do
+    // copyModuleImportsToComponents) mesmo com o build ainda sujo. Quebra ciclos NG0919.
+    console.log(`\n  🔄 poda de over-imports (oráculo NG8113)...`);
+    const pruned = pruneOverImports();
+    if (pruned > 0) commitStep('cleanupImports', 'prune over-imports (NG8113)');
   }
 
   // Atualiza versões de libs de terceiros para compatibilidade com a versão Angular alvo

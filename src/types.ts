@@ -8,6 +8,7 @@ export interface StepDetail {
 
 export interface BuildCheck {
   total: number;
+  warnings?: number; // diagnósticos que NÃO bloqueiam o build (ex: NG8113 imports não-usados)
   new: string[];
   fixed: string[];
   errorsByFile?: Record<string, number | string[]>;
@@ -48,6 +49,9 @@ export interface AppliedCorrection {
   summary: string;
   files: string[];
   angularMajor: number;
+  // Diff por arquivo (com h0/h1) — presente nas correções PROATIVAS (capturado via captureGitDiff).
+  // Permite abrir o diff ao clicar no arquivo (como nos cards de modernização/ng-update).
+  fileDetails?: StepDetail[];
 }
 
 export interface MigrationData {
@@ -94,4 +98,7 @@ export interface MigrationData {
   filesCreated: string[];
   rolledBackTo?: { step: string; at: string };
   splitVersions?: boolean;
+  // Flags parseadas dos args de uma migração externa (CLI) — usadas p/ o formulário refletir o
+  // que ESTÁ rodando (não os defaults/localStorage). Ausente em migrações iniciadas pela UI.
+  cliConfig?: { modernize: boolean; ngUpdateChecks: boolean; forcePeerDeps: boolean };
 }

@@ -181,8 +181,24 @@ function buildDynamicNgRegistry() {
   if (_dynamicNgRegistry) return _dynamicNgRegistry;
   const elements = new Map();   // selector → { sym, pkg }
   const pipes = new Map();      // pipeName → { sym, pkg }
-  const attributes = new Map(); // attrName → { sym, pkg }
-  _dynamicNgRegistry = { elements, pipes, attributes };
+  const attributes = new Map(); // attrName → { sym, pkg }  (seletor de atributo de COMPONENTE — usado pelo tmplDetectNeeded especulativo)
+  const dirAttributes = new Map(); // attrName → { sym, pkg } (seletor de atributo de DIRETIVA — SÓ autoFix error-driven; ver aviso no parsing de diretiva)
+  const inputs = new Map();     // inputName → { sym, pkg } (input de diretiva: [options] do currencyMask — SÓ autoFix error-driven)
+  _dynamicNgRegistry = { elements, pipes, attributes, dirAttributes, inputs };
+
+  // Divide o conteúdo de um <...> (ou {...}) por um separador no nível 0, respeitando
+  // aninhamento de <>{}[](). Usado para fatiar os type-args de ɵɵDirectiveDeclaration e as
+  // entradas do objeto de inputs (que tem `;` aninhado: { "x": { "alias":"x"; "required":false } }).
+  const splitTopLevel = (s, sep) => {
+    const parts = []; let depth = 0, cur = '';
+    for (const ch of s) {
+      if ('<{[('.includes(ch)) depth++;
+      else if ('>}])'.includes(ch)) depth--;
+      if (ch === sep && depth === 0) { parts.push(cur); cur = ''; } else cur += ch;
+    }
+    if (cur.trim()) parts.push(cur);
+    return parts;
+  };
 
   const nmDir = join(destPath, 'node_modules');
   const pkgJsonPath = join(destPath, 'package.json');
@@ -210,14 +226,46 @@ function buildDynamicNgRegistry() {
       const f = join(pkgDir, cand);
       if (existsSync(f)) { try { dts = readFileSync(f, 'utf8'); } catch {} break; }
     }
+    let meta = {};
+    try { meta = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')); } catch {}
     if (!dts) {
-      try {
-        const meta = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
-        const t = meta.typings ?? meta.types ?? '';
-        if (t) { const f = join(pkgDir, t); if (existsSync(f)) try { dts = readFileSync(f, 'utf8'); } catch {} }
-      } catch {}
+      const t = meta.typings ?? meta.types ?? '';
+      if (t) { const f = join(pkgDir, t); if (existsSync(f)) try { dts = readFileSync(f, 'utf8'); } catch {} }
     }
-    if (!dts || (!dts.includes('ɵcmp') && !dts.includes('ɵpipe'))) continue;
+
+    // Single-entry (sem subpath de CÓDIGO em `exports`): a declaração (ɵcmp/ɵdir/ɵpipe) costuma
+    // morar em sub-arquivos re-exportados do root (ex: ngx-currency → lib/ngx-currency.directive.d.ts;
+    // o index.d.ts é só `export * from './public-api'`). Como TUDO é re-exportado do root, importar
+    // de `pkgName` funciona → concatenamos todos os .d.ts do pacote p/ achar as declarações.
+    // Multi-entry (Material/CDK: exports tem './theming' etc.) NÃO entra aqui: o símbolo exige import
+    // de subpath (`@angular/material/badge`), então root-import erraria — esses já são cobertos pela
+    // cópia via grafo de NgModule (copyModuleImportsToComponents).
+    const exp = meta.exports;
+    let singleEntry = true;
+    if (exp && typeof exp === 'object') {
+      for (const k of Object.keys(exp)) {
+        if (k === '.' || k === './package.json' || /\.(css|scss|sass|less|json)$/.test(k)) continue;
+        singleEntry = false; break;
+      }
+    }
+    if (singleEntry) {
+      const seen = new Set();
+      const collect = (dir, depth) => {
+        if (depth > 4 || seen.size > 80) return;
+        let ents = []; try { ents = readdirSync(dir); } catch { return; }
+        for (const e of ents) {
+          const full = join(dir, e);
+          let st; try { st = statSync(full); } catch { continue; }
+          if (st.isDirectory()) { if (e !== 'node_modules') collect(full, depth + 1); }
+          else if (e.endsWith('.d.ts') && !seen.has(full)) {
+            seen.add(full); try { dts += '\n' + readFileSync(full, 'utf8'); } catch {}
+          }
+        }
+      };
+      collect(pkgDir, 0);
+    }
+
+    if (!dts || (!dts.includes('ɵcmp') && !dts.includes('ɵpipe') && !dts.includes('ɵdir'))) continue;
 
     // Mapeia classe exportada → módulo que a exporta (para componentes não-standalone)
     const moduleExports = new Map(); // ClassName → ModuleName
@@ -231,7 +279,8 @@ function buildDynamicNgRegistry() {
     // Extrai seletores de componentes: ɵɵComponentDeclaration<ClassName, "selector", ..., true|false>
     for (const m of dts.matchAll(/class\s+(\w+)\b[^{]*\{[^}]*ɵɵComponentDeclaration<\1\s*,\s*"([^"]+)"[^>]+(true|false)/gs)) {
       const [, className, rawSelector, standaloneStr] = m;
-      const sym = standaloneStr === 'true' ? className : (moduleExports.get(className) ?? className);
+      const sym = standaloneStr === 'true' ? className : moduleExports.get(className);
+      if (!sym) continue; // não-standalone sem módulo resolvido → NÃO registra a classe nua (injetá-la em imports[] dá NG2011). O grafo de NgModule (copyModuleImportsToComponents) cobre esses.
       for (const sel of rawSelector.split(',').map(s => s.trim()).filter(Boolean)) {
         if (sel.startsWith('[')) {
           // Attribute directive: [attrName] or [attrName]=[val]
@@ -246,13 +295,52 @@ function buildDynamicNgRegistry() {
     // Extrai nomes de pipes: ɵɵPipeDeclaration<ClassName, "name", true|false>
     for (const m of dts.matchAll(/class\s+(\w+)\b[^{]*\{[^}]*ɵɵPipeDeclaration<\1\s*,\s*"([^"]+)"[^>]*(true|false)/gs)) {
       const [, className, pipeName, standaloneStr] = m;
-      const sym = standaloneStr === 'true' ? className : (moduleExports.get(className) ?? className);
+      const sym = standaloneStr === 'true' ? className : moduleExports.get(className);
+      if (!sym) continue; // não-standalone sem módulo resolvido → NÃO registra a classe nua (injetá-la em imports[] dá NG2011). O grafo de NgModule (copyModuleImportsToComponents) cobre esses.
       if (!pipes.has(pipeName)) pipes.set(pipeName, { sym, pkg: pkgName });
+    }
+
+    // Extrai DIRETIVAS: ɵɵDirectiveDeclaration<Class, Selector, ExportAs, Inputs, Outputs, ...,
+    // IsStandalone, ...>. Cobre diretivas de atributo (ex: [colorPicker], [matBadge]) e seus
+    // INPUTS (ex: `options` do currencyMask, `cpPosition` do colorPicker) — é o que resolve o
+    // NG8002 "can't bind to 'X'" (X = seletor de atributo OU nome de input). ɵɵComponentDeclaration
+    // acima não cobre diretivas (que não têm template), por isso esses bindings ficavam órfãos.
+    for (const m of dts.matchAll(/class\s+(\w+)\b[^{]*\{[\s\S]*?ɵɵDirectiveDeclaration<\1\s*,\s*([\s\S]*?)>;/g)) {
+      const className = m[1];
+      const args = splitTopLevel(m[2], ',').map(a => a.trim());
+      // args (após o Class consumido pelo \1): [0]Selector [1]ExportAs [2]Inputs [3]Outputs
+      //   [4]Queries [5]NgContent [6]IsStandalone [7]HostDirectives
+      const standalone = args[6] === 'true';
+      const sym = standalone ? className : moduleExports.get(className);
+      if (!sym) continue; // não-standalone sem módulo resolvido → NÃO registra (evita NG2011); o grafo de NgModule cobre
+      // ⚠ Seletores/inputs de DIRETIVA vão p/ `dirAttributes`/`inputs` — mapas usados SÓ pelo
+      // autoFixBuildErrors (ERROR-DRIVEN, dispara só num NG8002 real). NUNCA entram em `attributes`
+      // (consumido pelo tmplDetectNeeded ESPECULATIVO da migração standalone): muitas diretivas têm
+      // seletor genérico (`[text]`/`[slider]`/`[rg]` do ngx-color-picker) que casaria qualquer
+      // template e injetaria a diretiva errada. Speculativo = conservador (só componentes, como o v3).
+      const selRaw = args[0];
+      if (selRaw && selRaw !== 'null') {
+        for (const sel of selRaw.replace(/^"|"$/g, '').split(',').map(s => s.trim()).filter(Boolean)) {
+          // Extrai TODO seletor de atributo `[attr]` (cobre composto: `input[currencyMask]`)
+          for (const am of sel.matchAll(/\[([^\]=]+)\]/g)) {
+            const attr = am[1].trim();
+            if (attr && !dirAttributes.has(attr)) dirAttributes.set(attr, { sym, pkg: pkgName });
+          }
+        }
+      }
+      // Inputs → inputs map (só chaves top-level; ignora "alias"/"required" aninhados)
+      const inObj = args[2];
+      if (inObj && inObj.startsWith('{')) {
+        for (const entry of splitTopLevel(inObj.replace(/^\{|\}$/g, ''), ';')) {
+          const km = entry.match(/^\s*"([^"]+)"\s*:/);
+          if (km && !inputs.has(km[1])) inputs.set(km[1], { sym, pkg: pkgName });
+        }
+      }
     }
   }
 
-  const total = elements.size + pipes.size + attributes.size;
-  if (total > 0) console.log(`  ↳ registry dinâmico: ${elements.size} elem + ${attributes.size} attr + ${pipes.size} pipes de pacotes instalados`);
+  const total = elements.size + pipes.size + attributes.size + dirAttributes.size + inputs.size;
+  if (total > 0) console.log(`  ↳ registry dinâmico: ${elements.size} elem + ${attributes.size} attr (comp) + ${dirAttributes.size} attr (dir) + ${inputs.size} inputs + ${pipes.size} pipes de pacotes instalados`);
   return _dynamicNgRegistry;
 }
 
@@ -753,10 +841,16 @@ export function fixMissingStandalone() {
 
       let out = src;
 
-      // @Pipe e @Directive: regex simples (corpos nunca têm chaves aninhadas)
+      // @Pipe e @Directive: regex simples (corpos sem chaves aninhadas)
       if (hasPipeOrDirective) {
         out = out.replace(/@(Pipe|Directive)\(\{([^}]*)\}\)/g, (match, dec, body) => {
-          if (body.includes('standalone')) return match;
+          // §1.2 — o `ng update@19` adiciona `standalone: false` a pipes/directives declarados em
+          // módulo. Se forem usados no `imports[]` de um componente standalone (a migração os copia),
+          // `standalone:false` é INVÁLIDO em imports[] → NG2011/NG2012 (no orion: 4872 erros). Flipa
+          // p/ `true` (igual ao branch de @Component) — depois `fixStandaloneInModuleDeclarations`
+          // os move de declarations→imports no NgModule.
+          if (/standalone\s*:\s*false/.test(body)) return match.replace(/standalone\s*:\s*false/, 'standalone: true');
+          if (body.includes('standalone')) return match; // já tem standalone: true
           const trimmed = body.trimEnd();
           const sep = trimmed.endsWith(',') ? '' : ',';
           return `@${dec}({${trimmed}${sep}\n  standalone: true\n})`;
@@ -1128,6 +1222,89 @@ export function fixCircularStandaloneImports() {
 // ─── Build error loop: usa o compilador Angular como oráculo ─────────────────
 // Roda ng build, parseia NG8001/NG8002/NG8004, resolve o símbolo buscando nos
 // próprios .d.ts instalados e nas importações ES do projeto — sem hardcode.
+// Remove over-imports usando o NG8113 como ORÁCULO (contraparte do autoFixBuildErrors, que ADICIONA
+// imports faltantes). O `copyModuleImportsToComponents` é liberal (copia irmãos co-declarados pra
+// todo componente), gerando milhares de imports não-usados → NG8113 + ciclos NG0919. O schematic
+// `cleanup-unused-imports` precisa de um PROGRAMA COMPILÁVEL (não roda com erros no build); o NG8113
+// é emitido MESMO com erros, então este passe funciona sempre. Cada warning nomeia o símbolo e
+// aponta o arquivo:linha EXATO no `imports[]` → remoção cirúrgica (do array + do import ES se ficou
+// órfão). Fixpoint: re-builda e repete até zerar (remover import não cria novos NG8113, mas o loop
+// garante convergência). Genérico — não é específico de lib.
+export function pruneOverImports() {
+  const COMPONENT_RE = /@Component\s*\(/;
+  const srcDir = join(destPath, 'src');
+  if (!existsSync(srcDir)) return 0;
+
+  // Split por vírgula no NÍVEL 0 (respeita () [] {} <> aninhados — ex: importProvidersFrom(A, B))
+  const splitTop = (s) => {
+    const parts = []; let depth = 0, cur = '';
+    for (const ch of s) {
+      if ('([{<'.includes(ch)) depth++;
+      else if (')]}>'.includes(ch)) depth--;
+      if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; } else cur += ch;
+    }
+    parts.push(cur);
+    return parts;
+  };
+
+  // Remove o símbolo do import ES se ele não é mais usado em NENHUM outro lugar do arquivo.
+  const dropUnusedEsImport = (src, sym) => {
+    const withoutImports = src.replace(/^\s*import\s[\s\S]*?from\s*['"][^'"]+['"];?\s*$/gm, '');
+    if (new RegExp(`\\b${sym}\\b`).test(withoutImports)) return src; // ainda usado → mantém
+    // import dedicado só do símbolo → remove a linha
+    src = src.replace(new RegExp(`^\\s*import\\s*\\{\\s*${sym}\\s*\\}\\s*from\\s*['"][^'"]+['"];?[ \\t]*\\r?\\n`, 'm'), '');
+    // import múltiplo → remove só o símbolo da lista
+    src = src.replace(new RegExp(`(import\\s*\\{[^}]*?)\\b${sym}\\b\\s*,?\\s*([^}]*\\}\\s*from)`, 'm'), '$1$2');
+    return src.replace(/import\s*\{\s*,/g, 'import { ').replace(/,\s*\}/g, ' }');
+  };
+
+  let totalRemoved = 0;
+  const MAX_PASSES = 5;
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    const out = capture('npx ng build --no-progress 2>&1; true').replace(/\x1b\[[0-9;]*m/g, '');
+    if (!out.includes('NG8113')) break;
+
+    // Parse: arquivo → Set<símbolo não-usado>
+    const byFile = new Map();
+    for (const block of out.split(/(?=▲ \[WARNING\] NG8113:)/)) {
+      const sm = block.match(/NG8113:\s+([A-Za-z_]\w*)\s+is not used within the template/);
+      if (!sm) continue;
+      const fm = block.match(/\b(src\/[^\s:'"]+\.ts):\d+:\d+/);
+      if (!fm) continue;
+      const file = join(destPath, fm[1]);
+      if (!existsSync(file)) continue;
+      (byFile.get(file) ?? byFile.set(file, new Set()).get(file)).add(sm[1]);
+    }
+    if (!byFile.size) break;
+
+    let passRemoved = 0;
+    for (const [file, syms] of byFile) {
+      let src = readFileSync(file, 'utf8');
+      const arr = tmplGetDecoratorImportsArray(src, COMPONENT_RE);
+      if (!arr) continue;
+      const body = src.slice(arr.start + 1, arr.end);
+      // Mantém os elementos que NÃO são exatamente um símbolo flagado (preserva importProvidersFrom(...) etc.)
+      const removed = [];
+      const kept = splitTop(body).filter((el) => {
+        const t = el.trim();
+        if (syms.has(t)) { removed.push(t); return false; }
+        return true;
+      });
+      if (!removed.length) continue;
+      const newBody = kept.map((e) => e.trim()).filter(Boolean).join(', ');
+      src = src.slice(0, arr.start + 1) + (newBody ? ` ${newBody} ` : '') + src.slice(arr.end);
+      for (const sym of removed) src = dropUnusedEsImport(src, sym);
+      writeFileSync(file, src);
+      passRemoved += removed.length;
+    }
+    totalRemoved += passRemoved;
+    console.log(`  ↳ over-import prune (NG8113) pass ${pass + 1}: ${passRemoved} import(s) removido(s) em ${byFile.size} arquivo(s)`);
+    if (passRemoved === 0) break;
+  }
+  if (totalRemoved > 0) console.log(`  ↳ ${totalRemoved} over-import(s) removido(s) no total (oráculo NG8113)`);
+  return totalRemoved;
+}
+
 export function autoFixBuildErrors() {
   const COMPONENT_RE = /@Component\s*\(/;
   const srcDir = join(destPath, 'src');
@@ -1230,15 +1407,19 @@ export function autoFixBuildErrors() {
     const errors = [];
 
     // ── esbuild format ──────────────────────────────────────────────────────
-    const esbuildBlocks = out.split(/(?=✘ \[ERROR\] NG(?:800[14]|2012|6008|6004):)/);
+    const esbuildBlocks = out.split(/(?=✘ \[ERROR\] NG(?:800[124]|2012|6008|6004):)/);
     for (const block of esbuildBlocks) {
       let name = null; let type = null;
       // Angular ≤16 emitia "'<nb-card>'"; Angular 17+ emite "'nb-card'" (sem <>). Aceita ambos.
       const ng8001 = block.match(/NG8001[^']*'<?([^'<>]+)>?'/);
       const ng8004 = block.match(/NG8004[^']*'([^']+)'/);
+      // NG8002 "Can't bind to 'X' since it isn't a known property": X = seletor de atributo
+      // ([colorPicker]) ou input de diretiva (options do currencyMask) sem o import no componente.
+      const ng8002 = block.match(/NG8002[^']*'([^']+)'/);
       const ng2012 = block.match(/NG2012[^\n]*/);
       if (ng8001) { name = ng8001[1]; type = 'element'; }
       else if (ng8004) { name = ng8004[1]; type = 'pipe'; }
+      else if (ng8002) { name = ng8002[1]; type = 'binding'; }
       else if (ng2012) { type = 'invalid-import'; }
       if (!type) continue;
       const tsMatch = block.match(/\b(src\/[^\s:'"]+\.(?:component|directive|pipe)\.ts)/);
@@ -1510,9 +1691,15 @@ export function autoFixBuildErrors() {
         'ChangeDetectorRef', 'ElementRef', 'TemplateRef', 'ViewContainerRef', 'Injector',
       ]);
 
-      // Resolve o símbolo: registry dinâmico → imports ES do projeto
-      let found = type === 'element' ? dynReg.elements.get(name) : dynReg.pipes.get(name);
-      if (!found) {
+      // Resolve o símbolo: registry dinâmico → imports ES do projeto.
+      // 'binding' (NG8002) resolve via attributes (seletor [x]) OU inputs (nome do input); o
+      // registry é autoritativo aqui (vem dos .d.ts), então NÃO cai na heurística por substring
+      // (que casaria 'options'/'cpPosition' com qualquer *Module errado).
+      let found = type === 'element' ? dynReg.elements.get(name)
+        : type === 'pipe' ? dynReg.pipes.get(name)
+        : type === 'binding' ? (dynReg.attributes.get(name) || dynReg.dirAttributes.get(name) || dynReg.inputs.get(name))
+        : null;
+      if (!found && type !== 'binding') {
         // Procura no mapa de imports ES do projeto: qualquer símbolo cujo nome
         // contenha o nome do elemento/pipe (heurística para WebcamModule ← webcam, etc.)
         const needle = name.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); // kebab → camel

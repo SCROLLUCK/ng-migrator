@@ -28,7 +28,11 @@ const fxLayoutAlignToTw = (val) => {
   const [main = '', cross = ''] = val.trim().split(/\s+/);
   const J = { start: 'justify-start', 'flex-start': 'justify-start', end: 'justify-end', 'flex-end': 'justify-end', center: 'justify-center', 'space-around': 'justify-around', 'space-between': 'justify-between', 'space-evenly': 'justify-evenly' };
   const A = { start: 'items-start', 'flex-start': 'items-start', end: 'items-end', 'flex-end': 'items-end', center: 'items-center', stretch: 'items-stretch', baseline: 'items-baseline' };
-  return [J[main], A[cross]].filter(Boolean).join(' ');
+  // `flex` (display:flex) é OBRIGATÓRIO: o fxLayoutAlign implica um flex container (no
+  // flex-layout o elemento vira flex). Sem `flex`, as classes justify-*/items-* não fazem
+  // nada (bug: logo/link/botão deixavam de centralizar/esticar). Se o elemento também tem
+  // fxLayout, o `flex` duplicado é deduplicado em processTag.
+  return ['flex', J[main], A[cross]].filter(Boolean).join(' ');
 };
 
 const fxLayoutGapToTw = (val) => {
@@ -47,6 +51,10 @@ const fxFlexToTw = (val) => {
   if (!v) return 'flex-1';
   const NAMED = { auto: 'flex-auto', grow: 'flex-grow', nogrow: 'grow-0', noshrink: 'shrink-0', none: 'flex-none', fill: 'flex-1 w-full h-full', initial: 'flex-initial' };
   if (NAMED[v]) return NAMED[v];
+  // valor com UNIDADE de comprimento explícita (px/em/rem/…) → preserva a unidade.
+  // Bug histórico: `fxFlex="420px"` virava `w-[420%]` (parseFloat largava o `px` e
+  // anexava `%`), deixando o elemento com 420% de largura.
+  if (/\d\s*(px|em|rem|vw|vh|vmin|vmax|ch|pt)$/.test(v)) return `w-[${v.replace(/\s+/g, '')}]`;
   const n = parseFloat(v.replace('%', ''));
   if (!isNaN(n)) {
     const PCT = { 0: 'w-0', 20: 'w-1/5', 25: 'w-1/4', 33: 'w-1/3', 40: 'w-2/5', 50: 'w-1/2', 60: 'w-3/5', 66: 'w-2/3', 67: 'w-2/3', 75: 'w-3/4', 80: 'w-4/5', 100: 'w-full' };
@@ -83,7 +91,8 @@ const processTag = (tag) => {
     },
   );
   if (!classes.length) return tag;
-  const newCls = classes.join(' ').replace(/\s+/g, ' ').trim();
+  // dedup (ex: `flex` vindo de fxLayout + fxLayoutAlign no mesmo elemento)
+  const newCls = [...new Set(classes.join(' ').split(/\s+/).filter(Boolean))].join(' ');
   if (/\bclass="/.test(cleaned))
     return cleaned.replace(/class="([^"]*)"/, (_, ex) => `class="${[ex.trim(), newCls].filter(Boolean).join(' ')}"`);
   return cleaned.replace(/^(<[a-zA-Z][a-zA-Z0-9-]*)/, `$1 class="${newCls}"`);
@@ -151,7 +160,10 @@ export default {
     const twConfigName = projectIsEsm ? 'tailwind.config.mjs' : 'tailwind.config.js';
     const configPath = join(destPath, twConfigName);
     if (!existsSync(configPath)) {
-      const body = `{\n  content: ['./src/**/*.{html,ts}'],\n  theme: { extend: {} },\n  plugins: [],\n}`;
+      // corePlugins.preflight=false: o preflight (reset base do Tailwind) ZERA estilos de
+      // form/img/borda e quebra Material num app já estilizado (logo gigante, inputs crus).
+      // Sem ele as utilities (flex/w-…) seguem funcionando, sem o reset destrutivo.
+      const body = `{\n  corePlugins: { preflight: false },\n  content: ['./src/**/*.{html,ts}'],\n  theme: { extend: {} },\n  plugins: [],\n}`;
       writeFileSync(configPath, `/** @type {import('tailwindcss').Config} */\n${projectIsEsm ? 'export default ' + body : 'module.exports = ' + body};\n`);
     }
 

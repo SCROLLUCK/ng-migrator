@@ -42,24 +42,49 @@ function detectAndAttachExternalMigration() {
 
   for (const line of ps.stdout.split('\n')) {
     if (!line.includes('migrate.mjs')) continue;
+    if (line.includes('| tee ')) continue; // wrapper de re-exec do tee (args vêm com aspas) — usa o processo node real
 
-    // Extract --dest or positional source arg to derive dest path
+    // Deriva o dest dos args (mesma regra do migrate.mjs):
+    //  --dest X            → X
+    //  --in-place [pos]    → pos (migra na própria pasta)
+    //  <pos> [--to N]      → <pos>-ngN   (N default 22, NÃO 21)
     const destMatch = line.match(/--dest\s+(\S+)/);
-    let dest = destMatch?.[1];
+    let dest = destMatch?.[1]?.replace(/^['"]|['"]$/g, '');
     if (!dest) {
-      // Infer from source: node migrate.mjs /path/to/proj  →  /path/to/proj-ng21
-      const srcMatch = line.match(/migrate\.mjs\s+(\S+)/);
-      if (srcMatch) dest = srcMatch[1].replace(/\/?$/, '') + '-ng21';
+      // 1º token após migrate.mjs que NÃO é flag (nem valor de flag) = source posicional
+      const after = line.split(/migrate\.mjs\s+/)[1] || '';
+      const toks = after.split(/\s+/);
+      let src = null;
+      for (let i = 0; i < toks.length; i++) {
+        if (toks[i].startsWith('-')) { if (/^--(to|from|dest|branch|peer-strategy)$/.test(toks[i])) i++; continue; }
+        src = toks[i]; break;
+      }
+      if (src) {
+        if (/--in-place\b/.test(line)) dest = src.replace(/\/+$/, '');
+        else { const to = (line.match(/--to\s+(\d+)/) || [, '22'])[1]; dest = src.replace(/\/+$/, '') + '-ng' + to; }
+      }
     }
     if (!dest) continue;
 
-    // Derive log file: same parent dir, source-name-migration.log
+    // Log fica DENTRO de `<dest>/.ng-migrator/migration.log` (mesma regra do migrate.mjs).
+    // Fallback pro caminho antigo `<parent>/<nome>-migration.log` (migrações já em andamento com
+    // o migrate.mjs anterior, que gravava no pai).
     const name = basename(dest).replace(/-ng\d+$/, '');
-    const logFile = join(dirname(dest), `${name}-migration.log`);
+    const newLog = join(dest, '.ng-migrator', 'migration.log');
+    const oldLog = join(dirname(dest), `${name}-migration.log`);
+    const logFile = existsSync(newLog) ? newLog : oldLog;
     if (!existsSync(logFile)) continue;
 
     console.log(`[api] external migration detected → tailing ${logFile}`);
-    currentMigrationData = { ...currentMigrationData, destPath: dest, status: 'running' };
+    // Parseia as flags reais dos args (CLI) p/ o formulário da UI refletir o que ESTÁ rodando, em
+    // vez dos defaults/localStorage (enganoso). origem/target/estratégia vêm do MIGRATION-DATA.json;
+    // estas (que não estão no data) vêm da linha de comando.
+    const cliConfig = {
+      modernize: !/--no-modernize\b/.test(line),
+      ngUpdateChecks: /--ng-update-checks\b/.test(line),
+      forcePeerDeps: /--peer-strategy\s+force\b/.test(line),
+    };
+    currentMigrationData = { ...currentMigrationData, destPath: dest, status: 'running', cliConfig };
 
     // Tail last 200 lines and follow
     externalTailProcess = spawn('tail', ['-n', '200', '-f', logFile], { stdio: ['ignore', 'pipe', 'ignore'] });
@@ -303,7 +328,11 @@ const server = createServer(async (req, res) => {
       if (fresh) {
         currentMigrationData = {
           ...fresh,
-          status: migrationProcess ? 'running' : (fresh.status || 'done'),
+          // `running` se a UI iniciou (migrationProcess) OU se está seguindo o log de uma
+          // migração externa/CLI (externalTailProcess) — senão o badge ficava 'done' durante o run.
+          status: (migrationProcess || externalTailProcess) ? 'running' : (fresh.status || 'done'),
+          // preserva o cliConfig detectado dos args (o MIGRATION-DATA.json não o tem → o spread o perderia)
+          cliConfig: currentMigrationData.cliConfig,
         };
       }
     }
@@ -496,11 +525,15 @@ const server = createServer(async (req, res) => {
       date: new Date().toISOString().slice(0, 10),
     };
 
-    // Spawn migration process
+    // Spawn migration process. NG_MIGRATOR_TEE=1 impede o re-exec via `tee` do migrador:
+    // aqui a UI JÁ captura o stdout do processo (pipe abaixo) e faz broadcast no SSE, então não
+    // precisa do log em arquivo nem da camada extra (mantém o PID direto p/ o /api/stop). O log
+    // em arquivo + tail só são necessários p/ migrações iniciadas FORA da UI (CLI).
     const env = {
       ...process.env,
       FORCE_COLOR: '1',
       CI: '1',
+      NG_MIGRATOR_TEE: '1',
     };
     if (skipStepsEnv) {
       env.NG_MIGRATOR_SKIP_STEPS = skipStepsEnv;

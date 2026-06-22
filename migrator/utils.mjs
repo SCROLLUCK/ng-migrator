@@ -502,6 +502,11 @@ export function capture(cmd, cwd = ctx.destPath) {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
     env,
+    // 256MB: o default do spawnSync é 1MB. Um build com muitos warnings (ex: NG8113 de
+    // import não-usado — milhares, por over-import) estoura 1MB, o stdout vem TRUNCADO e os
+    // códigos de erro (TS2349 etc.) somem → runCorrections vê `codes` vazio e NENHUMA correção
+    // error-driven dispara (moment ficou com 116 TS2349 no orion v3). maxBuffer alto evita isso.
+    maxBuffer: 256 * 1024 * 1024,
   });
   return result.stdout?.toString().trim() ?? "";
 }
@@ -523,6 +528,7 @@ export function runCapture(cmd, { cwd = ctx.destPath } = {}) {
     cwd,
     encoding: "utf8",
     env,
+    maxBuffer: 256 * 1024 * 1024, // ver capture(): builds com muitos warnings estouram o 1MB default
   });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);

@@ -14,7 +14,7 @@
  *   node migrate.mjs ./proj --no-modernize   # pula inject()/signals/output() migration
  */
 
-import { spawnSync } from 'child_process';
+import { spawnSync, spawn } from 'child_process';
 import { existsSync, unlinkSync, mkdirSync, rmSync, appendFileSync } from 'fs';
 import { join, dirname, basename, resolve } from 'path';
 import Database from 'better-sqlite3';
@@ -36,6 +36,7 @@ import {
   upgradeThirdPartyForIvy,
 } from './migrator/ng-update.mjs';
 import { runModernizationMigrations } from './migrator/orchestrate.mjs';
+import { autoFixBuildErrors, pruneOverImports } from './migrator/standalone.mjs';
 import { runCorrections, runProactiveCorrections } from './migrator/corrections/index.mjs';
 import {
   fixMangledSassNamespaceDefs, fixJsonNamedImports, ensureSkipLibCheck,
@@ -43,6 +44,30 @@ import {
 } from './migrator/transforms.mjs';
 import { writeReport, writeMigrationData, hydrateReportFromDisk, markRollbackInReport } from './migrator/report.mjs';
 import { buildCheck } from './migrator/build-check.mjs';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOG AO VIVO — tee de TODA a saída (inclusive a dos child processes: npm/docker/ng update,
+// que usam stdio:'inherit' e por isso não passam por process.stdout.write) para um arquivo que
+// o dashboard segue com `tail -f`. Sem isso, uma migração rodada via CLI não aparece em tempo
+// real na UI (ela detecta o processo no `ps` mas não tem como capturar o stdout de um processo
+// que ela não iniciou). O arquivo fica em `<parent>/<nome>-migration.log` — MESMO caminho que o
+// ng-migrator-ui.mjs deriva do dest (regra única dos dois lados). Re-exec via `tee`, guardado por
+// env var (o filho não re-executa). Pulado em --dry-run e quando a UI já captura (NG_MIGRATOR_TEE).
+if (!process.env.NG_MIGRATOR_TEE && !opts.dryRun) {
+  // Log DENTRO de `<dest>/.ng-migrator/` (não no pai) — mantém os artefatos do migrador juntos.
+  // Seguro mesmo p/ pasta-irmã que ainda não existe: o mkdirSync cria `<dest>/.ng-migrator/`, e o
+  // copyDir posterior só faz mkdirSync(dest)+copia o source DENTRO (não apaga o dest) → o log sobrevive.
+  const logPath = join(migratorDir, 'migration.log');
+  try { mkdirSync(migratorDir, { recursive: true }); } catch {}
+  const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+  const argv = process.argv.slice(1).map(q).join(' ');
+  const child = spawn('sh', ['-c', `exec node ${argv} 2>&1 | tee ${q(logPath)}`], {
+    stdio: 'inherit',
+    env: { ...process.env, NG_MIGRATOR_TEE: '1' },
+  });
+  await new Promise((res) => child.on('exit', (code) => { process.exitCode = code ?? 0; res(); }));
+  process.exit(process.exitCode ?? 0);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PIPELINE PRINCIPAL
@@ -408,7 +433,16 @@ for (let v = startVersion; v <= opts.to; v++) {
   // v16+: o ngcc foi removido → libs de terceiros em major antigo (View Engine) viram NG6002.
   // Sobe as que versionam junto com o Angular para a versão Ivy; reporta as irresolvíveis.
   // Abaixo do v16, intocadas (funcionam via ngcc) — "subir só onde quebra".
-  if (v >= 16) upgradeThirdPartyForIvy(v);
+  const ivyPins = v >= 16 ? upgradeThirdPartyForIvy(v) : [];
+  // §1.3 — reconcilia os pins Ivy no node_modules JÁ (antes do pinCompatibleThirdParty). Senão o
+  // node_modules fica na versão antiga (View Engine) e o `pinCompatibleThirdParty` decide
+  // compatibilidade por ela (peer não cobre o major) → RE-RESOLVE e SOBRESCREVE o pin Ivy no
+  // package.json (a subida era reportada mas não persistia → NG2012 em cascata).
+  if (ivyPins.length > 0) {
+    const specs = ivyPins.map(p => `'${p.name}@${p.to}'`).join(' ');
+    console.log(`\n  🔄 Reconciliando node_modules (Ivy): ${ivyPins.map(p => p.name).join(', ')}`);
+    run(`npm install ${specs} --legacy-peer-deps --no-audit --no-fund`, { ignoreError: true });
+  }
 
   verifyTsconfigPaths();
   resolveNodeTypesOverride(v);  // evita EOVERRIDE no npm install do ng update
@@ -579,6 +613,12 @@ if (opts.modernize) {
   console.log(' Modernização (inject / signals / output)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
+  // Baseline limpo: commita qualquer mudança PENDENTE deixada pelo loop de ng update (ex:
+  // `package.json`/`angular.json` ajustados por syncVersions/npm) ANTES da modernização. Sem isso,
+  // o `git add -A` do PRIMEIRO step de modernização (ex: throwError) varre esses arquivos pro seu
+  // commit → o diff do step mostra arquivos que ele nem tocou (o "3 arquivos vs 46" no dashboard).
+  run('git add -A && git commit -m "chore: baseline pós-ng-update (isola diffs da modernização)" -m "[ng-migrator-step:baseline]" --allow-empty', { ignoreError: true });
+
   // Rede de segurança do flex-layout: o caminho normal é a correção proativa no loop (gate v16).
   // Mas um resume que pula o loop não passa por lá — se o alvo é >= 16 e o pacote ainda está
   // presente, dispara a MESMA correção aqui (a lógica fica 100% isolada na correção). hasPackage
@@ -595,6 +635,22 @@ if (opts.modernize) {
   const finalCorr = await runCorrections(opts.to);
   if (finalCorr.length) {
     run('git add -A && git commit -m "fix: correções específicas de lib (estado final)" -m "[ng-migrator-step:corrections]" --allow-empty', { ignoreError: true });
+    // As correções que convertem module→diretiva standalone (ngx-currency/ngx-mask/ngx-color-picker)
+    // CRIAM NG8002 por-componente ("can't bind to 'options'/'colorPicker'") — a diretiva precisa
+    // entrar no imports[] de cada componente que usa o binding. O autoFixBuildErrors (#1, registry
+    // seletor/input→símbolo) resolve isso, mas ele já rodou no step `cleanupImports` ANTES destas
+    // correções → não via esses erros. Roda de novo AQUI, após as correções, p/ fechá-los.
+    const postFixed = autoFixBuildErrors();
+    if (postFixed > 0) {
+      run('git add -A && git commit -m "fix: imports de diretiva pós-correções (NG8002)" -m "[ng-migrator-step:corrections]" --allow-empty', { ignoreError: true });
+    }
+    // Prune extra DEPOIS das correções: o `pruneOverImports` do step cleanupImports rodou ANTES
+    // destas correções (e do autoFix acima), que adicionam imports (diretivas) a vários componentes
+    // → alguns ficam não-usados (no v6 sobraram 182 NG8113 por isso). Esta passada final zera-os.
+    const postPruned = pruneOverImports();
+    if (postPruned > 0) {
+      run('git add -A && git commit -m "refactor: prune over-imports pós-correções (NG8113)" -m "[ng-migrator-step:corrections]" --allow-empty', { ignoreError: true });
+    }
     buildCheck('corrections');
   }
 }

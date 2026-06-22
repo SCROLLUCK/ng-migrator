@@ -1,19 +1,22 @@
 import { useState } from 'react'
-import type { MigrationData, AppliedCorrection } from '../types'
+import type { MigrationData, AppliedCorrection, StepDetail } from '../types'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '../lib/i18n'
+import { FileModal } from './FileModal'
 import { Wrench } from 'lucide-react'
 
-function CorrectionRow({ c }: { c: AppliedCorrection }) {
+function CorrectionRow({ c, onOpenDiff }: { c: AppliedCorrection; onOpenDiff: (c: AppliedCorrection) => void }) {
   const [open, setOpen] = useState(false)
   const files = c.files ?? []
+  const hasDiff = (c.fileDetails?.length ?? 0) > 0
+  const clickable = files.length > 0
   return (
     <div className="border border-green/25 bg-green/8 rounded-md overflow-hidden">
       <div
-        onClick={() => files.length && setOpen(o => !o)}
+        onClick={() => { if (!clickable) return; if (hasDiff) onOpenDiff(c); else setOpen(o => !o) }}
         className={cn(
           'flex items-start gap-2 px-3 py-2',
-          files.length ? 'cursor-pointer hover:bg-white/3 transition-colors' : '',
+          clickable ? 'cursor-pointer hover:bg-white/3 transition-colors' : '',
         )}
       >
         <Wrench className="size-3.5 text-green shrink-0 mt-0.5" />
@@ -27,7 +30,7 @@ function CorrectionRow({ c }: { c: AppliedCorrection }) {
             )}
             {files.length > 0 && (
               <span className="ml-auto text-[0.66rem] text-muted">
-                {files.length} {files.length === 1 ? 'arquivo' : 'arquivos'} {open ? '▼' : '▶'}
+                {files.length} {files.length === 1 ? 'arquivo' : 'arquivos'} {hasDiff ? '⊞' : (open ? '▼' : '▶')}
               </span>
             )}
           </div>
@@ -35,7 +38,8 @@ function CorrectionRow({ c }: { c: AppliedCorrection }) {
           {c.summary && <p className="text-[0.72rem] text-text/80 mt-0.5 wrap-break-word">{c.summary}</p>}
         </div>
       </div>
-      {open && files.length > 0 && (
+      {/* Sem diff por arquivo (correções error-driven): lista simples inline */}
+      {open && !hasDiff && files.length > 0 && (
         <div className="border-t border-green/20 px-3 py-1.5 flex flex-col gap-0.5 max-h-44 overflow-y-auto">
           {files.map((f, i) => (
             <span key={i} className="font-mono text-[0.7rem] text-[#9090C0] wrap-break-word">{f}</span>
@@ -49,11 +53,20 @@ function CorrectionRow({ c }: { c: AppliedCorrection }) {
 export function CorrectionsCard({ data }: { data: MigrationData }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(true)
+  const [modal, setModal] = useState<{ title: string; files: StepDetail[] } | null>(null)
   const corrections = data.corrections ?? []
   if (corrections.length === 0) return null
 
   return (
     <div className="bg-surface border border-[#2A2A45] rounded-[10px] overflow-hidden shrink-0">
+      {modal && (
+        <FileModal
+          title={modal.title}
+          files={modal.files}
+          destPath={data.destPath}
+          onClose={() => setModal(null)}
+        />
+      )}
       <div
         onClick={() => setOpen(o => !o)}
         className="bg-surface2 border-b border-[#2A2A45] px-4 py-[0.55rem] flex items-center gap-[0.6rem] cursor-pointer hover:bg-white/3 transition-colors"
@@ -71,7 +84,11 @@ export function CorrectionsCard({ data }: { data: MigrationData }) {
         <div className="flex flex-col gap-2 px-4 py-3">
           <p className="text-[0.72rem] text-muted -mt-0.5 mb-0.5">{t('correctionsSubtitle')}</p>
           {corrections.map((c, i) => (
-            <CorrectionRow key={`${c.name}-${i}`} c={c} />
+            <CorrectionRow
+              key={`${c.name}-${i}`}
+              c={c}
+              onOpenDiff={(corr) => setModal({ title: `${corr.name} (ng${corr.angularMajor})`, files: corr.fileDetails ?? [] })}
+            />
           ))}
         </div>
       )}

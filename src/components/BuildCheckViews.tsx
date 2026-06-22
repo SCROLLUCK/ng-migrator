@@ -29,40 +29,46 @@ export function BuildBadge({ check }: { check: BuildCheck }) {
   const { open } = useErrorModal()
   const focus = () => open(check.new[0] ?? check.fixed[0])
 
+  // Badge de ERROS (bloqueiam o build)
+  let errorBadge
   if (check.total === 0 && check.new.length === 0) {
-    return (
+    errorBadge = (
       <button onClick={() => open()} title={t('knownErrorsButton')} className="inline-flex items-center gap-1 text-[0.68rem] px-1.5 py-0.5 rounded border border-green/40 bg-green/10 text-green font-bold shadow-[0_0_8px_rgba(76,175,80,0.15)] whitespace-nowrap cursor-pointer">
         build <Check className="size-3" />
       </button>
     )
-  }
-  if (check.new.length > 0) {
-    return (
-      <button
-        onClick={focus}
-        title={`${t('introduced')}: ${check.new.join(', ')}`}
-        className="text-[0.68rem] px-1.5 py-0.5 rounded border border-red/50 bg-red/15 text-[#FF5252] font-bold shadow-[0_0_8px_rgba(255,82,82,0.15)] whitespace-nowrap cursor-pointer hover:bg-red/25"
-      >
+  } else if (check.new.length > 0) {
+    errorBadge = (
+      <button onClick={focus} title={`${t('introduced')}: ${check.new.join(', ')}`} className="text-[0.68rem] px-1.5 py-0.5 rounded border border-red/50 bg-red/15 text-[#FF5252] font-bold shadow-[0_0_8px_rgba(255,82,82,0.15)] whitespace-nowrap cursor-pointer hover:bg-red/25">
         +{t('errorsCount', { count: check.new.length })} (Total: {check.total})
       </button>
     )
-  }
-  if (check.fixed.length > 0) {
-    return (
-      <button
-        onClick={focus}
-        title={`${t('resolved')}: ${check.fixed.join(', ')}`}
-        className="text-[0.68rem] px-1.5 py-0.5 rounded border border-green/50 bg-green/15 text-[#81C784] font-bold shadow-[0_0_8px_rgba(129,199,132,0.15)] whitespace-nowrap cursor-pointer hover:bg-green/25"
-      >
+  } else if (check.fixed.length > 0) {
+    errorBadge = (
+      <button onClick={focus} title={`${t('resolved')}: ${check.fixed.join(', ')}`} className="text-[0.68rem] px-1.5 py-0.5 rounded border border-green/50 bg-green/15 text-[#81C784] font-bold shadow-[0_0_8px_rgba(129,199,132,0.15)] whitespace-nowrap cursor-pointer hover:bg-green/25">
         -{t('errorsCount', { count: check.fixed.length })} (Total: {check.total})
       </button>
     )
+  } else {
+    errorBadge = (
+      <button onClick={() => open()} title={t('knownErrorsButton')} className="text-[0.68rem] px-1.5 py-0.5 rounded border border-amber/45 bg-amber/12 text-[#FFB74D] font-bold shadow-[0_0_8px_rgba(255,183,77,0.15)] whitespace-nowrap cursor-pointer hover:bg-amber/20">
+        Total: {t('errorsCount', { count: check.total })}
+      </button>
+    )
   }
-  return (
-    <button onClick={() => open()} title={t('knownErrorsButton')} className="text-[0.68rem] px-1.5 py-0.5 rounded border border-amber/45 bg-amber/12 text-[#FFB74D] font-bold shadow-[0_0_8px_rgba(255,183,77,0.15)] whitespace-nowrap cursor-pointer hover:bg-amber/20">
-      Total: {t('errorsCount', { count: check.total })}
-    </button>
-  )
+
+  // Badge de WARNINGS (NÃO bloqueiam o build — ex: NG8113 imports não-usados). Separado p/ deixar
+  // claro que os milhares de "diagnósticos" do over-import são warnings, não erros.
+  const warnBadge = check.warnings && check.warnings > 0 ? (
+    <span
+      title={t('warningsHint')}
+      className="text-[0.68rem] px-1.5 py-0.5 rounded border border-amber/30 bg-amber/8 text-[#C9A227] font-semibold whitespace-nowrap"
+    >
+      ⚠ {check.warnings.toLocaleString()} {check.warnings === 1 ? 'warning' : 'warnings'}
+    </span>
+  ) : null
+
+  return <span className="inline-flex items-center gap-1">{errorBadge}{warnBadge}</span>
 }
 
 export function FinalBuildStatus({ data }: { data: MigrationData }) {

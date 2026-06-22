@@ -20,8 +20,12 @@ export function buildCheck(stepKey) {
   console.log(`\n  🔍 [${stepKey}] build check...`);
   const raw = capture('npx ng build --no-progress 2>&1; true');
 
-  // Extrai pares (código, trecho da mensagem) de cada linha de erro
-  const current = new Map();
+  // Extrai pares (código, trecho da mensagem). ERROS e WARNINGS são contados SEPARADAMENTE: o
+  // esbuild emite `▲ [WARNING] NG8113` (import não-usado — milhares, por over-import) que NÃO
+  // quebram o build. Misturá-los inflava o "total de erros" (no orion: "13 mil" eram ~9,5k NG8113).
+  // Agora cada um vai pro seu mapa → a UI mostra 2 badges (erros + warnings), deixando claro.
+  const current = new Map();   // erros:    code → Set<msg>
+  const warnings = new Map();  // warnings: code → Set<msg>
   const errorsByFile = {};
   for (const line of raw.split('\n')) {
     const cleanLine = line.replace(/\x1b\[[0-9;]*m/g, '');
@@ -30,6 +34,12 @@ export function buildCheck(stepKey) {
     const code = m[1];
     // Pega até 120 chars do contexto depois do código para identificar o erro
     const msg = cleanLine.trim().slice(0, 120);
+    const isWarning = /\[WARNING\]|\bwarning\s+(?:TS|NG)\d|:\s*warning\b/i.test(cleanLine);
+    if (isWarning) {
+      if (!warnings.has(code)) warnings.set(code, new Set());
+      warnings.get(code).add(msg);
+      continue; // warnings não entram em errorsByFile (não bloqueiam o build)
+    }
     if (!current.has(code)) current.set(code, new Set());
     current.get(code).add(msg);
 
@@ -54,18 +64,20 @@ export function buildCheck(stepKey) {
   const newCodes   = [...current.keys()].filter(c => !prevErrors.has(c));
   const fixedCodes = [...prevErrors.keys()].filter(c => !current.has(c));
   const totalErrors = [...current.values()].reduce((n, s) => n + s.size, 0);
+  const totalWarnings = [...warnings.values()].reduce((n, s) => n + s.size, 0);
+  const warnSuffix = totalWarnings ? ` + ${totalWarnings} warnings` : '';
 
   // Saída no console
   if (newCodes.length)   console.log(`  ⚠️  NEW   : ${newCodes.join(' ')}`);
   if (fixedCodes.length) console.log(`  ✅  FIXED : ${fixedCodes.join(' ')}`);
   if (!newCodes.length && !fixedCodes.length) {
-    console.log(totalErrors === 0 ? `  ✅  build OK` : `  ➡️  sem mudança (${totalErrors} erros)`);
+    console.log(totalErrors === 0 ? `  ✅  build OK${warnSuffix}` : `  ➡️  sem mudança (${totalErrors} erros${warnSuffix})`);
   }
 
   // Escreve no BUILD-CHECKS.md
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   let section = `\n## [${stepKey}] ${ts}\n`;
-  section += `**Total erros:** ${totalErrors}\n`;
+  section += `**Total erros:** ${totalErrors}${totalWarnings ? ` · **Warnings:** ${totalWarnings}` : ''}\n`;
   if (newCodes.length) {
     section += `\n### ⚠️ Introduzidos\n`;
     for (const c of newCodes) {
@@ -83,7 +95,7 @@ export function buildCheck(stepKey) {
 
   appendFileSync(buildCheckLog, section);
   report.buildChecks = report.buildChecks || {};
-  report.buildChecks[stepKey] = { total: totalErrors, new: newCodes, fixed: fixedCodes, errorsByFile };
+  report.buildChecks[stepKey] = { total: totalErrors, warnings: totalWarnings, new: newCodes, fixed: fixedCodes, errorsByFile };
   writeMigrationData();
 
   prevErrors = current;

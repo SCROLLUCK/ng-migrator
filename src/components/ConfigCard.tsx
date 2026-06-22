@@ -180,6 +180,22 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
 
   const labelCls = 'text-[0.78rem] text-[#7070A0] block mb-1'
 
+  // Enquanto uma migração ESTÁ RODANDO (especialmente iniciada via CLI, fora desta UI), os campos do
+  // formulário (estado local/localStorage) NÃO refletem os args reais → enganoso (mostrava origem/
+  // target/estratégia errados). Durante o run, exibe os valores REAIS do `data` (do MIGRATION-DATA.json:
+  // sourcePath/targetVersion/splitVersions; in-place = destPath === sourcePath). Inputs já são
+  // disabled={isRunning}, então isso é só display — o estado local volta a valer quando a migração para.
+  const dispSourcePath = isRunning && data.sourcePath ? data.sourcePath : sourcePath
+  const dispTarget = isRunning && data.targetVersion ? data.targetVersion : targetVersion
+  const dispStrategy = isRunning
+    ? (data.splitVersions ? 'split' : (data.destPath && data.destPath === data.sourcePath ? 'inplace' : 'single'))
+    : (inPlace ? 'inplace' : splitVersions ? 'split' : 'single')
+  // Flags que não estão no MIGRATION-DATA.json vêm do `cliConfig` (parseado dos args pelo backend)
+  const cli = isRunning ? data.cliConfig : undefined
+  const dispModernize = cli ? cli.modernize : modernize
+  const dispNgChecks = cli ? cli.ngUpdateChecks : ngUpdateChecks
+  const dispForce = cli ? cli.forcePeerDeps : forcePeerDeps
+
   return (
     <div className="bg-surface border border-[#2A2A45] rounded-[10px] overflow-hidden shrink-0">
       <div className="bg-surface2 border-b border-[#2A2A45] px-4 py-[0.55rem] flex items-center gap-[0.6rem]">
@@ -202,7 +218,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
               className="flex-1"
               type="text"
               placeholder="/path/to/my-angular-app"
-              value={sourcePath}
+              value={dispSourcePath}
               onChange={(e) => setSourcePath(e.target.value)}
               disabled={isRunning}
             />
@@ -222,7 +238,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
         <div>
           <label className={labelCls}>{t('targetVersion')}</label>
           <Select
-            value={String(targetVersion)}
+            value={String(dispTarget)}
             onValueChange={(v) => v && setTargetVersion(parseInt(v))}
             disabled={isRunning}
           >
@@ -243,7 +259,7 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
             {t('migrationStrategy')}
           </label>
           <RadioGroup
-            value={inPlace ? 'inplace' : splitVersions ? 'split' : 'single'}
+            value={dispStrategy}
             onValueChange={(v) => { setSplitVersions(v === 'split'); setInPlace(v === 'inplace') }}
             disabled={isRunning}
             className="gap-2 bg-[#0F0F1A] border border-[#2A2A45] rounded-[6px] p-2.5"
@@ -280,12 +296,12 @@ export function ConfigCard({ data, isRunning, onStart, onStop, onLoadMigration }
 
         {/* Toggles */}
         {[
-          { id: 'modernize', label: t('runModernization'), checked: modernize, onChange: setModernize },
+          { id: 'modernize', label: t('runModernization'), checked: dispModernize, onChange: setModernize },
           // "delete dest folder" não se aplica ao in-place (não há pasta de destino separada)
           ...(inPlace ? [] : [{ id: 'cleanDest', label: t('deleteDestFolder'), checked: cleanDest, onChange: setCleanDest }]),
           { id: 'runAfter', label: t('installServe'), checked: runAfter, onChange: setRunAfter },
-          { id: 'ngUpdateChecks', label: t('ngUpdateChecks'), checked: ngUpdateChecks, onChange: setNgUpdateChecks },
-          { id: 'forcePeerDeps', label: t('forcePeerDeps'), checked: forcePeerDeps, onChange: setForcePeerDeps },
+          { id: 'ngUpdateChecks', label: t('ngUpdateChecks'), checked: dispNgChecks, onChange: setNgUpdateChecks },
+          { id: 'forcePeerDeps', label: t('forcePeerDeps'), checked: dispForce, onChange: setForcePeerDeps },
         ].map(({ id, label, checked, onChange }) => (
           <label
             key={id}

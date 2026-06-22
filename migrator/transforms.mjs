@@ -2,7 +2,7 @@ import {
   readFileSync, writeFileSync, existsSync, readdirSync, statSync, unlinkSync,
 } from 'fs';
 import { join, dirname, relative } from 'path';
-import { destPath, SKIP_DIRS, report } from './context.mjs';
+import { destPath, SKIP_DIRS, report, opts } from './context.mjs';
 import { readJson, writeJson, run, capture, walkFiles } from './utils.mjs';
 
 // ─── UntypedForm* → typed forms ──────────────────────────────────────────────
@@ -780,12 +780,40 @@ export function modernizeTsconfig() {
   if (co.useDefineForClassFields !== false) { co.useDefineForClassFields = false; changes.push('useDefineForClassFields→false'); }
   if (!co.skipLibCheck) { co.skipLibCheck = true; changes.push('skipLibCheck→true'); }
 
+  // §1.1 — TypeScript 6 (exigido pelo Angular 22) liga a família `strict` por DEFAULT quando
+  // `strict` está ausente. Um projeto que NUNCA foi strict é inundado (TS2564/TS7006/TS7053/
+  // TS18047/TS18048 — no orion: ~2500 erros). Preserva o comportamento (não-strict) de forma
+  // EXPLÍCITA; um projeto que JÁ era strict (`strict:true`) fica intacto; o dev opta por strict
+  // depois. Também `ignoreDeprecations: "6.0"`: o TS6 transforma os warnings de opções legadas
+  // residuais do tsconfig em ERRO — isso mantém o build. Só no alvo TS6 (ng22+).
+  if (opts.to >= 22) {
+    if (co.strict === undefined) { co.strict = false; changes.push('strict→false (preserva não-strict sob TS6 default)'); }
+    if (co.ignoreDeprecations !== '6.0') { co.ignoreDeprecations = '6.0'; changes.push('ignoreDeprecations→6.0'); }
+  }
+
   if (changes.length) {
     writeJson(tsconfigPath, tsconfig);
     console.log(`  ↳ tsconfig.json: ${changes.join(', ')}`);
   } else {
     console.log('  ↳ tsconfig.json já está moderno');
   }
+
+  // NG4003: `extendedDiagnostics` EXIGE `strictTemplates`. A migração v22 seta `strictTemplates:false`
+  // (schematic do ng22) → conflito. Remove `extendedDiagnostics` (em angularCompilerOptions de
+  // tsconfig.app.json/spec.json/json) onde `strictTemplates` não é `true`.
+  for (const name of ['tsconfig.app.json', 'tsconfig.spec.json', 'tsconfig.json']) {
+    const p = join(destPath, name);
+    if (!existsSync(p)) continue;
+    let tc;
+    try { tc = readJson(p); } catch { continue; }
+    const aco = tc.angularCompilerOptions;
+    if (aco && aco.extendedDiagnostics && aco.strictTemplates !== true) {
+      delete aco.extendedDiagnostics;
+      writeJson(p, tc);
+      console.log(`  ↳ ${name}: extendedDiagnostics removido (strictTemplates off — NG4003)`);
+    }
+  }
+
   return changes.length > 0;
 }
 

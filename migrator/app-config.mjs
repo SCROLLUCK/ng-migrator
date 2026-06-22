@@ -1,10 +1,204 @@
 import {
   readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, statSync,
 } from 'fs';
+import { execSync } from 'child_process';
 import { join } from 'path';
 import { destPath, report } from './context.mjs';
 import { extractBracketBlock, scanForContent } from './utils.mjs';
 import { hasPackage } from './packages.mjs';
+
+// Recupera o conteúdo do app.module.ts original (mesmo que o schematic standalone
+// já o tenha deletado — via git, já que cada step é commitado).
+function readOriginalAppModule(appDir) {
+  const p = join(appDir, 'app.module.ts');
+  if (existsSync(p)) {
+    const c = readFileSync(p, 'utf8');
+    if (/providers\s*:/.test(c)) return c;
+  }
+  try {
+    const rel = 'src/app/app.module.ts';
+    const delCommit = execSync(`git -C "${destPath}" log --diff-filter=D --format=%H -- ${rel}`, { encoding: 'utf8' })
+      .split('\n').filter(Boolean)[0];
+    if (delCommit) return execSync(`git -C "${destPath}" show ${delCommit}~1:${rel}`, { encoding: 'utf8' });
+  } catch { /* sem git / sem histórico */ }
+  return null;
+}
+
+// Slice de um bloco balanceado a partir do índice do colchete de abertura.
+function sliceBalanced(content, openIdx, open = '[', close = ']') {
+  let depth = 0;
+  for (let i = openIdx; i < content.length; i++) {
+    if (content[i] === open) depth++;
+    else if (content[i] === close) { depth--; if (depth === 0) return content.slice(openIdx, i + 1); }
+  }
+  return null;
+}
+
+// Nome do pacote npm de uma linha de import (null se for import relativo/interno).
+function packageOfImport(importLine) {
+  const m = importLine.match(/from\s*['"]([^'"]+)['"]/);
+  if (!m || m[1].startsWith('.')) return null;
+  const parts = m[1].split('/');
+  return m[1].startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
+
+// §5.1 — A migração standalone carrega o `imports` do AppModule (via importProvidersFrom)
+// mas DESCARTA o array `providers: []`. Aqui recuperamos esses providers (serviços sem
+// providedIn:'root', interceptors HTTP_INTERCEPTORS, value-tokens MAT_*_DEFAULT_OPTIONS,
+// adapters, LOCALE_ID, provideHttpClient…) e os transcrevemos para o app.config.ts.
+// Pula entradas já presentes e as que referenciam um pacote REMOVIDO (ex: SWIPER_CONFIG
+// do ngx-swiper-wrapper, já migrado p/ swiper-element) — regra genérica via hasPackage.
+function transcribeAppModuleProviders(cfg, appDir) {
+  const mod = readOriginalAppModule(appDir);
+  if (!mod) return { cfg, changed: false };
+
+  const provMatch = mod.match(/providers\s*:\s*\[/);
+  if (!provMatch) return { cfg, changed: false };
+  const provArr = sliceBalanced(mod, mod.indexOf('[', provMatch.index));
+  if (!provArr) return { cfg, changed: false };
+
+  const entries = splitTopLevel(provArr.slice(1, -1)).map(s => s.trim()).filter(Boolean);
+  const modImports = mod.match(/^import\s+[\s\S]+?;$/gm) || [];
+
+  // Array de providers atual do app.config.ts
+  const cfgProvMatch = cfg.match(/providers\s*:\s*\[/);
+  if (!cfgProvMatch) return { cfg, changed: false };
+  const cfgArr = sliceBalanced(cfg, cfg.indexOf('[', cfgProvMatch.index));
+  if (!cfgArr) return { cfg, changed: false };
+
+  const toAdd = [];
+  const importsToAdd = [];
+  const skipped = [];
+  const alreadyImported = (sym) => new RegExp(`\\bimport\\s*(?:type\\s*)?\\{[^}]*\\b${sym}\\b[^}]*\\}`).test(cfg)
+    || importsToAdd.some(l => new RegExp(`\\{[^}]*\\b${sym}\\b[^}]*\\}`).test(l));
+
+  for (const entry of entries) {
+    // token/identificador da entrada: { provide: X }, provideX(...), ou classe solta
+    const token = entry.match(/provide\s*:\s*([A-Za-z_][\w]*)/)?.[1]
+      || entry.match(/^([A-Za-z_][\w.]*)\s*\(/)?.[1]
+      || entry.match(/^([A-Za-z_][\w]*)$/)?.[1];
+    if (token && new RegExp(`\\b${token.replace(/\./g, '\\.')}\\b`).test(cfgArr)) continue; // já presente
+
+    // símbolos PascalCase/UPPER usados na entrada que precisam de import
+    const syms = [...new Set([...entry.matchAll(/\b([A-Z][A-Za-z0-9_]*)\b/g)].map(m => m[1]))];
+    const needImports = [];
+    let obsolete = false;
+    for (const s of syms) {
+      if (alreadyImported(s)) continue;
+      const imp = modImports.find(l => new RegExp(`\\{[^}]*\\b${s}\\b[^}]*\\}`).test(l) || new RegExp(`\\b${s}\\b\\s+from`).test(l));
+      if (!imp) continue; // símbolo global/sem import explícito — ignora
+      const pkg = packageOfImport(imp);
+      if (pkg && !hasPackage(pkg)) { obsolete = true; break; } // pacote removido → entrada obsoleta
+      // import só do símbolo s (evita arrastar outros símbolos da mesma linha)
+      const from = imp.match(/from\s*(['"][^'"]+['"])/)?.[1];
+      if (from) needImports.push(`import { ${s} } from ${from};`);
+    }
+    if (obsolete) { skipped.push(token || entry.slice(0, 30)); continue; }
+    toAdd.push(entry);
+    importsToAdd.push(...needImports);
+  }
+
+  if (!toAdd.length) return { cfg, changed: false };
+
+  // injeta entradas antes do ] do array de providers
+  const newArr = cfgArr.replace(/\]\s*$/, `,\n    ${toAdd.join(',\n    ')},\n  ]`);
+  let out = cfg.replace(cfgArr, newArr);
+  // injeta imports após o último import
+  const block = [...new Set(importsToAdd)].join('\n');
+  if (block) {
+    const lastImp = out.lastIndexOf('\nimport ');
+    const nlAfter = out.indexOf('\n', lastImp + 1);
+    out = out.slice(0, nlAfter + 1) + block + '\n' + out.slice(nlAfter + 1);
+  }
+  console.log(`  ↳ providers do AppModule restaurados: ${toAdd.length}${skipped.length ? ` (pulados obsoletos: ${skipped.join(', ')})` : ''}`);
+  report.modernize.appModuleProvidersRestored = toAdd.length;
+  return { cfg: out, changed: true };
+}
+
+// Garante que os símbolos estejam no import de '@angular/core' (mescla no existente ou cria).
+function ensureCoreImports(cfg, syms) {
+  const coreImp = cfg.match(/import\s*\{([^}]*)\}\s*from\s*['"]@angular\/core['"]\s*;?/);
+  if (coreImp) {
+    const have = new Set(coreImp[1].split(',').map(s => s.trim()).filter(Boolean));
+    let changed = false;
+    for (const s of syms) if (![...have].some(h => h === s || h.endsWith(` ${s}`))) { have.add(s); changed = true; }
+    if (!changed) return cfg;
+    return cfg.replace(coreImp[0], `import { ${[...have].join(', ')} } from '@angular/core';`);
+  }
+  return `import { ${syms.join(', ')} } from '@angular/core';\n` + cfg;
+}
+
+// §6.4 — A migração standalone DELETA o AppModule, perdendo a lógica do `constructor()`
+// (init de bootstrap: idioma default `translate.use()`, registro de ícones `matIconRegistry`,
+// `registerLocaleData`, etc.). Recupera esse corpo e re-emite como `provideAppInitializer`
+// no app.config.ts, convertendo os campos injetados (`this.x`) em `inject()` locais.
+function restoreAppModuleConstructorInit(cfg, appDir) {
+  const mod = readOriginalAppModule(appDir);
+  if (!mod) return { cfg, changed: false };
+
+  const classMatch = mod.match(/export\s+class\s+AppModule\b[^{]*\{/);
+  if (!classMatch) return { cfg, changed: false };
+  const classBody = sliceBalanced(mod, mod.indexOf('{', classMatch.index), '{', '}');
+  if (!classBody) return { cfg, changed: false };
+
+  const ctorMatch = classBody.match(/constructor\s*\(([^)]*)\)\s*\{/);
+  if (!ctorMatch) return { cfg, changed: false };
+  const ctorBlock = sliceBalanced(classBody, classBody.indexOf('{', ctorMatch.index), '{', '}');
+  if (!ctorBlock) return { cfg, changed: false };
+  let body = ctorBlock.slice(1, -1).replace(/^\s*super\([^)]*\);?\s*$/m, '').trim();
+  if (!body) return { cfg, changed: false };
+
+  // injeções: campos `name = inject(Type)` na classe + params DI do constructor
+  const injects = new Map();
+  for (const m of classBody.matchAll(/(?:readonly\s+)?(\w+)\s*=\s*inject\s*(?:<[^>]+>)?\s*\(([\w.]+)\)/g))
+    injects.set(m[1], m[2]);
+  for (const param of ctorMatch[1].split(',')) {
+    const pm = param.match(/(?:private|public|protected|readonly)\s+(\w+)\s*:\s*([\w.]+)/);
+    if (pm) injects.set(pm[1], pm[2]);
+  }
+
+  // só os injetados realmente usados no corpo (this.name) → vira `const name = inject(Type)`
+  const used = [...injects].filter(([name]) => new RegExp(`\\bthis\\.${name}\\b`).test(body));
+  for (const [name] of used) body = body.replace(new RegExp(`\\bthis\\.${name}\\b`, 'g'), name);
+  // se ainda há `this.` (membro não-injetado), não dá pra mover com segurança → aborta
+  if (/\bthis\./.test(body)) return { cfg, changed: false };
+
+  const indent = '      ';
+  const lines = [
+    ...used.map(([name, type]) => `${indent}const ${name} = inject(${type.split('.')[0]});`),
+    ...body.split('\n').map(l => indent + l.trim()).filter(l => l.trim()),
+  ];
+  const provider = `provideAppInitializer(() => {\n${lines.join('\n')}\n    })`;
+
+  // imports: tipos dos injects + qualquer identificador do corpo que tenha import no AppModule
+  const modImports = mod.match(/^import\s+[\s\S]+?;$/gm) || [];
+  const neededSyms = new Set(used.map(([, t]) => t.split('.')[0]));
+  for (const m of body.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) neededSyms.add(m[1]);
+  const importsToAdd = [];
+  for (const sym of neededSyms) {
+    if (new RegExp(`\\bimport\\s*(?:type\\s*)?\\{[^}]*\\b${sym}\\b[^}]*\\}`).test(cfg)) continue;
+    if (importsToAdd.some(l => new RegExp(`\\{[^}]*\\b${sym}\\b`).test(l))) continue;
+    const imp = modImports.find(l => new RegExp(`\\{[^}]*\\b${sym}\\b[^}]*\\}`).test(l));
+    const from = imp?.match(/from\s*(['"][^'"]+['"])/)?.[1];
+    if (from) importsToAdd.push(`import { ${sym} } from ${from};`);
+  }
+
+  let out = ensureCoreImports(cfg, ['provideAppInitializer', 'inject']);
+  const cfgProvMatch = out.match(/providers\s*:\s*\[/);
+  if (!cfgProvMatch) return { cfg, changed: false };
+  const insertAt = out.indexOf('[', cfgProvMatch.index) + 1;
+  out = out.slice(0, insertAt) + `\n    ${provider},` + out.slice(insertAt);
+
+  const block = [...new Set(importsToAdd)].join('\n');
+  if (block) {
+    const lastImp = out.lastIndexOf('\nimport ');
+    const nlAfter = out.indexOf('\n', lastImp + 1);
+    out = out.slice(0, nlAfter + 1) + block + '\n' + out.slice(nlAfter + 1);
+  }
+  console.log('  ↳ init do constructor do AppModule restaurada (provideAppInitializer)');
+  report.modernize.appModuleInitRestored = true;
+  return { cfg: out, changed: true };
+}
 
 export function extractImportProvidersFromModules(content) {
   const idx = content.indexOf('importProvidersFrom(');
@@ -72,6 +266,58 @@ function extractRouterWithFeatures(content) {
   }
 
   return { features, routerSymbols, extraImports };
+}
+
+// §5.2 — O standalone-bootstrap às vezes NÃO fia o roteamento no app.config.ts (deixa
+// o `ROUTES`/`routes` órfão, sem provideRouter). Sem isso a app não navega e TODOS os
+// módulos lazy (loadChildren) ficam tree-shaken, escondendo seus erros do `ng build`.
+function findRoutesExport(appDir) {
+  const candidates = [
+    ['app.routes.ts', /export\s+const\s+(routes|ROUTES)\b/],
+    ['app.routing.ts', /export\s+const\s+(ROUTES|routes)\b/],
+    ['app-routing.module.ts', /export\s+const\s+(ROUTES|routes)\b/],
+  ];
+  for (const [file, re] of candidates) {
+    const p = join(appDir, file);
+    if (existsSync(p)) {
+      const m = readFileSync(p, 'utf8').match(re);
+      if (m) return { sym: m[1], importPath: './' + file.replace(/\.ts$/, ''), filePath: p };
+    }
+  }
+  return null;
+}
+
+function ensureProvideRouter(cfg, appDir) {
+  if (/\bprovideRouter\s*\(/.test(cfg)) return { cfg, changed: false };
+  const routes = findRoutesExport(appDir);
+  if (!routes) return { cfg, changed: false };
+
+  // features do RouterModule.forRoot (no AppModule original, ou no próprio arquivo de rotas)
+  let feat = { features: [], routerSymbols: [] };
+  const mod = readOriginalAppModule(appDir);
+  if (mod) feat = extractRouterWithFeatures(mod);
+  if (!feat.features.length) feat = extractRouterWithFeatures(readFileSync(routes.filePath, 'utf8'));
+
+  const call = `provideRouter(${routes.sym}${feat.features.length ? ', ' + feat.features.join(', ') : ''})`;
+  const m = cfg.match(/providers\s*:\s*\[/);
+  if (!m) return { cfg, changed: false };
+  const insertAt = cfg.indexOf('[', m.index) + 1;
+  let out = cfg.slice(0, insertAt) + `\n    ${call},` + cfg.slice(insertAt);
+
+  const routerSyms = [...new Set(['provideRouter', ...(feat.routerSymbols || [])])];
+  const imps = [];
+  if (!new RegExp(`\\bimport\\s*\\{[^}]*\\bprovideRouter\\b`).test(cfg))
+    imps.push(`import { ${routerSyms.join(', ')} } from '@angular/router';`);
+  if (!new RegExp(`\\bimport\\s*\\{[^}]*\\b${routes.sym}\\b`).test(cfg))
+    imps.push(`import { ${routes.sym} } from '${routes.importPath}';`);
+  if (imps.length) {
+    const lastImp = out.lastIndexOf('\nimport ');
+    const nlAfter = out.indexOf('\n', lastImp + 1);
+    out = out.slice(0, nlAfter + 1) + imps.join('\n') + '\n' + out.slice(nlAfter + 1);
+  }
+  console.log(`  ↳ provideRouter(${routes.sym}) fiado no app.config${feat.features.length ? ` [${feat.features.join(', ')}]` : ''}`);
+  report.modernize.provideRouterWired = true;
+  return { cfg: out, changed: true };
 }
 
 // Removes bootstrap-level modules from root app.component.ts imports array.
@@ -236,6 +482,24 @@ export function createAppConfigAndRoutes() {
           }
         }
       }
+    }
+
+    // §5.2 — garante provideRouter(ROUTES) fiado (senão lazy modules ficam tree-shaken)
+    {
+      const res = ensureProvideRouter(cfg, appDir);
+      if (res.changed) { cfg = res.cfg; cfgChanged = true; }
+    }
+
+    // §5.1 — restaura o providers:[] do AppModule que o standalone-bootstrap descartou
+    {
+      const res = transcribeAppModuleProviders(cfg, appDir);
+      if (res.changed) { cfg = res.cfg; cfgChanged = true; }
+    }
+
+    // §6.4 — restaura a init do constructor do AppModule (idioma/ícones) como provideAppInitializer
+    {
+      const res = restoreAppModuleConstructorInit(cfg, appDir);
+      if (res.changed) { cfg = res.cfg; cfgChanged = true; }
     }
 
     // Final dedup pass (safety net)

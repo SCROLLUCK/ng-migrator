@@ -152,7 +152,11 @@ export function ModernizationCard({ data, query = '' }: Props) {
                     row.status === 'done' ? 'text-green' : row.status === 'pending' ? 'text-amber' : 'text-text',
                   )}>
                     {row.label}
-                    {row.detail && (
+                    {/* `row.detail` é a métrica do transform (ex: throwErrorFixed=3). Quando há
+                        lista de arquivos, o botão à direita mostra a contagem REAL do git diff do
+                        commit (que agrupa transforms — ex: 46). Mostrar os dois confundia (3 vs 46),
+                        então o detail só aparece quando NÃO há lista (aí é a única contagem). */}
+                    {row.detail && !hasFiles && (
                       <span className="text-[#7070A0] text-[0.75rem] ml-1.5">({row.detail})</span>
                     )}
                     {row.status === 'intentional-skip' && (

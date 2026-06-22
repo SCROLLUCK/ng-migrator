@@ -133,9 +133,18 @@ export default function App() {
   const handleClearTerminal = useCallback(() => { setTerminalLines([]); setTerminalTotal(0) }, [])
 
   const handleLoadMigration = useCallback((loaded: MigrationData) => {
-    setViewedData(loaded)
+    // Limpa o terminal ao trocar de migração — senão as linhas da anterior ficam na tela ("não
+    // limpou", exigia F5).
+    setTerminalLines([])
+    setTerminalTotal(0)
+    // Se a migração carregada é a MESMA que está rodando ao vivo, NÃO congela num snapshot
+    // (viewedData) — segue ao vivo (viewedData=null → displayData=data do polling), senão a lista de
+    // ng updates/steps/correções para de atualizar e parece "travada no antigo". Migração finalizada
+    // (destPath diferente do ao-vivo) → snapshot estático normal.
+    const isLive = loaded.destPath && loaded.destPath === data.destPath && data.status === 'running'
+    setViewedData(isLive ? null : loaded)
     setSidebarOpen(false)
-  }, [])
+  }, [data.destPath, data.status])
 
   const displayData = viewedData ?? data
   const isViewingLoaded = viewedData !== null
