@@ -487,7 +487,11 @@ for (let v = startVersion; v <= opts.to; v++) {
     for (let iter = 0; result.status !== 0 && iter < MAX_RESOLVE_ITERATIONS; iter++) {
       const conflictPkgs = extractConflictPackages(result.output, v, packageList);
       if (conflictPkgs.length === 0) break;  // nada novo a resolver → cai pro fallback
-      packageList = [...packageList, ...conflictPkgs];
+      // Substitui (não duplica): se o pacote já está no comando com OUTRA versão (ex:
+      // `@angular/animations@20` e o conflito resolve `@angular/animations@20.3.25`), o `ng update`
+      // aborta com "Duplicate package specified". Remove a entrada antiga pelo NOME antes de incluir.
+      const conflictNames = new Set(conflictPkgs.map(p => p.replace(/@[^@]*$/, '')));
+      packageList = [...packageList.filter(p => !conflictNames.has(p.replace(/@[^@]*$/, ''))), ...conflictPkgs];
       console.warn(`\n  ⚠ ng update v${v} peer conflict (iter ${iter + 1}) — incluindo: ${conflictPkgs.join(' ')}`);
       result = runCapture(`${ngCli} update ${packageList.join(' ')} --allow-dirty`);
       peerLog.attempts.push({ iteration: iter + 1, kind: 'resolve', added: conflictPkgs, ok: result.status === 0 });
@@ -566,6 +570,10 @@ for (let v = startVersion; v <= opts.to; v++) {
   // schematics de modernização (standalone/signals) seguem no fim (maturidade). One-shot via flag.
   if (!report.modernize._rxjsCompatBoundary && getInstalledMajor('rxjs') >= 7) {
     console.log(`\n  🔄 RxJS 7 compat (throwError factory + Subject.next + internal-compatibility)...`);
+    // Commita pendências do ng update (package.json/angular.json) ANTES dos transforms — senão o
+    // `git add -A` do commit deste boundary as varre e o diff do step "throwError" mostra arquivos
+    // que ele não tocou (o "46 arquivos" com package.json/angular.json no dashboard).
+    run('git add -A && git commit -m "chore: estado pós-ng-update (isola boundary RxJS)" --allow-empty', { ignoreError: true });
     const rxH0 = capture('git rev-parse HEAD');
     report.modernize.throwErrorFixed = fixThrowError();
     fixSubjectVoid();
